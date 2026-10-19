@@ -71,10 +71,27 @@ impl Library {
         let rel = layout::record(r);
         let path = self.root.join(&rel);
         fs::create_dir_all(path.parent().expect("filed in a folder"))?;
-        if let Some(was) = was.filter(|w| *w != rel) {
-            let old_pdf = self.root.join(was).with_extension("pdf");
-            if old_pdf.exists() {
-                fs::rename(&old_pdf, self.root.join(layout::pdf(r)))?;
+        let moved = was.filter(|w| *w != rel);
+        let old_pdf = moved.map(|w| self.root.join(w).with_extension("pdf"));
+        let new_pdf = self.root.join(layout::pdf(r));
+        // Its PDF is moved only onto nothing, never over another's; and the
+        // record is written where it goes before it is taken from where it
+        // was, so a failure leaves it there.
+        if let Some(old) = old_pdf.as_ref().filter(|p| p.exists())
+            && new_pdf.exists()
+        {
+            bail!(
+                "{} is there already: {} is left where it was",
+                new_pdf.display(),
+                old.display()
+            );
+        }
+        let mut json = serde_json::to_vec_pretty(r)?;
+        json.push(b'\n');
+        write(&path, &json)?;
+        if let Some(was) = moved {
+            if let Some(old) = old_pdf.filter(|p| p.exists()) {
+                fs::rename(&old, &new_pdf)?;
             }
             match fs::remove_file(self.root.join(was)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -83,9 +100,6 @@ impl Library {
                 _ => {}
             }
         }
-        let mut json = serde_json::to_vec_pretty(r)?;
-        json.push(b'\n');
-        write(&path, &json)?;
         Ok(rel)
     }
 

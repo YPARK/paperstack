@@ -63,8 +63,10 @@ pub fn clean_doi(s: &str) -> String {
             .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '/'])
             .to_string();
         for tail in DOI_TAILS {
-            if d.to_lowercase().ends_with(tail) {
-                d.truncate(d.len() - tail.len());
+            let at = d.len().saturating_sub(tail.len());
+            if d.len() >= tail.len() && d.is_char_boundary(at) && d[at..].eq_ignore_ascii_case(tail)
+            {
+                d.truncate(at);
             }
         }
         // bioRxiv's version: `10.1101/2023.09.11.557287v1`.
@@ -87,9 +89,13 @@ fn percent_decode(s: &str) -> Result<String, ()> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|_| ())?;
-            out.push(u8::from_str_radix(hex, 16).map_err(|_| ())?);
+        // An escape that is none, as `%zz`, is kept as it is.
+        let escaped = (bytes[i] == b'%' && i + 2 < bytes.len())
+            .then(|| std::str::from_utf8(&bytes[i + 1..i + 3]).ok())
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        if let Some(b) = escaped {
+            out.push(b);
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -126,11 +132,14 @@ pub fn unversioned(id: &str) -> &str {
 /// `arXiv:2412.08821v1 [cs.CL]`, without the version.
 pub fn arxiv_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    // Found in the line itself: lowercase, some letters are longer or
+    // shorter, and places in the one are not places in the other.
+    static ARXIV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)arxiv").unwrap());
     for line in text.lines() {
-        let Some(at) = line.to_lowercase().find("arxiv") else {
+        let Some(m) = ARXIV.find(line) else {
             continue;
         };
-        let rest = &line[at..];
+        let rest = &line[m.start()..];
         for re in [&*ARXIV_NEW, &*ARXIV_OLD] {
             if let Some(m) = re.captures(rest) {
                 let id = m[1].to_string();
@@ -238,9 +247,12 @@ impl Source {
 
 /// The paper an address names, where its form says.
 fn from_address(url: &str) -> Option<Source> {
-    let lower = url.to_lowercase();
-    let host = lower.split("://").nth(1)?.split('/').next()?;
-    let path = &url[url.find(host).unwrap_or(0) + host.len()..];
+    let after = url.split_once("://")?.1;
+    let (host, path) = match after.find('/') {
+        Some(at) => (&after[..at], &after[at..]),
+        None => (after, ""),
+    };
+    let host = host.to_lowercase();
     if host.ends_with("arxiv.org") {
         let id = path
             .trim_start_matches(['/'])

@@ -20,6 +20,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const PORT: u16 = 8765;
+/// How long a request may take to come, all of it, and each part of it.
+const DEADLINE: Duration = Duration::from_secs(60);
+const PAUSE: Duration = Duration::from_secs(10);
+/// The longest line of a request's head, and the most lines of it.
+const LINE_LIMIT: u64 = 16 << 10;
+const HEADERS: usize = 100;
 /// How often folders are looked in.
 const SCAN: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(200);
@@ -34,6 +40,9 @@ pub struct Watched {
     pub existing: bool,
     /// A PDF filed is taken out of it, as out of the inbox.
     pub take: bool,
+    /// A PDF without an id in it is filed by its text, searched for; not
+    /// so of a folder as ~/Downloads, whose PDFs may be anyone's letters.
+    pub search: bool,
 }
 
 pub struct Daemon<'a> {
@@ -89,7 +98,7 @@ impl Daemon<'_> {
                 loop {
                     match l.accept() {
                         Ok((stream, _)) => {
-                            if let Err(e) = self.answer(stream) {
+                            if let Err(e) = self.answer(stream, port.unwrap_or(PORT)) {
                                 say(&format!("a request failed: {e:#}"));
                             }
                         }
@@ -110,7 +119,7 @@ impl Daemon<'_> {
                         }
                         growing.remove(&path);
                         done.insert(path.clone(), (size, mtime));
-                        self.file(&path, w.take);
+                        self.file(&path, w.take, w.search);
                     }
                 }
             }
@@ -119,13 +128,13 @@ impl Daemon<'_> {
     }
 
     /// File the PDF at `path`, and take it out of its folder if `take`.
-    fn file(&mut self, path: &Path, take: bool) {
+    fn file(&mut self, path: &Path, take: bool, search: bool) {
         let name = path.display().to_string();
         let done = std::fs::read(path)
             .with_context(|| format!("cannot read {name}"))
             .and_then(|bytes| {
                 self.index.refresh(self.lib)?;
-                self.adder().add_pdf(&bytes, &name)
+                self.adder().add_pdf_with(&bytes, &name, search)
             });
         match done {
             Ok(added) => {
@@ -138,24 +147,37 @@ impl Daemon<'_> {
         }
     }
 
-    fn answer(&mut self, mut stream: TcpStream) -> anyhow::Result<()> {
+    /// Answer one request. It is given a while to come, all of it, so a
+    /// slow one or an idle one does not keep the others waiting long.
+    fn answer(&mut self, mut stream: TcpStream, port: u16) -> anyhow::Result<()> {
         stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+        stream.set_read_timeout(Some(PAUSE))?;
+        stream.set_write_timeout(Some(PAUSE))?;
+        let started = Instant::now();
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut line = String::new();
-        reader.read_line(&mut line)?;
+        (&mut reader).take(LINE_LIMIT).read_line(&mut line)?;
         let mut parts = line.split_whitespace();
         let method = parts.next().unwrap_or("").to_string();
         let path = parts.next().unwrap_or("").to_string();
         let mut headers: HashMap<String, String> = HashMap::new();
-        loop {
+        for _ in 0..HEADERS {
             let mut h = String::new();
-            if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
+            if (&mut reader).take(LINE_LIMIT).read_line(&mut h)? == 0 || h.trim().is_empty() {
                 break;
+            }
+            if started.elapsed() > DEADLINE {
+                anyhow::bail!("a request too slow in coming");
             }
             if let Some((k, v)) = h.split_once(':') {
                 headers.insert(k.trim().to_lowercase(), v.trim().to_string());
             }
+        }
+        // A page renamed to this machine, as by DNS rebinding, names its
+        // own host.
+        let host = headers.get("host").map(String::as_str).unwrap_or("");
+        if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
+            return reply(&mut stream, 403, &json!({ "error": "not this machine's" }));
         }
         // A page's request names the page; an extension's, the extension;
         // a program on this machine's, nothing.
@@ -176,8 +198,19 @@ impl Daemon<'_> {
         if length > BODY_LIMIT {
             return reply(&mut stream, 413, &json!({ "error": "too large" }));
         }
-        let mut body = vec![0; length];
-        reader.read_exact(&mut body)?;
+        let mut body = Vec::with_capacity(length.min(1 << 20));
+        let mut chunk = vec![0; 64 << 10];
+        while body.len() < length {
+            if started.elapsed() > DEADLINE {
+                anyhow::bail!("a request too slow in coming");
+            }
+            let want = (length - body.len()).min(chunk.len());
+            let n = reader.read(&mut chunk[..want])?;
+            if n == 0 {
+                anyhow::bail!("a request cut short");
+            }
+            body.extend_from_slice(&chunk[..n]);
+        }
         match (method.as_str(), path.as_str()) {
             ("GET", "/ping") => reply(
                 &mut stream,
@@ -303,11 +336,13 @@ pub fn folders(lib: &Library, given: &[PathBuf], take: bool) -> Vec<Watched> {
         dir: lib.root.join(library::INBOX),
         existing: true,
         take: true,
+        search: true,
     }];
     all.extend(given.iter().map(|d| Watched {
         dir: d.clone(),
         existing: false,
         take,
+        search: false,
     }));
     all
 }

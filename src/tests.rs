@@ -492,3 +492,66 @@ fn searches_6000_quickly() {
         );
     }
 }
+
+#[test]
+fn reads_text_whose_letters_change_length_lowercase() {
+    // The Kelvin sign is three bytes, its lowercase `k` one: a place found
+    // in the one once cut the other inside a letter.
+    assert_eq!(
+        crate::source::arxiv_ids("\u{212A} arXiv:2412.08821v1 [cs.CL]"),
+        ["2412.08821"]
+    );
+    assert_eq!(
+        Source::of("https://www.Nature.com/articles/s41586-020-2649-2"),
+        Source::Doi("10.1038/s41586-020-2649-2".into())
+    );
+    assert!(matches!(Source::of("https://ÄÄÄ.de/x"), Source::Url(_)));
+    // An escape at the very end is read, and one that is none is kept.
+    assert_eq!(crate::source::clean_doi("10.1000/ab%41"), "10.1000/abA");
+    assert_eq!(crate::source::clean_doi("10.1000/a%zz"), "10.1000/a%zz");
+}
+
+#[test]
+fn reads_years_written_with_a_hyphen() {
+    assert_eq!(crate::query::years("2020-2024"), Some((2020, 2024)));
+    let (_dir, _lib, index) = library();
+    assert_eq!(keys(&index, "year:2025-2026", Sort::Relevance).len(), 4);
+}
+
+#[test]
+fn keeps_a_key_for_its_paper_over_anothers_alias() {
+    let (_dir, lib, mut index) = library();
+    let mut r = demo::records().remove(1);
+    r.paperstack.aliases = vec!["VanderWeele2017-ex".into()];
+    lib.save(&r, None).unwrap();
+    let done = index.refresh(&lib).unwrap();
+    assert!(
+        done.errors.iter().any(|e| e.contains("alias")),
+        "{:?}",
+        done.errors
+    );
+    assert_eq!(
+        index
+            .get("VanderWeele2017-ex")
+            .unwrap()
+            .unwrap()
+            .record
+            .title(),
+        "Sensitivity analysis in observational research: Introducing the E-value"
+    );
+}
+
+#[test]
+fn moves_no_pdf_over_anothers() {
+    let (_dir, lib, index) = library();
+    let hit = index.get("Naik2016-al").unwrap().unwrap();
+    std::fs::write(lib.root.join(&hit.path).with_extension("pdf"), b"%PDF-mine").unwrap();
+    let mut moved = crate::record::Record::clone(&hit.record);
+    moved.csl["issued"] = serde_json::json!({ "date-parts": [[2017]] });
+    let target = lib.root.join(layout::pdf(&moved));
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"%PDF-another's").unwrap();
+    assert!(lib.save(&moved, Some(&hit.path)).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"%PDF-another's");
+    assert!(lib.root.join(&hit.path).exists(), "left where it was");
+}

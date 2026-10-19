@@ -440,6 +440,11 @@ impl App {
             self.status = "cannot add here: nothing is fetched".to_string();
             return;
         };
+        // What another program added meanwhile is a paper already here.
+        if let Err(e) = self.index.refresh(&self.lib) {
+            self.status = one_line(&e);
+            return;
+        }
         let mut options = Options {
             pdf: true,
             ..Options::default()
@@ -473,16 +478,24 @@ impl App {
     }
 
     /// Star the paper picked, or take its star away, in its record.
+    /// The record is read again first, from its file: another program, as
+    /// `paperstack serve`, or another machine, may have changed it since it
+    /// was shown.
     pub fn star(&mut self) {
-        let Some(hit) = self.current() else { return };
-        let mut record = crate::record::Record::clone(&hit.record);
-        let was = hit.path.clone();
-        record.paperstack.starred = !record.paperstack.starred;
-        let done = self
-            .lib
-            .save(&record, Some(&was))
-            .and_then(|_| self.index.refresh(&self.lib))
-            .and_then(|_| self.restock());
+        let Some(key) = self.current().map(|h| h.record.key.clone()) else {
+            return;
+        };
+        let done = self.index.refresh(&self.lib).and_then(|_| {
+            let hit = self
+                .index
+                .get(&key)?
+                .ok_or_else(|| anyhow::anyhow!("{key} is no longer in the library"))?;
+            let mut record = crate::record::Record::clone(&hit.record);
+            record.paperstack.starred = !record.paperstack.starred;
+            self.lib.save(&record, Some(&hit.path))?;
+            self.index.refresh(&self.lib)?;
+            self.restock()
+        });
         if let Err(e) = done {
             self.status = format!("cannot star: {e:#}");
         }
