@@ -256,7 +256,11 @@ pub fn metas(html: &str) -> Vec<(String, String)> {
 /// The paper a page is of, by the ids in its meta tags, Highwire's
 /// `citation_*` first, as Google Scholar reads them.
 pub fn from_page(html: &str) -> Option<Source> {
-    let metas = metas(html);
+    from_metas(&metas(html))
+}
+
+/// The paper meta tags name, by its ids.
+pub fn from_metas(metas: &[(String, String)]) -> Option<Source> {
     let get = |names: &[&str]| {
         names.iter().find_map(|n| {
             metas

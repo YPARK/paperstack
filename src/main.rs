@@ -8,6 +8,7 @@ mod agents;
 mod app;
 mod bibtex;
 mod cli;
+mod daemon;
 mod demo;
 mod index;
 mod layout;
@@ -96,6 +97,30 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// File PDFs as they come into inbox/, and into the folders given, as
+    /// ~/Downloads; theirs from before are left alone
+    Watch {
+        dirs: Vec<PathBuf>,
+        /// Take a PDF filed out of the folders given too, as out of inbox/
+        #[arg(long)]
+        take: bool,
+        /// Put what is filed in this folder of the library too
+        #[arg(long)]
+        folder: Vec<String>,
+    },
+    /// Watch as `watch` does, and take papers from the browser extension
+    /// at 127.0.0.1, their PDFs fetched in the browser
+    Serve {
+        #[arg(long, default_value_t = daemon::PORT)]
+        port: u16,
+        /// Folders to watch besides inbox/, as ~/Downloads
+        #[arg(long)]
+        watch: Vec<PathBuf>,
+        #[arg(long)]
+        take: bool,
+        #[arg(long)]
+        folder: Vec<String>,
+    },
     /// What paperstack reads in a PDF to tell which paper it is
     #[command(hide = true)]
     Pdf {
@@ -172,6 +197,35 @@ fn main() -> anyhow::Result<()> {
                 .map(|l| (l.clone(), adder.add(l)))
                 .collect();
             cli::print_added(&lib, &done, json)
+        }
+        Some(Command::Watch { dirs, take, folder }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let net = net();
+            let watched = daemon::folders(&lib, &dirs, take);
+            daemon::Daemon {
+                lib: &lib,
+                index: &mut index,
+                net: &net,
+                folders: folder,
+            }
+            .run(None, &watched)
+        }
+        Some(Command::Serve {
+            port,
+            watch,
+            take,
+            folder,
+        }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let net = net();
+            let watched = daemon::folders(&lib, &watch, take);
+            daemon::Daemon {
+                lib: &lib,
+                index: &mut index,
+                net: &net,
+                folders: folder,
+            }
+            .run(Some(port), &watched)
         }
         Some(Command::Pdf { file, title }) => {
             let reading = pdf::read(&std::fs::read(&file)?)?;

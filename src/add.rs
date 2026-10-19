@@ -52,6 +52,24 @@ pub struct Added {
     pub how: String,
 }
 
+/// What the browser extension sends of the page it was clicked on.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct Page {
+    pub url: String,
+    #[serde(default)]
+    pub doi: Option<String>,
+    /// The page's `<meta>` tags, name lowercase, then content.
+    #[serde(default)]
+    pub tags: Vec<(String, String)>,
+    /// Where the PDF was fetched from.
+    #[serde(default)]
+    pub pdf_url: Option<String>,
+    /// The PDF, fetched by the browser, as the extension sends it, in
+    /// base64; decoded on arrival.
+    #[serde(skip)]
+    pub pdf: Option<Vec<u8>>,
+}
+
 pub struct Adder<'a> {
     pub lib: &'a Library,
     pub index: &'a mut Index,
@@ -143,6 +161,48 @@ impl Adder<'_> {
             .collect::<Vec<_>>()
             .join("\n");
         bail!("not one paper is titled \"{words}\"; add the one meant by its id:\n{list}")
+    }
+
+    /// A paper as a browser saw it, its page read and its PDF fetched there,
+    /// past the publisher's paywall: the page's ids or tags say which paper
+    /// it is, and a PDF that is not that paper's, as a supplement, is not
+    /// filed with it.
+    pub fn add_from_browser(&mut self, page: &Page) -> anyhow::Result<Added> {
+        let id = page
+            .doi
+            .as_deref()
+            .and_then(|d| crate::source::dois(d).into_iter().next())
+            .map(Source::Doi)
+            .or_else(|| resolve::from_metas(&page.tags))
+            .or_else(|| match Source::of(&page.url) {
+                Source::Url(_) | Source::Words(_) | Source::Nothing => None,
+                id => Some(id),
+            });
+        let found = match id {
+            Some(id) => Some(resolve::by_source(self.net, &id)?),
+            None => resolve::from_tags(&page.tags, &page.url),
+        };
+        let Some(mut found) = found else {
+            return match &page.pdf {
+                Some(pdf) => self.add_pdf(pdf, &page.url),
+                None => bail!("{} names no paper paperstack can tell", page.url),
+            };
+        };
+        if let Some(pdf) = &page.pdf {
+            let reading = pdf::read(pdf)?;
+            let text = reading.text();
+            if text.split_whitespace().count() >= 20 && !pdf::has_title(found.title(), &text) {
+                bail!(
+                    "the PDF is not \"{}\": a supplement, or another paper's; nothing added",
+                    found.title()
+                );
+            }
+        }
+        if let Some(url) = &page.pdf_url {
+            found.pdfs.insert(0, url.clone());
+        }
+        let how = format!("the page {}", page.url);
+        self.file(found, page.pdf.as_deref(), &how)
     }
 
     /// The paper a PDF is, with the PDF.
