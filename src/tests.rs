@@ -336,6 +336,15 @@ fn reads_ids_in_publishers_addresses() {
         crate::source::arxiv_ids("arXiv:2412.08821v1 [cs.CL] 11 Dec 2024"),
         ["2412.08821"]
     );
+    assert_eq!(
+        crate::source::unversioned("solv-int/9901001v2"),
+        "solv-int/9901001"
+    );
+    assert_eq!(crate::source::unversioned("2412.08821"), "2412.08821");
+    assert_eq!(
+        Source::of("https://arxiv.org/abs/solv-int/9901001v1"),
+        Source::Arxiv("solv-int/9901001".into())
+    );
 }
 
 #[test]
@@ -344,7 +353,7 @@ fn reads_a_pages_meta_tags() {
         <meta content="10.1038/s41586-020-2649-2" name="citation_doi">
         <meta name="citation_pdf_url" content="https://x.org/a.pdf"/></head>"#;
     assert_eq!(
-        crate::resolve::from_page(html),
+        crate::resolve::from_metas(&crate::resolve::metas(html)),
         Some(Source::Doi("10.1038/s41586-020-2649-2".into()))
     );
     let metas = crate::resolve::metas(html);
@@ -408,7 +417,10 @@ fn reads_a_paper_from_a_pages_tags() {
         <meta name="citation_volume" content="30">
         <meta name="citation_firstpage" content="5998"><meta name="citation_lastpage" content="6008">
         <meta name="citation_publication_date" content="2017">"#;
-    assert_eq!(crate::resolve::from_page(html), None);
+    assert_eq!(
+        crate::resolve::from_metas(&crate::resolve::metas(html)),
+        None
+    );
     let found = crate::resolve::from_tags(&crate::resolve::metas(html), "https://papers.nips.cc/x")
         .unwrap();
     assert_eq!(found.csl["type"], "paper-conference");

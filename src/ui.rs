@@ -88,7 +88,7 @@ fn search(f: &mut Frame, app: &App, area: Rect) {
     if app.searching {
         spans.push(Span::styled("▏", Style::new().fg(Color::Yellow)));
     }
-    let all = app.shelves.get(1).map_or(0, |(_, n)| *n);
+    let all = app.total();
     let right = format!(
         "{} of {all} references · {} ",
         app.shown.len(),

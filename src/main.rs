@@ -140,14 +140,39 @@ fn default_root() -> PathBuf {
 fn open(root: &Path) -> anyhow::Result<(Library, Index)> {
     let lib = Library::open(root)?;
     let mut index = Index::open(&index::default_path(&lib.root))?;
-    let done = index.refresh(&lib)?;
+    report(&index.refresh(&lib)?);
+    Ok((lib, index))
+}
+
+/// Say on stderr what a refresh could not read.
+fn report(done: &index::Refresh) {
     for e in &done.errors {
         eprintln!("paperstack: {e}");
     }
     for c in &done.conflicts {
         eprintln!("paperstack: a conflicted copy, not read: {}", c.display());
     }
-    Ok((lib, index))
+}
+
+/// Watch `dirs` and the inbox, and serve the extension at `port` if one is
+/// given, until stopped.
+fn run_daemon(
+    root: &Path,
+    net: &net::Net,
+    port: Option<u16>,
+    dirs: &[PathBuf],
+    take: bool,
+    folders: Vec<String>,
+) -> anyhow::Result<()> {
+    let (lib, mut index) = open(root)?;
+    let watched = daemon::folders(&lib, dirs, take);
+    daemon::Daemon {
+        lib: &lib,
+        index: &mut index,
+        net,
+        folders,
+    }
+    .run(port, &watched)
 }
 
 /// The address given to registries: `--email`, else git's.
@@ -199,34 +224,14 @@ fn main() -> anyhow::Result<()> {
             cli::print_added(&lib, &done, json)
         }
         Some(Command::Watch { dirs, take, folder }) => {
-            let (lib, mut index) = open(&args.library)?;
-            let net = net();
-            let watched = daemon::folders(&lib, &dirs, take);
-            daemon::Daemon {
-                lib: &lib,
-                index: &mut index,
-                net: &net,
-                folders: folder,
-            }
-            .run(None, &watched)
+            run_daemon(&args.library, &net(), None, &dirs, take, folder)
         }
         Some(Command::Serve {
             port,
             watch,
             take,
             folder,
-        }) => {
-            let (lib, mut index) = open(&args.library)?;
-            let net = net();
-            let watched = daemon::folders(&lib, &watch, take);
-            daemon::Daemon {
-                lib: &lib,
-                index: &mut index,
-                net: &net,
-                folders: folder,
-            }
-            .run(Some(port), &watched)
-        }
+        }) => run_daemon(&args.library, &net(), Some(port), &watch, take, folder),
         Some(Command::Pdf { file, title }) => {
             let reading = pdf::read(&std::fs::read(&file)?)?;
             if let Some(t) = title {
@@ -284,12 +289,7 @@ fn main() -> anyhow::Result<()> {
             let lib = Library::open(&args.library)?;
             let mut index = Index::open(&index::default_path(&lib.root))?;
             let done = index.refresh(&lib)?;
-            for e in &done.errors {
-                eprintln!("paperstack: {e}");
-            }
-            for c in &done.conflicts {
-                eprintln!("paperstack: a conflicted copy, not read: {}", c.display());
-            }
+            report(&done);
             println!(
                 "{} read, {} gone, {} papers",
                 done.read,

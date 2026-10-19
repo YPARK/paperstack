@@ -1,7 +1,7 @@
 //! What `paperstack find` and `get` print: for a person, a line a paper;
 //! for an agent, JSON; for a document, BibTeX, CSL JSON or citation keys.
 
-use crate::add::{Added, Outcome};
+use crate::add::Added;
 use crate::bibtex;
 use crate::index::Hit;
 use crate::library::Library;
@@ -87,21 +87,7 @@ pub fn print_added(
     } else {
         for (given, r) in done {
             match r {
-                Ok(a) => {
-                    let what = match a.outcome {
-                        Outcome::Added => "added",
-                        Outcome::Known => "already here",
-                        Outcome::Published => "now as published",
-                        Outcome::PdfAttached => "given its PDF",
-                    };
-                    let pdf = if a.has_pdf { "" } else { ", no PDF" };
-                    println!(
-                        "{:<24} {what}, by {}{pdf}: {}",
-                        a.key,
-                        a.how,
-                        a.path.display()
-                    );
-                }
+                Ok(a) => println!("{:<24} {}: {}", a.key, a.summary(), a.path.display()),
                 Err(e) => eprintln!("paperstack: {given}: {e:#}"),
             }
         }

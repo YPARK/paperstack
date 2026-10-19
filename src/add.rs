@@ -56,8 +56,6 @@ pub struct Added {
 #[derive(Clone, Debug, Default, serde::Deserialize)]
 pub struct Page {
     pub url: String,
-    #[serde(default)]
-    pub doi: Option<String>,
     /// The page's `<meta>` tags, name lowercase, then content.
     #[serde(default)]
     pub tags: Vec<(String, String)>,
@@ -68,6 +66,25 @@ pub struct Page {
     /// base64; decoded on arrival.
     #[serde(skip)]
     pub pdf: Option<Vec<u8>>,
+}
+
+impl Added {
+    /// What became of it, and how it was told: `added, by DOI …, no PDF`.
+    pub fn summary(&self) -> String {
+        let what = match self.outcome {
+            Outcome::Added => "added",
+            Outcome::Known => "already here",
+            Outcome::Published => "now as published",
+            Outcome::PdfAttached => "given its PDF",
+        };
+        let pdf = if self.has_pdf { "" } else { ", no PDF" };
+        format!("{what}, by {}{pdf}", self.how)
+    }
+}
+
+/// An error, its causes after it, on one line.
+pub fn one_line(e: &anyhow::Error) -> String {
+    format!("{e:#}").replace('\n', " ")
 }
 
 pub struct Adder<'a> {
@@ -168,16 +185,10 @@ impl Adder<'_> {
     /// it is, and a PDF that is not that paper's, as a supplement, is not
     /// filed with it.
     pub fn add_from_browser(&mut self, page: &Page) -> anyhow::Result<Added> {
-        let id = page
-            .doi
-            .as_deref()
-            .and_then(|d| crate::source::dois(d).into_iter().next())
-            .map(Source::Doi)
-            .or_else(|| resolve::from_metas(&page.tags))
-            .or_else(|| match Source::of(&page.url) {
-                Source::Url(_) | Source::Words(_) | Source::Nothing => None,
-                id => Some(id),
-            });
+        let id = resolve::from_metas(&page.tags).or_else(|| match Source::of(&page.url) {
+            Source::Url(_) | Source::Words(_) | Source::Nothing => None,
+            id => Some(id),
+        });
         let found = match id {
             Some(id) => Some(resolve::by_source(self.net, &id)?),
             None => resolve::from_tags(&page.tags, &page.url),
@@ -221,7 +232,13 @@ impl Adder<'_> {
                 return self.file(found, Some(bytes), &how);
             }
         }
-        for query in pdf::queries(&reading) {
+        // The same text may be a block and a line; a candidate turned down
+        // for one query would be for the next.
+        let mut queries = pdf::queries(&reading);
+        let mut seen = std::collections::HashSet::new();
+        queries.retain(|q| seen.insert(q.clone()));
+        let mut tried = std::collections::HashSet::new();
+        for query in queries {
             let mut candidates = resolve::search_crossref(self.net, &query).unwrap_or_default();
             if query.len() < 300 {
                 candidates.extend(resolve::search_openalex(self.net, &query).unwrap_or_default());
@@ -231,6 +248,9 @@ impl Adder<'_> {
                 .iter()
                 .filter(|c| c.is_paper() && pdf::has_title(&c.title, &text))
             {
+                if !tried.insert((c.doi.clone(), c.arxiv.clone())) {
+                    continue;
+                }
                 let found = match (&c.doi, &c.arxiv) {
                     (Some(doi), _) => resolve::by_doi(self.net, doi),
                     (None, Some(id)) => resolve::by_arxiv(self.net, id),
@@ -274,11 +294,7 @@ impl Adder<'_> {
         record.key = new_key(&record, &identity, |k| {
             index.get(k).ok().flatten().is_some()
         });
-        let bytes = match pdf {
-            Some(b) => Some(b.to_vec()),
-            None if self.options.pdf => self.download(&found.pdfs),
-            None => None,
-        };
+        let bytes = self.pdf_bytes(pdf, &found.pdfs);
         if let Some(b) = &bytes {
             record.paperstack.pdf_sha256 = Some(sha256(b));
         }
@@ -312,13 +328,8 @@ impl Adder<'_> {
         {
             return Ok(Some(hit));
         }
-        let year = Record {
-            key: String::new(),
-            csl: found.csl.clone(),
-            paperstack: Meta::default(),
-        }
-        .year();
-        self.index.by_title(found.title(), year)
+        self.index
+            .by_title(found.title(), crate::record::year(&found.csl))
     }
 
     fn merge(
@@ -349,11 +360,7 @@ impl Adder<'_> {
         let bytes = if hit.has_pdf {
             None
         } else {
-            match pdf {
-                Some(b) => Some(b.to_vec()),
-                None if self.options.pdf => self.download(&found.pdfs),
-                None => None,
-            }
+            self.pdf_bytes(pdf, &found.pdfs)
         };
         if let Some(b) = &bytes {
             record.paperstack.pdf_sha256 = Some(sha256(b));
@@ -362,16 +369,15 @@ impl Adder<'_> {
                 outcome = Outcome::PdfAttached;
             }
         }
-        for f in &self.options.folders {
-            if !record.paperstack.folders.contains(f) {
-                record.paperstack.folders.push(f.clone());
-                changed = true;
-            }
-        }
-        for l in &self.options.labels {
-            if !record.paperstack.labels.contains(l) {
-                record.paperstack.labels.push(l.clone());
-                changed = true;
+        for (have, wanted) in [
+            (&mut record.paperstack.folders, &self.options.folders),
+            (&mut record.paperstack.labels, &self.options.labels),
+        ] {
+            for w in wanted {
+                if !have.contains(w) {
+                    have.push(w.clone());
+                    changed = true;
+                }
             }
         }
         let path = if changed {
@@ -392,6 +398,15 @@ impl Adder<'_> {
             outcome,
             how: how.to_string(),
         })
+    }
+
+    /// The PDF given, else, if asked for, an open copy downloaded.
+    fn pdf_bytes(&self, given: Option<&[u8]>, urls: &[String]) -> Option<Vec<u8>> {
+        match given {
+            Some(b) => Some(b.to_vec()),
+            None if self.options.pdf => self.download(urls),
+            None => None,
+        }
     }
 
     fn download(&self, urls: &[String]) -> Option<Vec<u8>> {

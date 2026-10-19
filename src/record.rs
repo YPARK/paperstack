@@ -118,23 +118,7 @@ impl Record {
 
     /// The year issued, from any of CSL's forms of a date.
     pub fn year(&self) -> Option<i32> {
-        let issued = self.csl.get("issued")?;
-        if let Some(y) = issued
-            .get("date-parts")
-            .and_then(|d| d.get(0)?.get(0))
-            .and_then(|y| y.as_i64().or_else(|| y.as_str()?.trim().parse().ok()))
-        {
-            return i32::try_from(y).ok();
-        }
-        let raw = issued
-            .get("raw")
-            .or_else(|| issued.get("literal"))
-            .and_then(Value::as_str)
-            .or_else(|| issued.as_str())?;
-        raw.split(|c: char| !c.is_ascii_digit())
-            .find(|w| w.len() == 4)?
-            .parse()
-            .ok()
+        year(&self.csl)
     }
 
     /// The paper as a CSL item, its `id` the key.
@@ -145,6 +129,27 @@ impl Record {
         }
         item
     }
+}
+
+/// The year a CSL item was issued, from any of CSL's forms of a date.
+pub fn year(csl: &Value) -> Option<i32> {
+    let issued = csl.get("issued")?;
+    if let Some(y) = issued
+        .get("date-parts")
+        .and_then(|d| d.get(0)?.get(0))
+        .and_then(|y| y.as_i64().or_else(|| y.as_str()?.trim().parse().ok()))
+    {
+        return i32::try_from(y).ok();
+    }
+    let raw = issued
+        .get("raw")
+        .or_else(|| issued.get("literal"))
+        .and_then(Value::as_str)
+        .or_else(|| issued.as_str())?;
+    raw.split(|c: char| !c.is_ascii_digit())
+        .find(|w| w.len() == 4)?
+        .parse()
+        .ok()
 }
 
 /// A key in Paperpile's form, `Surname2025-xy`: the first author's family

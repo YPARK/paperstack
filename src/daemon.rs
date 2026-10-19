@@ -6,7 +6,7 @@
 //! The server answers only this machine, and of browsers only their
 //! extensions: a page cannot add papers.
 
-use crate::add::{Added, Adder, Options, Page};
+use crate::add::{Added, Adder, Options, Page, one_line};
 use crate::index::Index;
 use crate::library::{self, Library};
 use crate::net::Net;
@@ -134,7 +134,7 @@ impl Daemon<'_> {
                     let _ = std::fs::remove_file(path);
                 }
             }
-            Err(e) => say(&format!("{e:#}").replace('\n', " ")),
+            Err(e) => say(&one_line(&e)),
         }
     }
 
@@ -203,7 +203,7 @@ impl Daemon<'_> {
                         )
                     }
                     Err(e) => {
-                        let e = format!("{e:#}").replace('\n', " ");
+                        let e = one_line(&e);
                         say(&e);
                         reply(&mut stream, 422, &json!({ "error": e }))
                     }
@@ -216,9 +216,16 @@ impl Daemon<'_> {
 
     /// Add what the extension sent, and its title as filed.
     fn add(&mut self, body: &[u8]) -> anyhow::Result<(Added, String)> {
-        let sent: Value = serde_json::from_slice(body).context("not JSON")?;
-        let mut page: Page = serde_json::from_value(sent.clone()).context("not a page")?;
-        if let Some(b64) = sent.get("pdf").and_then(Value::as_str) {
+        /// The page, and its PDF in base64.
+        #[derive(serde::Deserialize)]
+        struct Sent {
+            #[serde(flatten)]
+            page: Page,
+            #[serde(default)]
+            pdf: Option<String>,
+        }
+        let Sent { mut page, pdf } = serde_json::from_slice(body).context("not a page")?;
+        if let Some(b64) = pdf {
             let pdf = base64::engine::general_purpose::STANDARD
                 .decode(b64)
                 .context("the PDF is not base64")?;
@@ -260,14 +267,7 @@ fn pdfs(dir: &Path) -> Vec<(PathBuf, u64, SystemTime)> {
 }
 
 fn tell(a: &Added) -> String {
-    let pdf = if a.has_pdf { "" } else { ", no PDF" };
-    format!(
-        "{} {:?}, by {}{pdf}: {}",
-        a.key,
-        a.outcome,
-        a.how,
-        a.path.display()
-    )
+    format!("{} {}: {}", a.key, a.summary(), a.path.display())
 }
 
 fn say(what: &str) {

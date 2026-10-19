@@ -250,25 +250,8 @@ impl Index {
             sql.push_str(&format!(" LIMIT {n}"));
         }
         let mut stmt = self.db.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(all), |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, bool>(2)?,
-                r.get::<_, f64>(3)?,
-            ))
-        })?;
-        let mut hits = Vec::new();
-        for row in rows {
-            let (path, record, has_pdf, score) = row?;
-            hits.push(Hit {
-                record: serde_json::from_str(&record)?,
-                path: PathBuf::from(path),
-                has_pdf,
-                score,
-            });
-        }
-        Ok(hits)
+        let rows = stmt.query_map(params_from_iter(all), row)?;
+        rows.map(|r| hit(r?)).collect()
     }
 
     /// The paper with the key, or once with it, as an alias.
@@ -290,14 +273,7 @@ impl Index {
     /// The paper with the same title, in its words, published within a
     /// year of `year`, as a preprint and its paper may be.
     pub fn by_title(&self, title: &str, year: Option<i32>) -> anyhow::Result<Option<Hit>> {
-        let words = |s: &str| -> String {
-            deunicode::deunicode(s)
-                .to_lowercase()
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .filter(|w| !w.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+        let words = |s: &str| crate::pdf::words(s).join(" ");
         let wanted = words(title);
         if wanted.len() < 12 {
             return Ok(None);
@@ -316,29 +292,15 @@ impl Index {
     }
 
     fn one(&self, condition: &str, arg: &str) -> anyhow::Result<Option<Hit>> {
-        let row = self
-            .db
+        self.db
             .query_row(
-                &format!("SELECT path, record, has_pdf FROM paper WHERE {condition}"),
+                &format!("SELECT path, record, has_pdf, 0.0 FROM paper WHERE {condition}"),
                 [arg],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, bool>(2)?,
-                    ))
-                },
+                row,
             )
-            .optional()?;
-        row.map(|(path, record, has_pdf)| {
-            Ok(Hit {
-                record: serde_json::from_str(&record)?,
-                path: PathBuf::from(path),
-                has_pdf,
-                score: 0.0,
-            })
-        })
-        .transpose()
+            .optional()?
+            .map(hit)
+            .transpose()
     }
 
     pub fn shelves(&self) -> anyhow::Result<Shelves> {
@@ -363,12 +325,29 @@ impl Index {
     }
 }
 
+/// A row of `path, record, has_pdf, score`, as `search` and `one` select.
+fn row(r: &rusqlite::Row) -> rusqlite::Result<(String, String, bool, f64)> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+}
+
+fn hit((path, record, has_pdf, score): (String, String, bool, f64)) -> anyhow::Result<Hit> {
+    Ok(Hit {
+        record: serde_json::from_str(&record)?,
+        path: PathBuf::from(path),
+        has_pdf,
+        score,
+    })
+}
+
 fn remove(tx: &rusqlite::Transaction, id: i64) -> rusqlite::Result<()> {
     for table in ["folder", "label", "alias"] {
-        tx.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
+        tx.prepare_cached(&format!("DELETE FROM {table} WHERE id = ?1"))?
+            .execute([id])?;
     }
-    tx.execute("DELETE FROM fts WHERE rowid = ?1", [id])?;
-    tx.execute("DELETE FROM paper WHERE id = ?1", [id])?;
+    tx.prepare_cached("DELETE FROM fts WHERE rowid = ?1")?
+        .execute([id])?;
+    tx.prepare_cached("DELETE FROM paper WHERE id = ?1")?
+        .execute([id])?;
     Ok(())
 }
 
@@ -390,44 +369,38 @@ fn insert(
         .collect::<Vec<_>>()
         .join("; ");
     let m = &r.paperstack;
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO paper (key, path, mtime, size, year, added, first_author, title, doi,
                             arxiv, starred, has_pdf, has_abstract, record)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)",
-        params![
-            r.key,
-            path,
-            mtime,
-            size,
-            r.year(),
-            m.added,
-            first,
-            r.title(),
-            r.doi(),
-            m.arxiv,
-            m.starred,
-            r.abstract_text().is_some(),
-            serde_json::to_string(r).unwrap_or_default(),
-        ],
-    )?;
+    )?
+    .execute(params![
+        r.key,
+        path,
+        mtime,
+        size,
+        r.year(),
+        m.added,
+        first,
+        r.title(),
+        r.doi(),
+        m.arxiv,
+        m.starred,
+        r.abstract_text().is_some(),
+        serde_json::to_string(r).unwrap_or_default(),
+    ])?;
     let id = tx.last_insert_rowid();
     for f in &m.folders {
-        tx.execute(
-            "INSERT INTO folder (id, name) VALUES (?1, ?2)",
-            params![id, f],
-        )?;
+        tx.prepare_cached("INSERT INTO folder (id, name) VALUES (?1, ?2)")?
+            .execute(params![id, f])?;
     }
     for l in &m.labels {
-        tx.execute(
-            "INSERT INTO label (id, name) VALUES (?1, ?2)",
-            params![id, l],
-        )?;
+        tx.prepare_cached("INSERT INTO label (id, name) VALUES (?1, ?2)")?
+            .execute(params![id, l])?;
     }
     for a in &m.aliases {
-        tx.execute(
-            "INSERT OR IGNORE INTO alias (alias, id) VALUES (?1, ?2)",
-            params![a, id],
-        )?;
+        tx.prepare_cached("INSERT OR IGNORE INTO alias (alias, id) VALUES (?1, ?2)")?
+            .execute(params![a, id])?;
     }
     let keywords = r
         .csl
@@ -440,19 +413,19 @@ fn insert(
         .flatten()
         .collect::<Vec<_>>()
         .join(" ");
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO fts (rowid, title, abstract, authors, venue, keywords, ids)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            id,
-            r.title(),
-            r.abstract_text().unwrap_or_default(),
-            names,
-            r.venue(),
-            keywords,
-            ids
-        ],
-    )?;
+    )?
+    .execute(params![
+        id,
+        r.title(),
+        r.abstract_text().unwrap_or_default(),
+        names,
+        r.venue(),
+        keywords,
+        ids
+    ])?;
     Ok(())
 }
 

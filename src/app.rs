@@ -2,7 +2,7 @@
 //! search line are one query, searched in the index; a star is written to
 //! the paper's record, and read back into the index.
 
-use crate::add::{Adder, Options};
+use crate::add::{Adder, Options, one_line};
 use crate::bibtex;
 use crate::index::{Hit, Index, Shelves, Sort};
 use crate::library::Library;
@@ -164,6 +164,14 @@ impl App {
         Ok(())
     }
 
+    /// How many papers the library holds, as the shelf All counts them.
+    pub fn total(&self) -> usize {
+        self.shelves
+            .iter()
+            .find(|(s, _)| *s == Shelf::All)
+            .map_or(0, |(_, n)| *n)
+    }
+
     pub fn current(&self) -> Option<&Hit> {
         self.shown.get(self.list.selected()?)
     }
@@ -204,10 +212,10 @@ impl App {
             .filter(|h| self.marked.contains(&h.record.key))
             .cloned()
             .collect();
-        for key in &self.marked {
-            if !all.iter().any(|h| &h.record.key == key)
-                && let Ok(Some(h)) = self.index.get(key)
-            {
+        let shown: std::collections::HashSet<String> =
+            all.iter().map(|h| h.record.key.clone()).collect();
+        for key in self.marked.iter().filter(|k| !shown.contains(*k)) {
+            if let Ok(Some(h)) = self.index.get(key) {
                 all.push(h);
             }
         }
@@ -339,10 +347,10 @@ impl App {
             }
             KeyCode::Char('s') => self.star(),
             KeyCode::Char('r') => {
-                let before = self.shelves.get(1).map_or(0, |(_, n)| *n);
+                let before = self.total();
                 match self.index.refresh(&self.lib).and_then(|_| self.restock()) {
                     Ok(()) => {
-                        let now = self.shelves.get(1).map_or(0, |(_, n)| *n);
+                        let now = self.total();
                         self.status = format!("{} papers, {} new", now, now.saturating_sub(before));
                     }
                     Err(e) => self.status = format!("{e:#}"),
@@ -425,16 +433,17 @@ impl App {
         .add(line);
         match done {
             Ok(added) => {
-                let pdf = if added.has_pdf { "" } else { ", no PDF" };
-                self.status = format!("{}: {:?}, by {}{pdf}", added.key, added.outcome, added.how);
-                let _ = self.restock();
+                self.status = format!("{}: {}", added.key, added.summary());
+                if let Err(e) = self.restock() {
+                    self.status = one_line(&e);
+                }
                 self.query.clear();
                 self.narrow();
                 if let Some(at) = self.shown.iter().position(|h| h.record.key == added.key) {
                     self.list.select(Some(at));
                 }
             }
-            Err(e) => self.status = format!("{e:#}").replace('\n', " "),
+            Err(e) => self.status = one_line(&e),
         }
     }
 
@@ -486,7 +495,9 @@ fn paste() -> String {
 fn copy(text: &str, what: &str) -> String {
     let child = Command::new("pbcopy").stdin(Stdio::piped()).spawn();
     match child.and_then(|mut c| {
-        c.stdin.take().map(|mut i| i.write_all(text.as_bytes()));
+        if let Some(mut stdin) = c.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
         c.wait()
     }) {
         Ok(_) => format!("copied {what}"),

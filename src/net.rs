@@ -66,6 +66,13 @@ impl Net {
         }
     }
 
+    /// Add to `query` the address to write to, as `name`, where one is given.
+    pub fn sign<'a>(&'a self, query: &mut Vec<(&'a str, &'a str)>, name: &'a str) {
+        if let Some(e) = &self.email {
+            query.push((name, e));
+        }
+    }
+
     /// JSON from a registry, with `query` in its address.
     pub fn json(&self, url: &str, accept: &str, query: &[(&str, &str)]) -> anyhow::Result<Value> {
         let mut req = self
