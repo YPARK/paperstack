@@ -385,3 +385,32 @@ fn knows_a_paper_already_here() {
     assert!(index.by_title(t, Some(2018)).unwrap().is_some());
     assert!(index.by_title(t, Some(2020)).unwrap().is_none());
 }
+
+#[test]
+fn reads_a_paper_from_a_pages_tags() {
+    // NeurIPS's pages before 2022: Highwire's tags, no DOI.
+    let html = r#"<meta name="citation_title" content="Attention is All you Need">
+        <meta name="citation_author" content="Vaswani, Ashish">
+        <meta name="citation_author" content="Shazeer, Noam">
+        <meta name="citation_journal_title" content="Advances in Neural Information Processing Systems">
+        <meta name="citation_volume" content="30">
+        <meta name="citation_firstpage" content="5998"><meta name="citation_lastpage" content="6008">
+        <meta name="citation_publication_date" content="2017">"#;
+    assert_eq!(crate::resolve::from_page(html), None);
+    let found = crate::resolve::from_tags(&crate::resolve::metas(html), "https://papers.nips.cc/x")
+        .unwrap();
+    assert_eq!(found.csl["type"], "paper-conference");
+    assert_eq!(found.csl["author"][0]["family"], "Vaswani");
+    assert_eq!(found.csl["issued"]["date-parts"][0][0], 2017);
+    assert_eq!(found.csl["page"], "5998-6008");
+    let r = crate::record::Record {
+        key: "Vaswani2017-x".into(),
+        csl: found.csl,
+        paperstack: Default::default(),
+    };
+    let bib = bibtex::entry(&r);
+    assert!(
+        bib.starts_with("@inproceedings{") && bib.contains("booktitle = {Advances in Neural"),
+        "{bib}"
+    );
+}
