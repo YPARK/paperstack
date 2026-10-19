@@ -16,7 +16,7 @@ fn library() -> (tempfile::TempDir, Library, Index) {
     for r in demo::records() {
         lib.save(&r, None).unwrap();
     }
-    let mut index = Index::open(&dir.path().join("index.sqlite")).unwrap();
+    let mut index = Index::open(&dir.path().join("index.json")).unwrap();
     let done = index.refresh(&lib).unwrap();
     assert!(done.errors.is_empty(), "{:?}", done.errors);
     (dir, lib, index)
@@ -27,7 +27,7 @@ fn keys(index: &Index, q: &str, sort: Sort) -> Vec<String> {
         .search(&Query::parse(q), sort, false, None)
         .unwrap()
         .into_iter()
-        .map(|h| h.record.key)
+        .map(|h| h.record.key.clone())
         .collect()
 }
 
@@ -451,4 +451,42 @@ fn reads_pubmeds_abstract() {
         crate::resolve::pubmed_abstract_of("<AbstractText>One part.</AbstractText>").unwrap(),
         "One part."
     );
+}
+
+/// How long a search, as one key typed in the TUI makes, takes among 6,000
+/// papers: `cargo test --release -- --ignored --nocapture searches_6000`.
+#[test]
+#[ignore]
+fn searches_6000_quickly() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::init(&dir.path().join("lib")).unwrap();
+    let demo = demo::records();
+    for i in 0..6000 {
+        let mut r = demo[i % demo.len()].clone();
+        r.key = format!("Author{}{}-{i:04}", i % 900, 1990 + i % 36);
+        r.csl["author"][0] =
+            serde_json::json!({ "family": format!("Author{}", i % 900), "given": "A" });
+        r.csl["issued"] = serde_json::json!({ "date-parts": [[1990 + i % 36]] });
+        lib.save(&r, None).unwrap();
+    }
+    let mut index = Index::open(&dir.path().join("index.json")).unwrap();
+    index.refresh(&lib).unwrap();
+    for q in [
+        "",
+        "p",
+        "pert",
+        "perturbation linear",
+        "author:Huber year:2020..",
+        "\"single cell\" -label:benchmark",
+    ] {
+        let t = std::time::Instant::now();
+        let n = index
+            .search(&Query::parse(q), Sort::Relevance, false, None)
+            .unwrap()
+            .len();
+        println!(
+            "{:>8.2} ms  {n:>5} found  {q:?}",
+            t.elapsed().as_secs_f64() * 1e3
+        );
+    }
 }

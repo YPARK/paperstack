@@ -45,6 +45,8 @@ pub struct Net {
 
 impl Net {
     pub fn new(email: Option<String>) -> Self {
+        // Once a process; again, it is already the provider.
+        let _ = rustls_rustcrypto::provider().install_default();
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .build()

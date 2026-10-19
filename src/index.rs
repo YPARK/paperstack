@@ -1,18 +1,35 @@
-//! The index searched: SQLite, with FTS5 over the text of the records. It
-//! is kept on this machine, not in the library, as a cache: built again
-//! from the records whenever they change, reading only those changed, and
-//! from nothing when its schema does.
+//! The index searched: every record, read once and kept in memory with the
+//! words of its text, ranked by BM25 as a search engine ranks pages. It is
+//! a cache, kept on this machine as one file, not in the library: built
+//! again from the records whenever they change, reading only those
+//! changed, and from nothing when its form does.
 
 use crate::library::{self, Library};
+use crate::pdf::words;
 use crate::query::{self, Field, Query, Term};
 use crate::record::Record;
-use anyhow::Context;
-use rusqlite::types::Value as Sql;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-const SCHEMA: i64 = 1;
+/// The cache's form; a cache of another is read from nothing.
+const VERSION: u32 = 1;
+
+/// The text searched, by field, and how much a word in each counts.
+const FIELDS: usize = 6;
+const TITLE: usize = 0;
+const ABSTRACT: usize = 1;
+const AUTHORS: usize = 2;
+const VENUE: usize = 3;
+const KEYWORDS: usize = 4;
+const IDS: usize = 5;
+const WEIGHTS: [f64; FIELDS] = [10.0, 2.0, 5.0, 2.0, 2.0, 5.0];
+/// BM25's: how soon more of a word stops counting, and how much a long
+/// field's words count less.
+const K1: f64 = 1.2;
+const B: f64 = 0.75;
 
 /// The order papers are listed in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, clap::ValueEnum)]
@@ -47,31 +64,16 @@ impl Sort {
             Sort::Title => "title",
         }
     }
-
-    fn order(self, searched: bool, reverse: bool) -> String {
-        let (asc, desc) = if reverse {
-            ("DESC", "ASC")
-        } else {
-            ("ASC", "DESC")
-        };
-        match self {
-            Sort::Relevance if searched => format!("score {asc}, p.added {desc}"),
-            Sort::Relevance | Sort::Added => format!("p.added {desc}"),
-            Sort::Year => format!("p.year IS NULL, p.year {desc}, p.added {desc}"),
-            Sort::Author => format!("p.first_author COLLATE NOCASE {asc}, p.year {asc}"),
-            Sort::Title => format!("p.title COLLATE NOCASE {asc}"),
-        }
-    }
 }
 
 /// A paper found.
 #[derive(Clone, Debug)]
 pub struct Hit {
-    pub record: Record,
+    pub record: Arc<Record>,
     /// The record's file, from the library's root.
     pub path: PathBuf,
     pub has_pdf: bool,
-    /// FTS5's bm25, lower better; 0 where nothing was searched for.
+    /// BM25, higher better; 0 where nothing was searched for.
     pub score: f64,
 }
 
@@ -96,8 +98,101 @@ pub struct Shelves {
     pub labels: Vec<(String, usize)>,
 }
 
+/// A record as the cache keeps it, with what tells whether its file
+/// changed since.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    path: String,
+    mtime: i64,
+    size: i64,
+    has_pdf: bool,
+    record: Arc<Record>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cache {
+    version: u32,
+    papers: Vec<Kept>,
+}
+
+/// A paper, with what searching and sorting it takes, worked out once.
+struct Paper {
+    kept: Kept,
+    words: [Vec<String>; FIELDS],
+    year: Option<i32>,
+    first_author: String,
+    title: String,
+    folders: Vec<String>,
+    labels: Vec<String>,
+    keys: Vec<String>,
+}
+
+impl Paper {
+    fn new(kept: Kept) -> Self {
+        let r = &kept.record;
+        let authors = r.authors();
+        let names = authors
+            .iter()
+            .map(|n| format!("{} {}", n.family, n.given))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let keyword = r
+            .csl
+            .get("keyword")
+            .and_then(|k| k.as_str())
+            .unwrap_or_default();
+        let ids = [Some(r.key.as_str()), r.doi(), r.paperstack.arxiv.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let lower = |v: &[String]| v.iter().map(|s| s.to_lowercase()).collect();
+        let mut keys = vec![r.key.to_lowercase()];
+        keys.extend(r.paperstack.aliases.iter().map(|a| a.to_lowercase()));
+        Paper {
+            words: [
+                words(r.title()),
+                words(r.abstract_text().unwrap_or_default()),
+                words(&names),
+                words(r.venue()),
+                words(keyword),
+                words(&ids),
+            ],
+            year: r.year(),
+            first_author: authors
+                .first()
+                .map(|n| n.family.to_lowercase())
+                .unwrap_or_default(),
+            title: r.title().to_lowercase(),
+            folders: lower(&r.paperstack.folders),
+            labels: lower(&r.paperstack.labels),
+            keys,
+            kept,
+        }
+    }
+
+    fn hit(&self, score: f64) -> Hit {
+        Hit {
+            record: Arc::clone(&self.kept.record),
+            path: PathBuf::from(&self.kept.path),
+            has_pdf: self.kept.has_pdf,
+            score,
+        }
+    }
+
+    fn record(&self) -> &Record {
+        &self.kept.record
+    }
+}
+
 pub struct Index {
-    db: Connection,
+    /// The cache's file.
+    path: PathBuf,
+    papers: Vec<Paper>,
+    /// By key and alias, lowercase.
+    by_key: HashMap<String, usize>,
+    /// Each field's mean length in words, as BM25 weighs a field's length.
+    mean: [f64; FIELDS],
 }
 
 /// Where the index of the library at `root` is kept: the user's cache, one
@@ -113,42 +208,45 @@ pub fn default_path(root: &Path) -> PathBuf {
     let id = crate::record::fnv(root.to_string_lossy().as_bytes(), 0);
     cache
         .join("paperstack")
-        .join(format!("index-{id:016x}.sqlite"))
+        .join(format!("index-{id:016x}.json"))
 }
 
 impl Index {
+    /// The index cached at `path`; empty where there is none, or one of
+    /// another form, or one that cannot be read, as after a crash.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let db = Connection::open(path)
-            .with_context(|| format!("cannot open the index {}", path.display()))?;
-        let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != SCHEMA {
-            db.execute_batch(
-                "DROP TABLE IF EXISTS paper; DROP TABLE IF EXISTS folder;
-                 DROP TABLE IF EXISTS label; DROP TABLE IF EXISTS alias;
-                 DROP TABLE IF EXISTS fts;",
-            )?;
+        let papers = std::fs::read(path)
+            .ok()
+            .and_then(|data| serde_json::from_slice::<Cache>(&data).ok())
+            .filter(|c| c.version == VERSION)
+            .map(|c| c.papers)
+            .unwrap_or_default();
+        let mut index = Index {
+            path: path.to_path_buf(),
+            papers: papers.into_iter().map(Paper::new).collect(),
+            by_key: HashMap::new(),
+            mean: [0.0; FIELDS],
+        };
+        index.reckon();
+        Ok(index)
+    }
+
+    /// Work out again what is worked out over all papers.
+    fn reckon(&mut self) {
+        self.by_key.clear();
+        for (i, p) in self.papers.iter().enumerate() {
+            for k in &p.keys {
+                self.by_key.entry(k.clone()).or_insert(i);
+            }
         }
-        db.execute_batch(&format!(
-            "PRAGMA journal_mode = WAL;
-             CREATE TABLE IF NOT EXISTS paper (
-                 id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
-                 mtime INTEGER, size INTEGER, year INTEGER, added TEXT,
-                 first_author TEXT, title TEXT, doi TEXT, arxiv TEXT,
-                 starred INTEGER, has_pdf INTEGER, has_abstract INTEGER, record TEXT);
-             CREATE TABLE IF NOT EXISTS folder (id INTEGER, name TEXT);
-             CREATE TABLE IF NOT EXISTS label (id INTEGER, name TEXT);
-             CREATE TABLE IF NOT EXISTS alias (alias TEXT PRIMARY KEY, id INTEGER);
-             CREATE INDEX IF NOT EXISTS folder_id ON folder(id);
-             CREATE INDEX IF NOT EXISTS label_id ON label(id);
-             CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
-                 title, abstract, authors, venue, keywords, ids,
-                 tokenize = 'unicode61 remove_diacritics 2');
-             PRAGMA user_version = {SCHEMA};"
-        ))?;
-        Ok(Index { db })
+        let n = self.papers.len().max(1) as f64;
+        for f in 0..FIELDS {
+            let total: usize = self.papers.iter().map(|p| p.words[f].len()).sum();
+            self.mean[f] = total as f64 / n;
+        }
     }
 
     /// Bring the index up to the records: read those new or changed since,
@@ -159,58 +257,68 @@ impl Index {
             conflicts: walk.conflicts,
             ..Refresh::default()
         };
-        let tx = self.db.transaction()?;
-        let known: HashMap<String, (i64, i64, i64)> = {
-            let mut q = tx.prepare("SELECT path, id, mtime, size FROM paper")?;
-            q.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
-                .collect::<Result<_, _>>()?
-        };
-        let mut seen = std::collections::HashSet::new();
+        let mut old: HashMap<String, Paper> = std::mem::take(&mut self.papers)
+            .into_iter()
+            .map(|p| (p.kept.path.clone(), p))
+            .collect();
+        let mut keys: HashSet<String> = HashSet::new();
+        let mut changed = false;
         for found in &walk.records {
             let rel = found.path.to_string_lossy().into_owned();
-            seen.insert(rel.clone());
-            if let Some(&(_, mtime, size)) = known.get(&rel)
-                && mtime == found.mtime
-                && size == found.size
-            {
+            let has_pdf = walk.pdfs.contains(&found.path);
+            let paper = match old.remove(&rel) {
+                Some(mut p) if p.kept.mtime == found.mtime && p.kept.size == found.size => {
+                    changed |= p.kept.has_pdf != has_pdf;
+                    p.kept.has_pdf = has_pdf;
+                    p
+                }
+                _ => match library::read(&lib.root.join(&found.path)) {
+                    Ok(record) => {
+                        done.read += 1;
+                        changed = true;
+                        Paper::new(Kept {
+                            path: rel.clone(),
+                            mtime: found.mtime,
+                            size: found.size,
+                            has_pdf,
+                            record: Arc::new(record),
+                        })
+                    }
+                    Err(e) => {
+                        done.errors.push(format!("{e:#}"));
+                        continue;
+                    }
+                },
+            };
+            if !keys.insert(paper.keys[0].clone()) {
+                done.errors.push(format!(
+                    "{rel}: the key {} is another's too",
+                    paper.record().key
+                ));
                 continue;
             }
-            if let Some(&(id, _, _)) = known.get(&rel) {
-                remove(&tx, id)?;
-            }
-            let record = match library::read(&lib.root.join(&found.path)) {
-                Ok(r) => r,
-                Err(e) => {
-                    done.errors.push(format!("{e:#}"));
-                    continue;
-                }
-            };
-            match insert(&tx, &record, &rel, found.mtime, found.size) {
-                Ok(()) => done.read += 1,
-                Err(e) => done.errors.push(format!("{rel}: {e}")),
-            }
+            self.papers.push(paper);
         }
-        for (path, (id, _, _)) in &known {
-            if !seen.contains(path) {
-                remove(&tx, *id)?;
-                done.removed += 1;
-            }
+        done.removed = old.len();
+        changed |= done.removed > 0;
+        self.reckon();
+        if changed {
+            self.save()?;
         }
-        {
-            let mut q = tx.prepare("SELECT id, path, has_pdf FROM paper")?;
-            let rows: Vec<(i64, String, bool)> = q
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .collect::<Result<_, _>>()?;
-            let mut set = tx.prepare("UPDATE paper SET has_pdf = ?2 WHERE id = ?1")?;
-            for (id, path, had) in rows {
-                let has = walk.pdfs.contains(Path::new(&path));
-                if has != had {
-                    set.execute(params![id, has])?;
-                }
-            }
-        }
-        tx.commit()?;
         Ok(done)
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        #[derive(Serialize)]
+        struct CacheRef<'a> {
+            version: u32,
+            papers: Vec<&'a Kept>,
+        }
+        let cache = CacheRef {
+            version: VERSION,
+            papers: self.papers.iter().map(|p| &p.kept).collect(),
+        };
+        library::write(&self.path, &serde_json::to_vec(&cache)?)
     }
 
     pub fn search(
@@ -220,289 +328,244 @@ impl Index {
         reverse: bool,
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<Hit>> {
-        let mut matched = Vec::new();
-        let mut wheres = Vec::new();
-        let mut args: Vec<Sql> = Vec::new();
-        for term in &q.terms {
-            filter(term, &mut matched, &mut wheres, &mut args);
+        let text: Vec<Text> = q.terms.iter().filter_map(Text::of).collect();
+        let (wanted, unwanted): (Vec<&Text>, Vec<&Text>) = text.iter().partition(|t| !t.negated);
+        let filters: Vec<&Term> = q.terms.iter().filter(|t| !t.field.is_text()).collect();
+        let searched = !wanted.is_empty();
+        let idf: Vec<f64> = wanted.iter().map(|t| self.idf(t)).collect();
+        let mut found: Vec<(usize, f64)> = Vec::new();
+        'papers: for (i, p) in self.papers.iter().enumerate() {
+            if !filters.iter().all(|t| holds(t, p)) || unwanted.iter().any(|t| t.count(p) > 0) {
+                continue;
+            }
+            let mut score = 0.0;
+            for (t, idf) in wanted.iter().zip(&idf) {
+                let s = self.score(t, p, *idf);
+                if s == 0.0 {
+                    continue 'papers;
+                }
+                score += s;
+            }
+            found.push((i, score));
         }
-        let searched = !matched.is_empty();
-        let mut sql = if searched {
-            // Weights by column: a word in the title counts most.
-            "SELECT p.path, p.record, p.has_pdf, bm25(fts, 10.0, 2.0, 5.0, 2.0, 2.0, 5.0) AS score
-             FROM paper p JOIN fts ON fts.rowid = p.id WHERE fts MATCH ?"
-                .to_string()
-        } else {
-            "SELECT p.path, p.record, p.has_pdf, 0.0 AS score FROM paper p WHERE 1".to_string()
+        let by = |a: &(usize, f64), b: &(usize, f64)| -> Ordering {
+            let (pa, pb) = (&self.papers[a.0], &self.papers[b.0]);
+            let added = || {
+                pb.record()
+                    .paperstack
+                    .added
+                    .cmp(&pa.record().paperstack.added)
+            };
+            match sort {
+                Sort::Relevance if searched => b.1.total_cmp(&a.1).then_with(added),
+                Sort::Relevance | Sort::Added => added(),
+                Sort::Year => match (pa.year, pb.year) {
+                    (Some(x), Some(y)) => y.cmp(&x).then_with(added),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => added(),
+                },
+                Sort::Author => pa
+                    .first_author
+                    .cmp(&pb.first_author)
+                    .then(pa.year.cmp(&pb.year)),
+                Sort::Title => pa.title.cmp(&pb.title),
+            }
         };
-        let mut all: Vec<Sql> = Vec::new();
-        if searched {
-            all.push(Sql::Text(matched.join(" AND ")));
-        }
-        all.extend(args);
-        for w in &wheres {
-            sql.push_str(" AND ");
-            sql.push_str(w);
-        }
-        sql.push_str(" ORDER BY ");
-        sql.push_str(&sort.order(searched, reverse));
-        if let Some(n) = limit {
-            sql.push_str(&format!(" LIMIT {n}"));
-        }
-        let mut stmt = self.db.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(all), row)?;
-        rows.map(|r| hit(r?)).collect()
+        found.sort_by(|a, b| if reverse { by(b, a) } else { by(a, b) });
+        Ok(found
+            .into_iter()
+            .take(limit.unwrap_or(usize::MAX))
+            .map(|(i, score)| self.papers[i].hit(score))
+            .collect())
+    }
+
+    /// How rare the papers `t` is in are, as BM25 weighs a word.
+    fn idf(&self, t: &Text) -> f64 {
+        let n = self.papers.len() as f64;
+        let df = self.papers.iter().filter(|p| t.count(p) > 0).count() as f64;
+        ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+    }
+
+    /// BM25 of `t` in `p`, over the fields it is looked for in.
+    fn score(&self, t: &Text, p: &Paper, idf: f64) -> f64 {
+        t.fields()
+            .iter()
+            .map(|&f| {
+                let tf = t.count_in(&p.words[f]) as f64;
+                if tf == 0.0 {
+                    return 0.0;
+                }
+                let len = p.words[f].len() as f64 / self.mean[f].max(1.0);
+                WEIGHTS[f] * idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * len))
+            })
+            .sum()
     }
 
     /// The paper with the key, or once with it, as an alias.
     pub fn get(&self, key: &str) -> anyhow::Result<Option<Hit>> {
-        self.one(
-            "key = ?1 OR id = (SELECT id FROM alias WHERE alias = ?1)",
-            key,
-        )
+        Ok(self
+            .by_key
+            .get(&key.to_lowercase())
+            .map(|&i| self.papers[i].hit(0.0)))
     }
 
     pub fn by_doi(&self, doi: &str) -> anyhow::Result<Option<Hit>> {
-        self.one("doi = ?1 COLLATE NOCASE", doi)
+        Ok(self.find(|r| r.doi().is_some_and(|d| d.eq_ignore_ascii_case(doi))))
     }
 
     pub fn by_arxiv(&self, id: &str) -> anyhow::Result<Option<Hit>> {
-        self.one("arxiv = ?1 COLLATE NOCASE", id)
+        Ok(self.find(|r| {
+            r.paperstack
+                .arxiv
+                .as_deref()
+                .is_some_and(|a| a.eq_ignore_ascii_case(id))
+        }))
     }
 
     /// The paper with the same title, in its words, published within a
     /// year of `year`, as a preprint and its paper may be.
     pub fn by_title(&self, title: &str, year: Option<i32>) -> anyhow::Result<Option<Hit>> {
-        let words = |s: &str| crate::pdf::words(s).join(" ");
         let wanted = words(title);
-        if wanted.len() < 12 {
+        if wanted.join(" ").len() < 12 {
             return Ok(None);
         }
-        let (from, to) = year.map_or((i32::MIN, i32::MAX), |y| (y - 1, y + 1));
-        let mut q = self
-            .db
-            .prepare("SELECT key, title FROM paper WHERE year IS NULL OR year BETWEEN ?1 AND ?2")?;
-        let rows: Vec<(String, String)> = q
-            .query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        match rows.into_iter().find(|(_, t)| words(t) == wanted) {
-            Some((key, _)) => self.get(&key),
-            None => Ok(None),
-        }
+        Ok(self
+            .papers
+            .iter()
+            .find(|p| {
+                let near = match (year, p.year) {
+                    (Some(y), Some(py)) => (py - y).abs() <= 1,
+                    _ => true,
+                };
+                near && p.words[TITLE] == wanted
+            })
+            .map(|p| p.hit(0.0)))
     }
 
-    fn one(&self, condition: &str, arg: &str) -> anyhow::Result<Option<Hit>> {
-        self.db
-            .query_row(
-                &format!("SELECT path, record, has_pdf, 0.0 FROM paper WHERE {condition}"),
-                [arg],
-                row,
-            )
-            .optional()?
-            .map(hit)
-            .transpose()
+    fn find(&self, holds: impl Fn(&Record) -> bool) -> Option<Hit> {
+        self.papers
+            .iter()
+            .find(|p| holds(p.record()))
+            .map(|p| p.hit(0.0))
     }
 
     pub fn shelves(&self) -> anyhow::Result<Shelves> {
-        let count = |sql: &str| -> anyhow::Result<usize> {
-            Ok(self.db.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
-        };
-        let names = |table: &str| -> anyhow::Result<Vec<(String, usize)>> {
-            let mut q = self.db.prepare(&format!(
-                "SELECT name, count(*) FROM {table} GROUP BY name ORDER BY name COLLATE NOCASE"
-            ))?;
-            let rows = q.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?;
-            Ok(rows.collect::<Result<_, _>>()?)
+        let count =
+            |holds: &dyn Fn(&Paper) -> bool| self.papers.iter().filter(|p| holds(p)).count();
+        let names = |of: &dyn Fn(&Record) -> &Vec<String>| {
+            let mut n: HashMap<&str, usize> = HashMap::new();
+            for p in &self.papers {
+                for name in of(p.record()) {
+                    *n.entry(name.as_str()).or_default() += 1;
+                }
+            }
+            let mut v: Vec<(String, usize)> =
+                n.into_iter().map(|(k, c)| (k.to_string(), c)).collect();
+            v.sort_by_key(|(k, _)| k.to_lowercase());
+            v
         };
         Ok(Shelves {
-            all: count("SELECT count(*) FROM paper")?,
-            starred: count("SELECT count(*) FROM paper WHERE starred")?,
-            no_pdf: count("SELECT count(*) FROM paper WHERE NOT has_pdf")?,
-            no_abstract: count("SELECT count(*) FROM paper WHERE NOT has_abstract")?,
-            folders: names("folder")?,
-            labels: names("label")?,
+            all: self.papers.len(),
+            starred: count(&|p| p.record().paperstack.starred),
+            no_pdf: count(&|p| !p.kept.has_pdf),
+            no_abstract: count(&|p| p.record().abstract_text().is_none()),
+            folders: names(&|r| &r.paperstack.folders),
+            labels: names(&|r| &r.paperstack.labels),
         })
     }
 }
 
-/// A row of `path, record, has_pdf, score`, as `search` and `one` select.
-fn row(r: &rusqlite::Row) -> rusqlite::Result<(String, String, bool, f64)> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+/// A term looked for in the text: its words, together and in order, the
+/// last matching the words it starts unless in quotes.
+struct Text {
+    words: Vec<String>,
+    prefix: bool,
+    field: Field,
+    negated: bool,
 }
 
-fn hit((path, record, has_pdf, score): (String, String, bool, f64)) -> anyhow::Result<Hit> {
-    Ok(Hit {
-        record: serde_json::from_str(&record)?,
-        path: PathBuf::from(path),
-        has_pdf,
-        score,
-    })
+impl Text {
+    fn of(t: &Term) -> Option<Text> {
+        if !t.field.is_text() {
+            return None;
+        }
+        let words = words(&t.value);
+        (!words.is_empty()).then_some(Text {
+            words,
+            prefix: !t.phrase,
+            field: t.field,
+            negated: t.negated,
+        })
+    }
+
+    fn fields(&self) -> &'static [usize] {
+        match self.field {
+            Field::Title => &[TITLE],
+            Field::Abstract => &[ABSTRACT],
+            Field::Author => &[AUTHORS],
+            Field::Venue => &[VENUE],
+            _ => &[TITLE, ABSTRACT, AUTHORS, VENUE, KEYWORDS, IDS],
+        }
+    }
+
+    fn count(&self, p: &Paper) -> usize {
+        self.fields()
+            .iter()
+            .map(|&f| self.count_in(&p.words[f]))
+            .sum()
+    }
+
+    /// How many times the words are in `text`.
+    fn count_in(&self, text: &[String]) -> usize {
+        let n = self.words.len();
+        if text.len() < n {
+            return 0;
+        }
+        let last = n - 1;
+        (0..=text.len() - n)
+            .filter(|&i| {
+                self.words.iter().enumerate().all(|(j, w)| {
+                    let at = &text[i + j];
+                    if j == last && self.prefix {
+                        at.starts_with(w.as_str())
+                    } else {
+                        at == w
+                    }
+                })
+            })
+            .count()
+    }
 }
 
-fn remove(tx: &rusqlite::Transaction, id: i64) -> rusqlite::Result<()> {
-    for table in ["folder", "label", "alias"] {
-        tx.prepare_cached(&format!("DELETE FROM {table} WHERE id = ?1"))?
-            .execute([id])?;
-    }
-    tx.prepare_cached("DELETE FROM fts WHERE rowid = ?1")?
-        .execute([id])?;
-    tx.prepare_cached("DELETE FROM paper WHERE id = ?1")?
-        .execute([id])?;
-    Ok(())
-}
-
-fn insert(
-    tx: &rusqlite::Transaction,
-    r: &Record,
-    path: &str,
-    mtime: i64,
-    size: i64,
-) -> rusqlite::Result<()> {
-    let authors = r.authors();
-    let first = authors
-        .first()
-        .map(|n| n.family.clone())
-        .unwrap_or_default();
-    let names = authors
-        .iter()
-        .map(|n| format!("{} {}", n.family, n.given))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let m = &r.paperstack;
-    tx.prepare_cached(
-        "INSERT INTO paper (key, path, mtime, size, year, added, first_author, title, doi,
-                            arxiv, starred, has_pdf, has_abstract, record)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)",
-    )?
-    .execute(params![
-        r.key,
-        path,
-        mtime,
-        size,
-        r.year(),
-        m.added,
-        first,
-        r.title(),
-        r.doi(),
-        m.arxiv,
-        m.starred,
-        r.abstract_text().is_some(),
-        serde_json::to_string(r).unwrap_or_default(),
-    ])?;
-    let id = tx.last_insert_rowid();
-    for f in &m.folders {
-        tx.prepare_cached("INSERT INTO folder (id, name) VALUES (?1, ?2)")?
-            .execute(params![id, f])?;
-    }
-    for l in &m.labels {
-        tx.prepare_cached("INSERT INTO label (id, name) VALUES (?1, ?2)")?
-            .execute(params![id, l])?;
-    }
-    for a in &m.aliases {
-        tx.prepare_cached("INSERT OR IGNORE INTO alias (alias, id) VALUES (?1, ?2)")?
-            .execute(params![a, id])?;
-    }
-    let keywords = r
-        .csl
-        .get("keyword")
-        .and_then(|k| k.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let ids = [Some(r.key.as_str()), r.doi(), m.arxiv.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
-    tx.prepare_cached(
-        "INSERT INTO fts (rowid, title, abstract, authors, venue, keywords, ids)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?
-    .execute(params![
-        id,
-        r.title(),
-        r.abstract_text().unwrap_or_default(),
-        names,
-        r.venue(),
-        keywords,
-        ids
-    ])?;
-    Ok(())
-}
-
-/// What `term` asks, as FTS5 to match or SQL to hold.
-fn filter(term: &Term, matched: &mut Vec<String>, wheres: &mut Vec<String>, args: &mut Vec<Sql>) {
-    let not = if term.negated { "NOT " } else { "" };
-    let column = match term.field {
-        Field::Any => Some(""),
-        Field::Title => Some("title : "),
-        Field::Abstract => Some("abstract : "),
-        Field::Author => Some("authors : "),
-        Field::Venue => Some("venue : "),
-        _ => None,
-    };
-    if let Some(column) = column {
-        // Only what has a letter or digit is a word to FTS5.
-        if !term.value.chars().any(char::is_alphanumeric) {
-            return;
-        }
-        let quoted = format!("\"{}\"", term.value.replace('"', "\"\""));
-        let expr = if term.phrase {
-            format!("{column}{quoted}")
-        } else {
-            format!("{column}{quoted}*")
-        };
-        if term.negated {
-            wheres.push("p.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)".to_string());
-            args.push(Sql::Text(expr));
-        } else {
-            matched.push(expr);
-        }
-        return;
-    }
-    let value = term.value.clone();
-    let sql = match term.field {
-        Field::Year => {
-            let Some((from, to)) = query::years(&value) else {
-                return;
-            };
-            args.push(Sql::Integer(from.into()));
-            args.push(Sql::Integer(to.into()));
-            format!("{not}(p.year BETWEEN ? AND ?)")
-        }
-        Field::Folder | Field::Label => {
-            let table = if term.field == Field::Folder {
-                "folder"
-            } else {
-                "label"
-            };
-            args.push(Sql::Text(value));
-            format!(
-                "{not}EXISTS (SELECT 1 FROM {table} t WHERE t.id = p.id AND t.name = ? COLLATE NOCASE)"
-            )
-        }
-        Field::Key => {
-            args.push(Sql::Text(value.clone()));
-            args.push(Sql::Text(value));
-            format!(
-                "{not}(p.key = ? COLLATE NOCASE OR p.id IN (SELECT id FROM alias WHERE alias = ? COLLATE NOCASE))"
-            )
-        }
+/// Whether `p` holds to a term not of its text, as `year:` or `has:pdf`;
+/// one paperstack does not know holds of every paper.
+fn holds(t: &Term, p: &Paper) -> bool {
+    let r = p.record();
+    let value = t.value.to_lowercase();
+    let yes = match t.field {
+        Field::Year => match query::years(&t.value) {
+            Some((from, to)) => p.year.is_some_and(|y| (from..=to).contains(&y)),
+            None => return true,
+        },
+        Field::Folder => p.folders.contains(&value),
+        Field::Label => p.labels.contains(&value),
+        Field::Key => p.keys.contains(&value),
         Field::Doi => {
-            let doi = value.trim_start_matches("https://doi.org/").to_string();
-            args.push(Sql::Text(doi));
-            format!("{not}(p.doi = ? COLLATE NOCASE)")
+            let doi = value.trim_start_matches("https://doi.org/");
+            r.doi().is_some_and(|d| d.eq_ignore_ascii_case(doi))
         }
-        Field::Has => match value.to_lowercase().as_str() {
-            "pdf" => format!("{not}p.has_pdf"),
-            "abstract" => format!("{not}p.has_abstract"),
-            "doi" => format!("{not}(p.doi IS NOT NULL)"),
-            _ => return,
+        Field::Has => match value.as_str() {
+            "pdf" => p.kept.has_pdf,
+            "abstract" => r.abstract_text().is_some(),
+            "doi" => r.doi().is_some(),
+            _ => return true,
         },
-        Field::Is => match value.to_lowercase().as_str() {
-            "starred" | "star" => format!("{not}p.starred"),
-            _ => return,
+        Field::Is => match value.as_str() {
+            "starred" | "star" => r.paperstack.starred,
+            _ => return true,
         },
-        _ => return,
+        _ => return true,
     };
-    wheres.push(sql);
+    yes != t.negated
 }

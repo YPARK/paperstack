@@ -32,7 +32,7 @@ pub fn print(lib: &Library, hits: &[Hit], format: &Format) -> anyhow::Result<()>
         let all: Vec<Value> = hits.iter().map(|h| json(lib, h)).collect();
         println!("{}", serde_json::to_string_pretty(&all)?);
     } else if format.bib {
-        let records: Vec<_> = hits.iter().map(|h| &h.record).collect();
+        let records: Vec<_> = hits.iter().map(|h| h.record.as_ref()).collect();
         print!("{}", bibtex::entries(&records));
     } else if format.csl {
         let items: Vec<Value> = hits.iter().map(|h| h.record.item()).collect();
