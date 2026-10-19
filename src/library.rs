@@ -76,7 +76,12 @@ impl Library {
             if old_pdf.exists() {
                 fs::rename(&old_pdf, self.root.join(layout::pdf(r)))?;
             }
-            let _ = fs::remove_file(self.root.join(was));
+            match fs::remove_file(self.root.join(was)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(e).context("cannot take away the record where it was");
+                }
+                _ => {}
+            }
         }
         let mut json = serde_json::to_vec_pretty(r)?;
         json.push(b'\n');

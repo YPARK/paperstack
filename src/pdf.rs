@@ -8,6 +8,7 @@
 //! What is searched for comes from `queries`; a reader of the page that
 //! knows a title when it sees one, as a language model, would add to them.
 
+use crate::resolve::squash;
 use crate::source::{self, Source};
 use anyhow::Context;
 use regex::bytes::Regex as BytesRegex;
@@ -178,14 +179,14 @@ pub fn has_title(title: &str, text: &str) -> bool {
 pub fn queries(r: &Reading) -> Vec<String> {
     let page = r.pages.first().map(String::as_str).unwrap_or("");
     let mut out = Vec::new();
-    let start: String = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    let start = squash(page);
     let start: String = start.chars().take(400).collect();
     if start.len() > 20 {
         out.push(start);
     }
     let blocks = page
         .split("\n\n")
-        .map(|b| b.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(squash)
         .filter(|b| {
             let n = b.split(' ').count();
             (4..=40).contains(&n) && !b.contains('@') && !b.to_lowercase().contains("doi")

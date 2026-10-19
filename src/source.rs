@@ -111,6 +111,17 @@ pub fn dois(text: &str) -> Vec<String> {
     out
 }
 
+/// An arXiv id without its version: `2412.08821` of `2412.08821v2`, and
+/// `solv-int/9901001` of `solv-int/9901001v1`.
+pub fn unversioned(id: &str) -> &str {
+    match id.rfind('v') {
+        Some(at) if at + 1 < id.len() && id[at + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+            &id[..at]
+        }
+        _ => id,
+    }
+}
+
 /// arXiv ids in `text`, as its stamp down a PDF's margin gives them,
 /// `arXiv:2412.08821v1 [cs.CL]`, without the version.
 pub fn arxiv_ids(text: &str) -> Vec<String> {
@@ -153,7 +164,7 @@ impl Source {
             return Source::Url(s.to_string());
         }
         if let Some(rest) = lower.strip_prefix("arxiv:") {
-            return Source::Arxiv(rest.trim().split('v').next().unwrap_or("").to_string());
+            return Source::Arxiv(unversioned(rest.trim()).to_string());
         }
         if let Some(m) = ARXIV_NEW.captures(s)
             && m.get(0).unwrap().as_str().len() >= s.len() - 1
@@ -211,7 +222,7 @@ impl Source {
             Source::Bibtex => ("BibTeX".to_string(), vec!["not yet"]),
             Source::Words(w) => (
                 format!("search \"{w}\""),
-                vec!["Crossref: added only if one title matches"],
+                vec!["OpenAlex, Crossref and arXiv: added only if one paper has the title"],
             ),
             Source::Nothing => return (String::new(), Vec::new()),
         };
@@ -236,7 +247,7 @@ fn from_address(url: &str) -> Option<Source> {
             .split_once('/')
             .map(|(_, id)| id)?
             .trim_end_matches(".pdf");
-        let id = id.split('v').next().unwrap_or(id);
+        let id = unversioned(id);
         return (!id.is_empty()).then(|| Source::Arxiv(id.to_string()));
     }
     if host.ends_with("pubmed.ncbi.nlm.nih.gov") || path.contains("/pubmed/") {

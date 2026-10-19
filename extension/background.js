@@ -14,7 +14,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     let pdf = null;
     let pdfUrl = null;
     for (const url of page.pdfUrls) {
-      pdf = (await fetchHere(url)) || (await fetchInPage(tab.id, url));
+      pdf = (await fetchPdf(url)) || (await fetchInPage(tab.id, url));
       if (pdf) {
         pdfUrl = url;
         break;
@@ -23,13 +23,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     const res = await fetch(`${SERVER}/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: page.url,
-        doi: page.doi,
-        tags: page.tags,
-        pdf_url: pdfUrl,
-        pdf,
-      }),
+      body: JSON.stringify({ url: page.url, tags: page.tags, pdf_url: pdfUrl, pdf }),
     });
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || res.statusText);
@@ -46,8 +40,8 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Runs in the page: its meta tags, its DOI, and where its PDF may be, best
-// first.
+// Runs in the page: its meta tags, which name the paper, and where its PDF
+// may be, best first.
 function readPage() {
   const tags = [...document.querySelectorAll("meta[name], meta[property]")]
     .map((m) => [
@@ -55,8 +49,6 @@ function readPage() {
       m.getAttribute("content") || "",
     ])
     .filter(([, v]) => v.trim());
-  const get = (n) => (tags.find(([k]) => k === n) || [])[1];
-  const doi = get("citation_doi") || get("prism.doi") || get("dc.identifier.doi") || null;
   const urls = [];
   const add = (u) => {
     try {
@@ -65,7 +57,7 @@ function readPage() {
     } catch (_) {}
   };
   if (document.contentType === "application/pdf") add(location.href);
-  const meta = get("citation_pdf_url");
+  const meta = (tags.find(([k]) => k === "citation_pdf_url") || [])[1];
   // Wiley's and other Atypon sites' /doi/pdf/ is a reader; /doi/pdfdirect/
   // the file.
   if (meta && /\/doi\/e?pdf\//.test(meta)) add(meta.replace(/\/doi\/e?pdf\//, "/doi/pdfdirect/"));
@@ -82,16 +74,21 @@ function readPage() {
       add(href);
     }
   }
-  return { url: location.href, doi, tags, pdfUrls: urls };
+  return { url: location.href, tags, pdfUrls: urls };
 }
 
-// The PDF at `url` fetched by the extension, with the browser's cookies, as
-// base64; none where what comes is not a PDF, as a page asking to sign in.
-async function fetchHere(url) {
+// The PDF at `url`, fetched with the browser's cookies, as base64; none where
+// what comes is not a PDF, as a page asking to sign in. Self-contained: it
+// also runs in the page, where nothing outside it is in reach.
+async function fetchPdf(url) {
   try {
-    const r = await fetch(url, { credentials: "include", redirect: "follow" });
+    const r = await fetch(url, { credentials: "include" });
     if (!r.ok) return null;
-    return pdfBase64(new Uint8Array(await r.arrayBuffer()));
+    const b = new Uint8Array(await r.arrayBuffer());
+    if (String.fromCharCode(...b.subarray(0, 4)) !== "%PDF") return null;
+    let s = "";
+    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+    return btoa(s);
   } catch (_) {
     return null;
   }
@@ -101,33 +98,11 @@ async function fetchHere(url) {
 // than cookies.
 async function fetchInPage(tabId, url) {
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      args: [url],
-      func: async (u) => {
-        try {
-          const r = await fetch(u, { credentials: "include" });
-          const b = new Uint8Array(await r.arrayBuffer());
-          if (String.fromCharCode(...b.subarray(0, 4)) !== "%PDF") return null;
-          let s = "";
-          for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
-          return btoa(s);
-        } catch (_) {
-          return null;
-        }
-      },
-    });
+    const [{ result }] = await chrome.scripting.executeScript({ target: { tabId }, args: [url], func: fetchPdf });
     return result;
   } catch (_) {
     return null;
   }
-}
-
-function pdfBase64(bytes) {
-  if (String.fromCharCode(...bytes.subarray(0, 4)) !== "%PDF") return null;
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
 }
 
 function badge(tabId, text, color) {

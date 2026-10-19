@@ -27,6 +27,16 @@ pub struct Found {
 }
 
 impl Found {
+    fn new(csl: Value, source: &'static str) -> Self {
+        Found {
+            csl,
+            arxiv: None,
+            preprint: None,
+            pdfs: Vec::new(),
+            source,
+        }
+    }
+
     pub fn title(&self) -> &str {
         self.csl.get("title").and_then(Value::as_str).unwrap_or("")
     }
@@ -54,20 +64,8 @@ pub fn by_doi(net: &Net, doi: &str) -> anyhow::Result<Found> {
     if let Some(id) = doi.to_lowercase().strip_prefix("10.48550/arxiv.") {
         return by_arxiv(net, id);
     }
-    let csl = net
-        .json(
-            &format!("https://doi.org/{doi}"),
-            "application/vnd.citationstyles.csl+json",
-            &[],
-        )
-        .with_context(|| format!("doi.org does not know {doi}"))?;
-    let mut found = Found {
-        csl: tidy(csl),
-        arxiv: None,
-        preprint: None,
-        pdfs: Vec::new(),
-        source: "doi.org",
-    };
+    let mut found =
+        by_doi_only(net, &doi).with_context(|| format!("doi.org does not know {doi}"))?;
     // A preprint since published, as bioRxiv's, is read as the paper.
     if let Some(published) = related(&found.csl, "is-preprint-of")
         && let Ok(mut paper) = by_doi_only(net, &published)
@@ -84,13 +82,7 @@ fn by_doi_only(net: &Net, doi: &str) -> anyhow::Result<Found> {
         "application/vnd.citationstyles.csl+json",
         &[],
     )?;
-    Ok(Found {
-        csl: tidy(csl),
-        arxiv: None,
-        preprint: None,
-        pdfs: Vec::new(),
-        source: "doi.org",
-    })
+    Ok(Found::new(tidy(csl), "doi.org"))
 }
 
 /// The DOI `kind` relates the paper to, as Crossref's `relation` gives it.
@@ -138,10 +130,9 @@ pub fn by_arxiv(net: &Net, id: &str) -> anyhow::Result<Found> {
         .split('-')
         .filter_map(|p| p.parse().ok())
         .collect();
-    let category = Regex::new(r#"<arxiv:primary_category[^>]*term="([^"]+)""#)
-        .unwrap()
-        .captures(entry)
-        .map(|c| c[1].to_string());
+    static CATEGORY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"<arxiv:primary_category[^>]*term="([^"]+)""#).unwrap());
+    let category = CATEGORY.captures(entry).map(|c| c[1].to_string());
     let venue = match &category {
         Some(c) => format!("arXiv [{c}]"),
         None => "arXiv".to_string(),
@@ -161,11 +152,9 @@ pub fn by_arxiv(net: &Net, id: &str) -> anyhow::Result<Found> {
         csl["abstract"] = json!(squash(&summary));
     }
     Ok(Found {
-        csl,
         arxiv: Some(id.to_string()),
-        preprint: None,
         pdfs: vec![pdf],
-        source: "arxiv",
+        ..Found::new(csl, "arxiv")
     })
 }
 
@@ -178,13 +167,7 @@ pub fn by_pmid(net: &Net, pmid: &str) -> anyhow::Result<Found> {
     let pmcid = csl.get("PMCID").and_then(Value::as_str).map(str::to_string);
     let mut found = match csl.get("DOI").and_then(Value::as_str) {
         Some(doi) => by_doi(net, doi)?,
-        None => Found {
-            csl: tidy(csl),
-            arxiv: None,
-            preprint: None,
-            pdfs: Vec::new(),
-            source: "pubmed",
-        },
+        None => Found::new(tidy(csl), "pubmed"),
     };
     found.csl["PMID"] = json!(pmid);
     if let Some(pmcid) = pmcid {
@@ -195,9 +178,7 @@ pub fn by_pmid(net: &Net, pmid: &str) -> anyhow::Result<Found> {
 
 pub fn by_pmcid(net: &Net, pmcid: &str) -> anyhow::Result<Found> {
     let mut query = vec![("ids", pmcid), ("format", "json"), ("tool", "paperstack")];
-    if let Some(e) = &net.email {
-        query.push(("email", e));
-    }
+    net.sign(&mut query, "email");
     let ids = net.json(
         "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/",
         "application/json",
@@ -207,8 +188,14 @@ pub fn by_pmcid(net: &Net, pmcid: &str) -> anyhow::Result<Found> {
         .get("records")
         .and_then(|r| r.get(0))
         .with_context(|| format!("NCBI does not know {pmcid}"))?;
-    let mut found = if let Some(pmid) = record.get("pmid").map(|p| p.to_string()) {
-        by_pmid(net, pmid.trim_matches('"'))?
+    // NCBI gives the PMID as a number.
+    let pmid = record.get("pmid").and_then(|p| {
+        p.as_str()
+            .map(str::to_string)
+            .or_else(|| p.as_u64().map(|n| n.to_string()))
+    });
+    let mut found = if let Some(pmid) = pmid {
+        by_pmid(net, &pmid)?
     } else if let Some(doi) = record.get("doi").and_then(Value::as_str) {
         by_doi(net, doi)?
     } else {
@@ -255,11 +242,6 @@ pub fn metas(html: &str) -> Vec<(String, String)> {
 
 /// The paper a page is of, by the ids in its meta tags, Highwire's
 /// `citation_*` first, as Google Scholar reads them.
-pub fn from_page(html: &str) -> Option<Source> {
-    from_metas(&metas(html))
-}
-
-/// The paper meta tags name, by its ids.
 pub fn from_metas(metas: &[(String, String)]) -> Option<Source> {
     let get = |names: &[&str]| {
         names.iter().find_map(|n| {
@@ -298,7 +280,7 @@ pub fn by_page(net: &Net, url: &str) -> anyhow::Result<Found> {
         || "the publisher would not give its page: give the paper's DOI, or save its PDF to inbox/",
     )?;
     let metas = metas(&html);
-    let mut found = match from_page(&html) {
+    let mut found = match from_metas(&metas) {
         Some(source) => by_source(net, &source)?,
         None => from_tags(&metas, &at).with_context(|| {
             format!(
@@ -394,11 +376,8 @@ pub fn from_tags(metas: &[(String, String)], url: &str) -> Option<Found> {
         _ => {}
     }
     Some(Found {
-        csl,
         arxiv: one(&["citation_arxiv_id"]),
-        preprint: None,
-        pdfs: Vec::new(),
-        source: "page",
+        ..Found::new(csl, "page")
     })
 }
 
@@ -455,9 +434,7 @@ pub fn enrich(net: &Net, found: &mut Found) {
         "select",
         "ids,abstract_inverted_index,best_oa_location,locations",
     )];
-    if let Some(e) = &net.email {
-        query.push(("mailto", e));
-    }
+    net.sign(&mut query, "mailto");
     let Ok(work) = net.json(
         &format!("https://api.openalex.org/works/doi:{doi}"),
         "application/json",
@@ -488,7 +465,6 @@ pub fn enrich(net: &Net, found: &mut Found) {
     {
         found.csl["abstract"] = json!(text);
     }
-    let mut pdfs: Vec<String> = Vec::new();
     let best = work.get("best_oa_location").into_iter();
     let all = work
         .get("locations")
@@ -497,13 +473,11 @@ pub fn enrich(net: &Net, found: &mut Found) {
         .flatten();
     for loc in best.chain(all) {
         if let Some(url) = loc.get("pdf_url").and_then(Value::as_str)
-            && !pdfs.iter().any(|p| p == url)
             && !found.pdfs.iter().any(|p| p == url)
         {
-            pdfs.push(url.to_string());
+            found.pdfs.push(url.to_string());
         }
     }
-    found.pdfs.extend(pdfs);
 }
 
 /// PubMed's abstract, its sections' labels kept: for journals, as Nature's,
@@ -515,9 +489,7 @@ fn pubmed_abstract(net: &Net, pmid: &str) -> Option<String> {
         ("retmode", "xml"),
         ("tool", "paperstack"),
     ];
-    if let Some(e) = &net.email {
-        query.push(("email", e));
-    }
+    net.sign(&mut query, "email");
     let xml = net
         .text(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
@@ -596,9 +568,7 @@ pub fn search_crossref(net: &Net, text: &str) -> anyhow::Result<Vec<Candidate>> 
         ("rows", "8"),
         ("select", "DOI,title,issued,type"),
     ];
-    if let Some(e) = &net.email {
-        query.push(("mailto", e));
-    }
+    net.sign(&mut query, "mailto");
     let works = net.json("https://api.crossref.org/works", "application/json", &query)?;
     Ok(works
         .pointer("/message/items")
@@ -630,9 +600,7 @@ pub fn search_openalex(net: &Net, title: &str) -> anyhow::Result<Vec<Candidate>>
         ("per_page", "8"),
         ("select", "title,doi,publication_year,type"),
     ];
-    if let Some(e) = &net.email {
-        query.push(("mailto", e));
-    }
+    net.sign(&mut query, "mailto");
     let works = net.json("https://api.openalex.org/works", "application/json", &query)?;
     Ok(works
         .get("results")
@@ -673,7 +641,7 @@ pub fn search_arxiv(net: &Net, title: &str) -> anyhow::Result<Vec<Candidate>> {
         .skip(1)
         .filter_map(|e| {
             let id = tag(e, "id")?;
-            let id = id.rsplit("/abs/").next()?.split('v').next()?.to_string();
+            let id = source::unversioned(id.rsplit("/abs/").next()?).to_string();
             Some(Candidate {
                 title: squash(&tag(e, "title")?),
                 doi: tag(e, "arxiv:doi").map(|d| source::clean_doi(&d)),
