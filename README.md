@@ -79,7 +79,53 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
 | `a` | add a paper, as `paperstack add` does |
+| `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `q` | quit |
+
+## From the browser
+
+PDFs behind a paywall, or a publisher's bot check, are had only in the
+browser, signed in as you. Two ways bring them in:
+
+```sh
+paperstack watch ~/Downloads        # file PDFs as they come into inbox/ and ~/Downloads
+paperstack serve --watch ~/Downloads   # the same, and the browser extension's papers
+```
+
+Only PDFs that come into a folder after it is watched are filed, but in the
+inbox, and a PDF filed is taken out of the inbox; out of other folders only
+with `--take`.
+
+`serve` listens at `127.0.0.1:8765` for the extension in `extension/`,
+which is loaded into Chrome from this checkout, not the Web Store:
+`chrome://extensions`, turn on Developer mode, Load unpacked, pick the
+`extension` folder. Its button, on a paper's page, reads the page's DOI and
+`citation_*` tags, fetches the PDF there, with your institution's access,
+and sends both to `serve`, which files the paper if the PDF is the page's
+paper, or says it is not, as a supplement would be. The badge says how it
+went: `✓`, `✓·` without a PDF, `!` and a notification of why not. The
+server answers only this machine, and of browsers only extensions, so no
+page can add papers.
+
+To have `serve` run from login on macOS, a LaunchAgent:
+
+```sh
+cat > ~/Library/LaunchAgents/com.github.ypark.paperstack.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.github.ypark.paperstack</string>
+  <key>ProgramArguments</key><array>
+    <string>$HOME/.cargo/bin/paperstack</string><string>serve</string>
+    <string>--watch</string><string>$HOME/Downloads</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/paperstack.log</string>
+  <key>StandardErrorPath</key><string>/tmp/paperstack.log</string>
+</dict></plist>
+PLIST
+launchctl load ~/Library/LaunchAgents/com.github.ypark.paperstack.plist
+```
 
 ## Searching
 

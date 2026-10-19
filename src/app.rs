@@ -338,6 +338,17 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.star(),
+            KeyCode::Char('r') => {
+                let before = self.shelves.get(1).map_or(0, |(_, n)| *n);
+                match self.index.refresh(&self.lib).and_then(|_| self.restock()) {
+                    Ok(()) => {
+                        let now = self.shelves.get(1).map_or(0, |(_, n)| *n);
+                        self.status = format!("{} papers, {} new", now, now.saturating_sub(before));
+                    }
+                    Err(e) => self.status = format!("{e:#}"),
+                }
+                self.narrow();
+            }
             KeyCode::Char('c') => {
                 let picked = self.picked();
                 let records: Vec<_> = picked.iter().map(|h| &h.record).collect();
