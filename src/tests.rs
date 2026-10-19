@@ -291,6 +291,18 @@ fn reads_ids_in_publishers_addresses() {
             Pii("S0092867423013442".into()),
         ),
         (
+            "https://www.cell.com/cell-genomics/pdf/S2666-979X(26)00051-0.pdf",
+            Pii("S2666979X26000510".into()),
+        ),
+        (
+            "https://www.cell.com/action/showPdf?pii=S1097-2765(24)00526-4",
+            Pii("S1097276524005264".into()),
+        ),
+        (
+            "https://linkinghub.elsevier.com/retrieve/pii/S2211124726004389",
+            Pii("S2211124726004389".into()),
+        ),
+        (
             "https://arxiv.org/pdf/2412.08821v2",
             Arxiv("2412.08821".into()),
         ),

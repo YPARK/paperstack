@@ -263,18 +263,20 @@ fn from_address(url: &str) -> Option<Source> {
         return Some(Source::Doi(d));
     }
     // ScienceDirect's `/pii/S0092867423013442`, Cell's
-    // `/fulltext/S0092-8674(23)01344-2`.
+    // `/fulltext/S0092-8674(23)01344-2`, `/pdf/….pdf` and `showPdf?pii=…`.
     for mark in [
         "/pii/",
         "/fulltext/",
         "/abstract/",
         "/pdf/",
         "/pdfExtended/",
+        "pii=",
     ] {
         if let Some(at) = path.find(mark) {
             let pii: String = path[at + mark.len()..]
-                .split(['/', '?', '#'])
+                .split(['/', '?', '#', '&'])
                 .next()?
+                .trim_end_matches(".pdf")
                 .chars()
                 .filter(char::is_ascii_alphanumeric)
                 .collect();
