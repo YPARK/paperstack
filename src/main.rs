@@ -130,6 +130,9 @@ enum Command {
         take: bool,
         #[arg(long)]
         folder: Vec<String>,
+        /// Ids of other extensions that may ask, besides paperstack's own
+        #[arg(long)]
+        extension: Vec<String>,
     },
     /// The TUI's screen after the keys given, as text: `/perturb <enter>`
     #[command(hide = true)]
@@ -185,6 +188,7 @@ fn run_daemon(
     dirs: &[PathBuf],
     take: bool,
     folders: Vec<String>,
+    extensions: Vec<String>,
 ) -> anyhow::Result<()> {
     let (lib, mut index) = open(root)?;
     let watched = daemon::folders(&lib, dirs, take);
@@ -193,6 +197,7 @@ fn run_daemon(
         index: &mut index,
         net,
         folders,
+        extensions,
     }
     .run(port, &watched)
 }
@@ -246,14 +251,23 @@ fn main() -> anyhow::Result<()> {
             cli::print_added(&lib, &done, json)
         }
         Some(Command::Watch { dirs, take, folder }) => {
-            run_daemon(&args.library, &net(), None, &dirs, take, folder)
+            run_daemon(&args.library, &net(), None, &dirs, take, folder, Vec::new())
         }
         Some(Command::Serve {
             port,
             watch,
             take,
             folder,
-        }) => run_daemon(&args.library, &net(), Some(port), &watch, take, folder),
+            extension,
+        }) => run_daemon(
+            &args.library,
+            &net(),
+            Some(port),
+            &watch,
+            take,
+            folder,
+            extension,
+        ),
         Some(Command::Screen {
             width,
             height,
