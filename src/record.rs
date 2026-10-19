@@ -152,10 +152,6 @@ impl Record {
 /// title, so a paper gets the same key wherever it is added. `taken` says
 /// which keys are another paper's; the letters are drawn again until one is
 /// free.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`paperstack add` gives keys with it")
-)]
 pub fn new_key(record: &Record, identity: &str, taken: impl Fn(&str) -> bool) -> String {
     let family = record
         .authors()

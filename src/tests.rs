@@ -231,3 +231,157 @@ fn reads_sources() {
     assert!(matches!(Source::of("@article{x,"), Source::Bibtex));
     assert!(matches!(Source::of("linear baselines"), Source::Words(_)));
 }
+
+#[test]
+fn finds_titles_on_a_page() {
+    // deunicode once ran "33" into "Purine", and "pathogens" into the next line.
+    let page = "eLife 2023;12:RP91040.   1 of 33\n\nPurine nucleosides replace cAMP \nin \
+                allosteric regulation of PKA in \ntrypanosomatid\u{a0}pathogens\n\nVeronica Ober";
+    let title = "Purine nucleosides replace cAMP in allosteric regulation of PKA in trypanosomatid pathogens";
+    assert!(crate::pdf::has_title(title, page));
+    // Hyphenated across a line.
+    assert!(crate::pdf::has_title(
+        "Quantifying organismal complexity",
+        "Quan-\ntifying organismal complexity using"
+    ));
+    // Words run together in the registry's title.
+    assert!(crate::pdf::has_title(
+        "StatisticallyCalibrated Tokenization forGenomic Models",
+        "Statistically Calibrated Tokenization\nfor Genomic Models"
+    ));
+    assert!(!crate::pdf::has_title(
+        title,
+        "Purine nucleosides in PKA signalling"
+    ));
+    let csl = serde_json::json!({ "author": [{ "family": "Ober", "given": "V" }] });
+    assert!(crate::pdf::has_author(&csl, page));
+    assert!(!crate::pdf::has_author(&csl, "San Juan, Puerto Rico"));
+}
+
+#[test]
+fn reads_ids_in_publishers_addresses() {
+    use Source::*;
+    let cases = [
+        (
+            "https://onlinelibrary.wiley.com/doi/full/10.1002/sim.7400",
+            Doi("10.1002/sim.7400".into()),
+        ),
+        (
+            "https://link.springer.com/article/10.1007/s10654-021-00757-1",
+            Doi("10.1007/s10654-021-00757-1".into()),
+        ),
+        (
+            "https://www.biorxiv.org/content/10.1101/2023.09.11.557287v1.full.pdf",
+            Doi("10.1101/2023.09.11.557287".into()),
+        ),
+        (
+            "https://www.nature.com/articles/s41586-020-2649-2.pdf",
+            Doi("10.1038/s41586-020-2649-2".into()),
+        ),
+        (
+            "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000217",
+            Doi("10.1371/journal.pone.0000217".into()),
+        ),
+        (
+            "https://www.sciencedirect.com/science/article/pii/S0092867423013442",
+            Pii("S0092867423013442".into()),
+        ),
+        (
+            "https://www.cell.com/cell/fulltext/S0092-8674(23)01344-2",
+            Pii("S0092867423013442".into()),
+        ),
+        (
+            "https://arxiv.org/pdf/2412.08821v2",
+            Arxiv("2412.08821".into()),
+        ),
+        (
+            "https://pubmed.ncbi.nlm.nih.gov/28693043/",
+            Pmid("28693043".into()),
+        ),
+        (
+            "https://pmc.ncbi.nlm.nih.gov/articles/PMC5629050/",
+            Pmcid("PMC5629050".into()),
+        ),
+        (
+            "https://academic.oup.com/bioinformatics/article/34/17/i884/5093234",
+            Url("https://academic.oup.com/bioinformatics/article/34/17/i884/5093234".into()),
+        ),
+        (
+            "doi:10.7554/eLife.10047.",
+            Doi("10.7554/eLife.10047".into()),
+        ),
+        ("arXiv:2412.08821v1", Arxiv("2412.08821".into())),
+        ("PMC5629050", Pmcid("PMC5629050".into())),
+    ];
+    for (given, want) in cases {
+        assert_eq!(Source::of(given), want, "{given}");
+    }
+    assert_eq!(
+        crate::source::dois("see https://doi.org/10.1038/nature12373), and 10.1038/NATURE12373."),
+        ["10.1038/nature12373"]
+    );
+    assert_eq!(
+        crate::source::arxiv_ids("arXiv:2412.08821v1 [cs.CL] 11 Dec 2024"),
+        ["2412.08821"]
+    );
+}
+
+#[test]
+fn reads_a_pages_meta_tags() {
+    let html = r#"<head><meta name="citation_title" content="A &amp; B">
+        <meta content="10.1038/s41586-020-2649-2" name="citation_doi">
+        <meta name="citation_pdf_url" content="https://x.org/a.pdf"/></head>"#;
+    assert_eq!(
+        crate::resolve::from_page(html),
+        Some(Source::Doi("10.1038/s41586-020-2649-2".into()))
+    );
+    let metas = crate::resolve::metas(html);
+    assert!(metas.contains(&("citation_title".into(), "A & B".into())));
+}
+
+#[test]
+fn tidies_what_registries_give() {
+    let csl = serde_json::json!({
+        "id": "x", "reference": [1, 2], "title": ["A <i>B</i>\n c"],
+        "container-title": ["Nature"], "abstract": "<jats:title>Abstract</jats:title><jats:p>It works.</jats:p>",
+        "author": [{ "family": "Ng", "given": "A", "sequence": "first", "affiliation": [] }],
+    });
+    let t = crate::resolve::tidy(csl);
+    assert_eq!(t["title"], "A B c");
+    assert_eq!(t["container-title"], "Nature");
+    assert_eq!(t["abstract"], "It works.");
+    assert!(t.get("reference").is_none() && t.get("id").is_none());
+    assert!(t["author"][0].get("sequence").is_none());
+    let index = serde_json::json!({ "works": [1], "It": [0], "well": [2] });
+    assert_eq!(crate::resolve::uninvert(&index).unwrap(), "It works well");
+}
+
+#[test]
+fn writes_initials_as_paperpile_does() {
+    let mut r = demo::records().remove(0);
+    r.csl["author"] = serde_json::json!([{ "family": "Abbott", "given": "B. P." }]);
+    assert!(layout::record(&r).starts_with("2017/Abbott/BP/"));
+    r.csl["author"] = serde_json::json!([{ "family": "Naik", "given": "Armaghan W." }]);
+    assert!(layout::record(&r).starts_with("2017/Naik/Armaghan W/"));
+}
+
+#[test]
+fn knows_a_paper_already_here() {
+    let (_dir, _lib, index) = library();
+    assert_eq!(
+        index
+            .by_doi("10.7326/m16-2607")
+            .unwrap()
+            .unwrap()
+            .record
+            .key,
+        "VanderWeele2017-ex"
+    );
+    assert_eq!(
+        index.by_arxiv("2412.08821").unwrap().unwrap().record.key,
+        "LCM-team2024-lc"
+    );
+    let t = "Sensitivity analysis in observational research: introducing the E-value";
+    assert!(index.by_title(t, Some(2018)).unwrap().is_some());
+    assert!(index.by_title(t, Some(2020)).unwrap().is_none());
+}

@@ -4,8 +4,8 @@ A library of papers in the terminal: PDFs and their references, kept in a
 folder, as in Dropbox, that an AI agent can read as easily as you can.
 PDFs are presented with [ohp](https://github.com/YPARK/ohp).
 
-Early days: papers cannot yet be added but by hand; `paperstack init --demo`
-makes a library of nine to try it with.
+Early days. `paperstack init --demo` makes a library of nine papers to try
+it with.
 
 ## Install
 
@@ -30,6 +30,43 @@ paperstack get Ahlmann-Eltze2025-pb --json
 The library is `--library`, else `$PAPERSTACK_LIBRARY`, else
 `~/Dropbox/paperstack`.
 
+## Adding papers
+
+```sh
+paperstack add 10.1038/s41586-020-2649-2            # a DOI
+paperstack add arXiv:2412.08821 'PMID: 28693043'    # an arXiv id, a PMID, a PMCID
+paperstack add https://onlinelibrary.wiley.com/doi/full/10.1002/sim.7400
+paperstack add ~/Downloads/paper.pdf --folder mediation
+paperstack add 'Array programming with NumPy'       # a title, if just one paper has it
+paperstack inbox                                    # file what was saved to inbox/
+echo 10.7554/eLife.10047 | paperstack add -         # one a line, as an agent would
+```
+
+`a` in the browser does the same, into the folder or label picked on the
+left, with what is on the clipboard filled in.
+
+Publishers' pages mostly turn away programs that are not browsers, so
+paperstack reads what it needs from the registries instead: the paper's
+record from doi.org, arXiv or PubMed, and from OpenAlex an abstract the
+record lacks and where open copies of the PDF are. Most publishers'
+addresses carry the DOI, or an id that leads to it, as ScienceDirect's PII;
+a page that does not is read for its `citation_doi`, if it can be. A
+preprint since published is filed as what it was published as, its arXiv
+id kept. A PDF behind a paywall is downloaded in the browser, as before,
+and saved to `inbox/`.
+
+A PDF is told by the DOI in its metadata or on its first page, or arXiv's
+stamp down its margin, taken only where the title it leads to is on the
+page, with one of its authors: first pages name other papers' DOIs too.
+Without one, the first lines are searched for in Crossref, OpenAlex and
+arXiv, and the same check made. Given a title alone, paperstack adds the
+paper only if one paper has just that title: registries hold copies of
+famous papers reposted under other DOIs, so where several do it lists them,
+and adds the one then given by its id.
+
+Registries are asked as paperstack, with an address to write to, as they
+ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
+
 | Key | |
 |---|---|
 | `j` / `k`, arrows | move; on the left, change shelf |
@@ -41,6 +78,7 @@ The library is `--library`, else `$PAPERSTACK_LIBRARY`, else
 | `c` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
+| `a` | add a paper, as `paperstack add` does |
 | `q` | quit |
 
 ## Searching

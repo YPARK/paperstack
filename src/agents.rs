@@ -29,6 +29,21 @@ keywords, key and identifiers; a word matches the words it starts. Fields:
 any of them leaves out what it matches. `--sort relevance|year|added|author|title`,
 `--reverse`, `--limit N`.
 
+## Adding papers
+
+```sh
+paperstack add 10.1038/s41586-020-2649-2 --json              # by DOI
+paperstack add arXiv:2412.08821 'PMID: 28693043' PMC5629050  # by arXiv id, PMID, PMCID
+paperstack add https://www.sciencedirect.com/science/article/pii/S0092867423013442
+paperstack add ~/Downloads/paper.pdf --folder grant_OCRA_AI  # a PDF, read to tell which paper
+paperstack add 'Array programming with NumPy'                # a title: added only if one paper has it
+paperstack inbox                                             # file the PDFs saved to inbox/
+```
+
+A paper already here is not added again. Given only a title that several
+papers have, `add` lists them with their ids and adds none: add the one meant
+by its id. Never add a paper you have not checked is the one meant.
+
 ## Making a bibliography
 
 ```sh

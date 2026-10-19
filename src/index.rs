@@ -273,12 +273,54 @@ impl Index {
 
     /// The paper with the key, or once with it, as an alias.
     pub fn get(&self, key: &str) -> anyhow::Result<Option<Hit>> {
+        self.one(
+            "key = ?1 OR id = (SELECT id FROM alias WHERE alias = ?1)",
+            key,
+        )
+    }
+
+    pub fn by_doi(&self, doi: &str) -> anyhow::Result<Option<Hit>> {
+        self.one("doi = ?1 COLLATE NOCASE", doi)
+    }
+
+    pub fn by_arxiv(&self, id: &str) -> anyhow::Result<Option<Hit>> {
+        self.one("arxiv = ?1 COLLATE NOCASE", id)
+    }
+
+    /// The paper with the same title, in its words, published within a
+    /// year of `year`, as a preprint and its paper may be.
+    pub fn by_title(&self, title: &str, year: Option<i32>) -> anyhow::Result<Option<Hit>> {
+        let words = |s: &str| -> String {
+            deunicode::deunicode(s)
+                .to_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let wanted = words(title);
+        if wanted.len() < 12 {
+            return Ok(None);
+        }
+        let (from, to) = year.map_or((i32::MIN, i32::MAX), |y| (y - 1, y + 1));
+        let mut q = self
+            .db
+            .prepare("SELECT key, title FROM paper WHERE year IS NULL OR year BETWEEN ?1 AND ?2")?;
+        let rows: Vec<(String, String)> = q
+            .query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        match rows.into_iter().find(|(_, t)| words(t) == wanted) {
+            Some((key, _)) => self.get(&key),
+            None => Ok(None),
+        }
+    }
+
+    fn one(&self, condition: &str, arg: &str) -> anyhow::Result<Option<Hit>> {
         let row = self
             .db
             .query_row(
-                "SELECT path, record, has_pdf FROM paper
-                 WHERE key = ?1 OR id = (SELECT id FROM alias WHERE alias = ?1)",
-                [key],
+                &format!("SELECT path, record, has_pdf FROM paper WHERE {condition}"),
+                [arg],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
