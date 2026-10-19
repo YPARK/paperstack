@@ -724,6 +724,10 @@ pub fn tidy(mut csl: Value) -> Value {
             }
         }
     }
+    if let Some(Value::String(t)) = map.get("type") {
+        let t = crate::record::csl_type(t).to_string();
+        map.insert("type".to_string(), Value::String(t));
+    }
     for k in ["title", "container-title"] {
         if let Some(Value::String(s)) = map.get(k) {
             let s = squash(&strip_tags(s));

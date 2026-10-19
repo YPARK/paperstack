@@ -15,7 +15,7 @@ pub fn entries(records: &[&Record]) -> String {
 
 pub fn entry(r: &Record) -> String {
     let item = &r.csl;
-    let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+    let kind = r.csl_type();
     let (entry, container) = match kind {
         "article" | "article-journal" | "article-magazine" | "article-newspaper" | "review" => {
             ("article", "journal")

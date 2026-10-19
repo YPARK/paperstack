@@ -62,6 +62,15 @@ impl Shelf {
     }
 }
 
+/// What a key asks of the terminal, beyond the screen.
+pub enum Action {
+    /// Present the paper picked with ohp, which takes the terminal.
+    Open,
+    /// Add what is named, the screen drawn first, saying so, as it takes a
+    /// while.
+    Add(String),
+}
+
 pub enum Popup {
     None,
     /// What is typed, as a DOI, arXiv id, PMID, URL, PDF or BibTeX.
@@ -102,7 +111,14 @@ pub fn run((lib, index): (Library, Index), net: Net) -> anyhow::Result<()> {
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                app.key(key, &mut terminal);
+                match app.key(key) {
+                    Some(Action::Add(line)) => {
+                        terminal.draw(|f| ui::draw(f, &mut app))?;
+                        app.add(&line);
+                    }
+                    Some(Action::Open) => app.open(&mut terminal),
+                    None => {}
+                }
             }
         }
         Ok(())
@@ -222,11 +238,13 @@ impl App {
         all
     }
 
-    fn key(&mut self, key: KeyEvent, terminal: &mut DefaultTerminal) {
+    /// Take `key`; what it asks of the terminal, as opening a PDF in ohp,
+    /// is left to the caller.
+    pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
-            return;
+            return None;
         }
         match &mut self.popup {
             Popup::Add(line) => {
@@ -236,8 +254,7 @@ impl App {
                         let line = line.clone();
                         self.popup = Popup::None;
                         self.status = format!("adding {}…", Source::of(&line).plan().0);
-                        let _ = terminal.draw(|f| ui::draw(f, self));
-                        self.add(&line);
+                        return Some(Action::Add(line));
                     }
                     KeyCode::Backspace => {
                         line.pop();
@@ -247,7 +264,7 @@ impl App {
                     KeyCode::Char(c) => line.push(c),
                     _ => {}
                 }
-                return;
+                return None;
             }
             Popup::Cite(text, scroll) => {
                 match key.code {
@@ -261,11 +278,11 @@ impl App {
                     }
                     _ => self.popup = Popup::None,
                 }
-                return;
+                return None;
             }
             Popup::Help => {
                 self.popup = Popup::None;
-                return;
+                return None;
             }
             Popup::None => {}
         }
@@ -284,7 +301,7 @@ impl App {
                 _ => {}
             }
             self.narrow();
-            return;
+            return None;
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
@@ -375,10 +392,13 @@ impl App {
                     self.status = copy(&cite, &cite);
                 }
             }
-            KeyCode::Enter | KeyCode::Char('o') if self.focus == Focus::List => self.open(terminal),
+            KeyCode::Enter | KeyCode::Char('o') if self.focus == Focus::List => {
+                return Some(Action::Open);
+            }
             KeyCode::Enter => self.focus = Focus::List,
             _ => {}
         }
+        None
     }
 
     fn step(&mut self, by: isize) {
@@ -482,6 +502,54 @@ impl App {
             Err(e) => format!("cannot run ohp: {e}"),
         };
     }
+}
+
+/// The screen as `app` would draw it on a terminal `width` by `height`, as
+/// text, for tests and `paperstack screen`.
+pub fn screen(app: &mut App, width: u16, height: u16) -> String {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("a screen in memory");
+    terminal
+        .draw(|f| ui::draw(f, app))
+        .expect("drawn in memory");
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
+/// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, `<c-u>`;
+/// anything else, each character typed.
+pub fn keys(spec: &str) -> Vec<KeyEvent> {
+    let named = match spec {
+        "<enter>" => Some(KeyCode::Enter),
+        "<esc>" => Some(KeyCode::Esc),
+        "<tab>" => Some(KeyCode::Tab),
+        "<space>" => Some(KeyCode::Char(' ')),
+        "<up>" => Some(KeyCode::Up),
+        "<down>" => Some(KeyCode::Down),
+        "<left>" => Some(KeyCode::Left),
+        "<right>" => Some(KeyCode::Right),
+        "<backspace>" => Some(KeyCode::Backspace),
+        _ => None,
+    };
+    if let Some(code) = named {
+        return vec![KeyEvent::new(code, KeyModifiers::NONE)];
+    }
+    if spec == "<c-u>" {
+        return vec![KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)];
+    }
+    spec.chars()
+        .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+        .collect()
 }
 
 fn paste() -> String {
