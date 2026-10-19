@@ -74,15 +74,20 @@ impl Record {
         self.text("abstract")
     }
 
+    /// The CSL type, of a record kept with Crossref's names too.
+    pub fn csl_type(&self) -> &str {
+        csl_type(self.text("type").unwrap_or(""))
+    }
+
     pub fn kind(&self) -> &str {
-        match self.text("type").unwrap_or("") {
-            "article-journal" | "article" => "Journal article",
+        match self.csl_type() {
+            "article-journal" => "Journal article",
             "paper-conference" => "Conference paper",
             "book" => "Book",
             "chapter" => "Book chapter",
             "thesis" => "Thesis",
             "report" => "Report",
-            "posted-content" | "manuscript" => "Preprint",
+            "article" | "manuscript" => "Preprint",
             "dataset" => "Dataset",
             "software" => "Software",
             "webpage" | "post" | "post-weblog" => "Web page",
@@ -150,6 +155,24 @@ pub fn year(csl: &Value) -> Option<i32> {
         .find(|w| w.len() == 4)?
         .parse()
         .ok()
+}
+
+/// CSL's name for a type of work given by Crossref's, as doi.org gives
+/// it: `journal-article` is CSL's `article-journal`, a preprint's
+/// `posted-content` its `article`. CSL's own are given back.
+pub fn csl_type(t: &str) -> &str {
+    match t {
+        "journal-article" => "article-journal",
+        "proceedings-article" => "paper-conference",
+        "book-chapter" | "book-section" | "book-part" => "chapter",
+        "posted-content" => "article",
+        "dissertation" => "thesis",
+        "monograph" | "edited-book" | "reference-book" | "book-set" | "book-series" => "book",
+        "reference-entry" => "entry",
+        "report-series" => "report",
+        "peer-review" => "review",
+        other => other,
+    }
 }
 
 /// A key in Paperpile's form, `Surname2025-xy`: the first author's family

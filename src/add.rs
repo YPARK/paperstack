@@ -443,7 +443,7 @@ impl Adder<'_> {
 fn is_preprint(csl: &Value) -> bool {
     let kind = csl.get("type").and_then(Value::as_str).unwrap_or("");
     let doi = csl.get("DOI").and_then(Value::as_str).unwrap_or("");
-    matches!(kind, "article" | "posted-content" | "manuscript")
+    matches!(crate::record::csl_type(kind), "article" | "manuscript")
         || doi.to_lowercase().starts_with("10.48550/")
 }
 

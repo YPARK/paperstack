@@ -121,6 +121,15 @@ enum Command {
         #[arg(long)]
         folder: Vec<String>,
     },
+    /// The TUI's screen after the keys given, as text: `/perturb <enter>`
+    #[command(hide = true)]
+    Screen {
+        #[arg(long, default_value_t = 160)]
+        width: u16,
+        #[arg(long, default_value_t = 44)]
+        height: u16,
+        keys: Vec<String>,
+    },
     /// What paperstack reads in a PDF to tell which paper it is
     #[command(hide = true)]
     Pdf {
@@ -232,6 +241,19 @@ fn main() -> anyhow::Result<()> {
             take,
             folder,
         }) => run_daemon(&args.library, &net(), Some(port), &watch, take, folder),
+        Some(Command::Screen {
+            width,
+            height,
+            keys,
+        }) => {
+            let (lib, index) = open(&args.library)?;
+            let mut app = app::App::new(lib, index)?;
+            for key in keys.iter().flat_map(|k| app::keys(k)) {
+                let _ = app.key(key);
+            }
+            println!("{}", app::screen(&mut app, width, height));
+            Ok(())
+        }
         Some(Command::Pdf { file, title }) => {
             let reading = pdf::read(&std::fs::read(&file)?)?;
             if let Some(t) = title {

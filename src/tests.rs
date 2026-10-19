@@ -4,9 +4,7 @@ use crate::library::Library;
 use crate::query::{Field, Query};
 use crate::record::new_key;
 use crate::source::Source;
-use crate::{bibtex, demo, layout, ui};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use crate::{bibtex, demo, layout};
 use std::path::PathBuf;
 
 /// The demo library in a folder of its own, and its index beside it.
@@ -32,19 +30,7 @@ fn keys(index: &Index, q: &str, sort: Sort) -> Vec<String> {
 }
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal.draw(|f| ui::draw(f, app)).unwrap();
-    let buffer = terminal.backend().buffer();
-    (0..height)
-        .map(|y| {
-            (0..width)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::app::screen(app, width, height)
 }
 
 #[test]
@@ -174,6 +160,22 @@ fn writes_bibtex_as_paperpile_does() {
     assert!(bib.contains("{Tabula Sapiens Consortium}"), "{bib}");
     let bib = bibtex::entry(find("LCM-team2024-lc"));
     assert!(bib.contains("eprint = {2412.08821}"), "{bib}");
+}
+
+#[test]
+fn reads_crossrefs_types_as_csls() {
+    let mut r = demo::records().remove(0);
+    r.csl["type"] = serde_json::json!("journal-article");
+    assert_eq!(r.kind(), "Journal article");
+    let bib = bibtex::entry(&r);
+    assert!(
+        bib.starts_with("@article{") && bib.contains("journal = {Ann Intern Med}"),
+        "{bib}"
+    );
+    r.csl["type"] = serde_json::json!("posted-content");
+    assert_eq!(r.kind(), "Preprint");
+    let t = crate::resolve::tidy(serde_json::json!({ "type": "proceedings-article" }));
+    assert_eq!(t["type"], "paper-conference");
 }
 
 #[test]

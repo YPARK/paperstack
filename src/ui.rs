@@ -362,6 +362,7 @@ fn cite(f: &mut Frame, text: &str, scroll: u16) {
     ));
     f.render_widget(
         Paragraph::new(text.to_string())
+            .wrap(Wrap { trim: false })
             .block(block)
             .scroll((scroll, 0)),
         area,
@@ -392,9 +393,10 @@ fn help(f: &mut Frame) {
         ("c", "BibTeX of the papers marked, or the one picked"),
         ("y", "copy [@key; @key] to the clipboard"),
         ("s", "star, written to the paper's record"),
+        ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
         (
-            "a",
-            "add from a DOI, arXiv, PMID, URL, PDF or BibTeX (not yet)",
+            "r",
+            "read again what paperstack serve, or another machine, added",
         ),
         ("q", "quit"),
     ];
