@@ -9,9 +9,11 @@ use crate::library::Library;
 use crate::net::Net;
 use crate::query::Query;
 use crate::source::Source;
+use crate::theme::{self, Theme};
 use crate::ui;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::style::Modifier;
 use ratatui::widgets::ListState;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -85,6 +87,7 @@ pub struct App {
     pub index: Index,
     /// To add papers with; none, as in tests, and nothing is fetched.
     pub net: Option<Net>,
+    pub theme: Theme,
     /// The shelves, and how many papers each holds.
     pub shelves: Vec<(Shelf, usize)>,
     pub shelf: usize,
@@ -101,9 +104,10 @@ pub struct App {
     quit: bool,
 }
 
-pub fn run((lib, index): (Library, Index), net: Net) -> anyhow::Result<()> {
+pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Result<()> {
     let mut app = App::new(lib, index)?;
     app.net = Some(net);
+    app.theme = theme;
     let mut terminal = ratatui::init();
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
@@ -133,6 +137,7 @@ impl App {
             lib,
             index,
             net: None,
+            theme: Theme::of(theme::Name::default()),
             shelves: Vec::new(),
             shelf: 1,
             focus: Focus::List,
@@ -523,6 +528,95 @@ pub fn screen(app: &mut App, width: u16, height: u16) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The screen as an SVG, with its colours, as a terminal would show it:
+/// for a look at a theme, or a picture for the README.
+pub fn screen_svg(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::style::Color;
+    use std::fmt::Write;
+    const CW: f64 = 8.4;
+    const CH: f64 = 18.0;
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+        .expect("a screen in memory");
+    terminal
+        .draw(|f| ui::draw(f, app))
+        .expect("drawn in memory");
+    let buffer = terminal.backend().buffer();
+    let dark = matches!(app.theme.page, Color::Reset);
+    let hex = |c: Color, bg: bool| -> String {
+        let (r, g, b) = match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::Reset if bg => {
+                if dark {
+                    (30, 30, 30)
+                } else {
+                    (255, 255, 255)
+                }
+            }
+            Color::Reset => {
+                if dark {
+                    (220, 220, 220)
+                } else {
+                    (51, 51, 51)
+                }
+            }
+            Color::Black => (0, 0, 0),
+            Color::Red => (205, 49, 49),
+            Color::Green => (13, 188, 121),
+            Color::Yellow => (229, 192, 37),
+            Color::Blue => (36, 114, 200),
+            Color::Magenta => (188, 63, 188),
+            Color::Cyan => (17, 168, 205),
+            Color::Gray => (204, 204, 204),
+            Color::DarkGray => (118, 118, 118),
+            Color::LightBlue => (59, 142, 234),
+            Color::White => (255, 255, 255),
+            Color::Indexed(n) if n >= 232 => {
+                let v = 8 + (n - 232) * 10;
+                (v, v, v)
+            }
+            _ => (128, 128, 128),
+        };
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
+    let mut svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='{}' height='{}' font-family='Menlo, Monaco, monospace' font-size='14'>\n",
+        f64::from(width) * CW,
+        f64::from(height) * CH
+    );
+    for y in 0..height {
+        for x in 0..width {
+            let cell = &buffer[(x, y)];
+            let (px, py) = (f64::from(x) * CW, f64::from(y) * CH);
+            let _ = writeln!(
+                svg,
+                "<rect x='{px:.1}' y='{py:.1}' width='{:.1}' height='{CH}' fill='{}'/>",
+                CW + 0.6,
+                hex(cell.bg, true)
+            );
+            let symbol = cell.symbol();
+            if !symbol.trim().is_empty() {
+                let bold = if cell.modifier.contains(Modifier::BOLD) {
+                    " font-weight='bold'"
+                } else {
+                    ""
+                };
+                let text = symbol
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                let _ = writeln!(
+                    svg,
+                    "<text x='{px:.1}' y='{:.1}' fill='{}'{bold}>{text}</text>",
+                    py + 13.5,
+                    hex(cell.fg, false)
+                );
+            }
+        }
+    }
+    svg.push_str("</svg>\n");
+    svg
 }
 
 /// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
