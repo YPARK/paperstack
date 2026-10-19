@@ -3,6 +3,7 @@
 //! searched through an index kept on this machine. PDFs are presented with
 //! ohp.
 
+mod add;
 mod agents;
 mod app;
 mod bibtex;
@@ -11,8 +12,11 @@ mod demo;
 mod index;
 mod layout;
 mod library;
+mod net;
+mod pdf;
 mod query;
 mod record;
+mod resolve;
 mod source;
 mod ui;
 
@@ -34,6 +38,10 @@ struct Args {
         global = true
     )]
     library: PathBuf,
+    /// Given to Crossref, OpenAlex and NCBI, who serve first those who give one;
+    /// git's user.email without it
+    #[arg(long, env = "PAPERSTACK_EMAIL", global = true)]
+    email: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -66,6 +74,36 @@ enum Command {
         #[command(flatten)]
         format: cli::Format,
     },
+    /// Add papers: DOIs, arXiv ids, PMIDs, PMCIDs, publishers' addresses,
+    /// PDFs or titles; `-` reads them from stdin, one a line
+    Add {
+        #[arg(required = true)]
+        what: Vec<String>,
+        /// Put them in this folder too
+        #[arg(long)]
+        folder: Vec<String>,
+        #[arg(long)]
+        label: Vec<String>,
+        /// Do not download an open copy of the PDF
+        #[arg(long)]
+        no_pdf: bool,
+        /// What was added, as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// File the PDFs in the library's inbox/, and take out those filed
+    Inbox {
+        #[arg(long)]
+        json: bool,
+    },
+    /// What paperstack reads in a PDF to tell which paper it is
+    #[command(hide = true)]
+    Pdf {
+        file: PathBuf,
+        /// Say whether this title is the PDF's
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 fn default_root() -> PathBuf {
@@ -87,10 +125,95 @@ fn open(root: &Path) -> anyhow::Result<(Library, Index)> {
     Ok((lib, index))
 }
 
+/// The address given to registries: `--email`, else git's.
+fn email(given: Option<String>) -> Option<String> {
+    given.or_else(|| {
+        let out = std::process::Command::new("git")
+            .args(["config", "user.email"])
+            .output()
+            .ok()?;
+        let e = String::from_utf8(out.stdout).ok()?.trim().to_string();
+        e.contains('@').then_some(e)
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let net = || net::Net::new(email(args.email.clone()));
     match args.command {
-        None => app::run(open(&args.library)?),
+        None => app::run(open(&args.library)?, net()),
+        Some(Command::Add {
+            what,
+            folder,
+            label,
+            no_pdf,
+            json,
+        }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let lines: Vec<String> = if what == ["-"] {
+                std::io::stdin().lines().map_while(Result::ok).collect()
+            } else {
+                what
+            };
+            let net = net();
+            let mut adder = add::Adder {
+                lib: &lib,
+                index: &mut index,
+                net: &net,
+                options: add::Options {
+                    pdf: !no_pdf,
+                    folders: folder,
+                    labels: label,
+                },
+            };
+            let done: Vec<(String, anyhow::Result<add::Added>)> = lines
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| (l.clone(), adder.add(l)))
+                .collect();
+            cli::print_added(&lib, &done, json)
+        }
+        Some(Command::Pdf { file, title }) => {
+            let reading = pdf::read(&std::fs::read(&file)?)?;
+            if let Some(t) = title {
+                println!("has title: {}", pdf::has_title(&t, &reading.text()));
+            }
+            println!("embedded: {:?}", reading.embedded);
+            println!("ids: {:?}", pdf::ids(&reading));
+            for q in pdf::queries(&reading) {
+                println!("query: {q}");
+            }
+            println!("---- page 1");
+            for line in reading
+                .pages
+                .first()
+                .into_iter()
+                .flat_map(|p| p.lines())
+                .take(40)
+            {
+                println!("| {line}");
+            }
+            Ok(())
+        }
+        Some(Command::Inbox { json }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let net = net();
+            let mut adder = add::Adder {
+                lib: &lib,
+                index: &mut index,
+                net: &net,
+                options: add::Options {
+                    pdf: false,
+                    ..add::Options::default()
+                },
+            };
+            let done: Vec<(String, anyhow::Result<add::Added>)> = adder
+                .inbox()?
+                .into_iter()
+                .map(|(p, r)| (p.display().to_string(), r))
+                .collect();
+            cli::print_added(&lib, &done, json)
+        }
         Some(Command::Init { demo }) => {
             let lib = Library::init(&args.library)?;
             if demo {

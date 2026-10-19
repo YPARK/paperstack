@@ -29,9 +29,20 @@ fn stem(r: &Record) -> PathBuf {
         .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
     let mut path = PathBuf::from(year);
     path.push(part(&family));
-    path.push(part(&given));
+    path.push(part(&initials(&given).unwrap_or(given)));
     path.push(format!("{}_{}", r.key, slug(r.title())));
     path
+}
+
+/// Given names that are initials alone, `B. P.` or `B.-P.`, as `BP`, as
+/// a reference manager writes them.
+fn initials(given: &str) -> Option<String> {
+    let letters: Vec<&str> = given
+        .split(|c: char| c.is_whitespace() || c == '.' || c == '-')
+        .filter(|p| !p.is_empty())
+        .collect();
+    (!letters.is_empty() && letters.iter().all(|p| p.chars().count() == 1))
+        .then(|| letters.concat())
 }
 
 /// A name as a folder, in NFC: what no file system takes replaced, `_` for

@@ -2,9 +2,11 @@
 //! search line are one query, searched in the index; a star is written to
 //! the paper's record, and read back into the index.
 
+use crate::add::{Adder, Options};
 use crate::bibtex;
 use crate::index::{Hit, Index, Shelves, Sort};
 use crate::library::Library;
+use crate::net::Net;
 use crate::query::Query;
 use crate::source::Source;
 use crate::ui;
@@ -72,6 +74,8 @@ pub enum Popup {
 pub struct App {
     pub lib: Library,
     pub index: Index,
+    /// To add papers with; none, as in tests, and nothing is fetched.
+    pub net: Option<Net>,
     /// The shelves, and how many papers each holds.
     pub shelves: Vec<(Shelf, usize)>,
     pub shelf: usize,
@@ -88,8 +92,9 @@ pub struct App {
     quit: bool,
 }
 
-pub fn run((lib, index): (Library, Index)) -> anyhow::Result<()> {
+pub fn run((lib, index): (Library, Index), net: Net) -> anyhow::Result<()> {
     let mut app = App::new(lib, index)?;
+    app.net = Some(net);
     let mut terminal = ratatui::init();
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
@@ -111,6 +116,7 @@ impl App {
         let mut app = App {
             lib,
             index,
+            net: None,
             shelves: Vec::new(),
             shelf: 1,
             focus: Focus::List,
@@ -219,13 +225,11 @@ impl App {
                 match key.code {
                     KeyCode::Esc => self.popup = Popup::None,
                     KeyCode::Enter => {
-                        let (what, _) = Source::of(line).plan();
-                        self.status = if what.is_empty() {
-                            "nothing to add".to_string()
-                        } else {
-                            format!("not yet: adding {what} comes with `paperstack add`")
-                        };
+                        let line = line.clone();
                         self.popup = Popup::None;
+                        self.status = format!("adding {}…", Source::of(&line).plan().0);
+                        let _ = terminal.draw(|f| ui::draw(f, self));
+                        self.add(&line);
                     }
                     KeyCode::Backspace => {
                         line.pop();
@@ -382,6 +386,44 @@ impl App {
                     .select(Some(at.saturating_add_signed(by).min(self.shown.len() - 1)));
             }
             Focus::List => {}
+        }
+    }
+
+    /// Add what `line` names, into the folder or label picked on the left,
+    /// and show it.
+    fn add(&mut self, line: &str) {
+        let Some(net) = &self.net else {
+            self.status = "cannot add here: nothing is fetched".to_string();
+            return;
+        };
+        let mut options = Options {
+            pdf: true,
+            ..Options::default()
+        };
+        match &self.shelves[self.shelf].0 {
+            Shelf::Folder(f) => options.folders.push(f.clone()),
+            Shelf::Label(l) => options.labels.push(l.clone()),
+            _ => {}
+        }
+        let done = Adder {
+            lib: &self.lib,
+            index: &mut self.index,
+            net,
+            options,
+        }
+        .add(line);
+        match done {
+            Ok(added) => {
+                let pdf = if added.has_pdf { "" } else { ", no PDF" };
+                self.status = format!("{}: {:?}, by {}{pdf}", added.key, added.outcome, added.how);
+                let _ = self.restock();
+                self.query.clear();
+                self.narrow();
+                if let Some(at) = self.shown.iter().position(|h| h.record.key == added.key) {
+                    self.list.select(Some(at));
+                }
+            }
+            Err(e) => self.status = format!("{e:#}").replace('\n', " "),
         }
     }
 

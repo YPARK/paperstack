@@ -1,6 +1,7 @@
 //! What `paperstack find` and `get` print: for a person, a line a paper;
 //! for an agent, JSON; for a document, BibTeX, CSL JSON or citation keys.
 
+use crate::add::{Added, Outcome};
 use crate::bibtex;
 use crate::index::Hit;
 use crate::library::Library;
@@ -56,6 +57,58 @@ pub fn print(lib: &Library, hits: &[Hit], format: &Format) -> anyhow::Result<()>
                 .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
             println!("{:<24} {year:<5} {first:<16} {}", r.key, r.title());
         }
+    }
+    Ok(())
+}
+
+/// What `add` and `inbox` did with each thing given; an error if any
+/// could not be added, after saying what was.
+pub fn print_added(
+    lib: &Library,
+    done: &[(String, anyhow::Result<Added>)],
+    as_json: bool,
+) -> anyhow::Result<()> {
+    if as_json {
+        let all: Vec<Value> = done
+            .iter()
+            .map(|(given, r)| match r {
+                Ok(a) => json!({
+                    "given": given,
+                    "key": a.key,
+                    "outcome": a.outcome,
+                    "how": a.how,
+                    "record": lib.root.join(&a.path),
+                    "pdf": a.has_pdf.then(|| lib.root.join(&a.path).with_extension("pdf")),
+                }),
+                Err(e) => json!({ "given": given, "error": format!("{e:#}") }),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&all)?);
+    } else {
+        for (given, r) in done {
+            match r {
+                Ok(a) => {
+                    let what = match a.outcome {
+                        Outcome::Added => "added",
+                        Outcome::Known => "already here",
+                        Outcome::Published => "now as published",
+                        Outcome::PdfAttached => "given its PDF",
+                    };
+                    let pdf = if a.has_pdf { "" } else { ", no PDF" };
+                    println!(
+                        "{:<24} {what}, by {}{pdf}: {}",
+                        a.key,
+                        a.how,
+                        a.path.display()
+                    );
+                }
+                Err(e) => eprintln!("paperstack: {given}: {e:#}"),
+            }
+        }
+    }
+    let failed = done.iter().filter(|(_, r)| r.is_err()).count();
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} not added", done.len());
     }
     Ok(())
 }
