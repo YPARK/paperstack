@@ -6,9 +6,21 @@ rust-version = "1.92"
 license = "MIT"
 authors = ["Yongjin Park <yongjin.park@ubc.ca>"]
 description = "A library of papers in the terminal: PDFs and their references, kept in a folder an agent can read"
+repository = "https://github.com/YPARK/paperstack"
 keywords = ["bibtex", "pdf", "references", "tui"]
 categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+deunicode = "1.6"
 ratatui = "0.30"
+# SQLite built in, with FTS5: the index is a cache on this machine, so no
+# system library need match it.
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27"

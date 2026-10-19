@@ -1,14 +1,17 @@
-//! The screen: a search line, folders on the left, papers in the middle,
+//! The screen: a search line, shelves on the left, papers in the middle,
 //! the paper picked on the right, and the keys at the foot.
 
-use crate::bib::Source;
-use crate::mock::Paper;
-use crate::{App, Focus, Popup, Shelf};
+use crate::app::{App, Focus, Popup, Shelf};
+use crate::record::Record;
+use crate::source::Source;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
+
+/// Authors listed before `… n more`.
+const AUTHORS_SHOWN: usize = 5;
 
 fn dim() -> Style {
     Style::new().fg(Color::DarkGray)
@@ -72,7 +75,7 @@ fn search(f: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
         ),
         Span::styled(
-            format!(" {} ", tilde(&app.root.display().to_string())),
+            format!(" {} ", tilde(&app.lib.root.display().to_string())),
             dim(),
         ),
         Span::raw(" / "),
@@ -85,13 +88,17 @@ fn search(f: &mut Frame, app: &App, area: Rect) {
     if app.searching {
         spans.push(Span::styled("▏", Style::new().fg(Color::Yellow)));
     }
+    let all = app.shelves.get(1).map_or(0, |(_, n)| *n);
     let right = format!(
-        "{} of {} references · date added ↓ ",
+        "{} of {all} references · {} ",
         app.shown.len(),
-        app.papers.len()
+        app.sort.name()
     );
-    let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(right.len() as u16)])
-        .areas(area);
+    let [l, r] = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length(right.chars().count() as u16),
+    ])
+    .areas(area);
     f.render_widget(Paragraph::new(Line::from(spans)), l);
     f.render_widget(Paragraph::new(Span::styled(right, dim())), r);
 }
@@ -101,24 +108,23 @@ fn shelves(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .shelves
         .iter()
-        .map(|&shelf| {
-            let (icon, name) = match shelf {
+        .map(|(shelf, n)| {
+            let icon = match shelf {
                 Shelf::Heading(h) => {
-                    return ListItem::new(Line::styled(h, dim().add_modifier(Modifier::BOLD)));
+                    return ListItem::new(Line::styled(*h, dim().add_modifier(Modifier::BOLD)));
                 }
-                Shelf::All => ("▤", "All".to_string()),
-                Shelf::Starred => ("★", "Starred".to_string()),
-                Shelf::NoPdf => ("∅", "No PDF".to_string()),
-                Shelf::Folder(name) => ("▸", name.to_string()),
-                Shelf::Label(name) => ("#", name.to_string()),
-                Shelf::Project(doc) => ("✎", doc.to_string()),
+                Shelf::All => "▤",
+                Shelf::Starred => "★",
+                Shelf::NoPdf => "∅",
+                Shelf::NoAbstract => "¶",
+                Shelf::Folder(_) => "▸",
+                Shelf::Label(_) => "#",
             };
-            let n = app.papers.iter().filter(|p| shelf.holds(p)).count();
             let count = n.to_string();
             let room = width.saturating_sub(count.len() + 3);
-            let name: String = name.chars().take(room).collect();
+            let name: String = shelf.name().chars().take(room).collect();
             let pad = width.saturating_sub(name.chars().count() + count.len() + 2);
-            let style = if n == 0 { dim() } else { Style::new() };
+            let style = if *n == 0 { dim() } else { Style::new() };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{icon} "), Style::new().fg(Color::Yellow)),
                 Span::styled(name, style),
@@ -139,21 +145,16 @@ fn shelves(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-/// `A, B, C … n more … Z`, as a reference manager shortens a long list of authors.
-fn authors(p: &Paper) -> String {
-    let names: Vec<String> = p
-        .authors
+/// `A, B, C … n more`, as a reference manager shortens a long list of authors.
+fn authors(r: &Record, shown: usize) -> String {
+    let all = r.authors();
+    let names: Vec<String> = all
         .iter()
-        .map(|(family, given)| {
-            if given.is_empty() {
-                family.to_string()
-            } else {
-                format!("{family} {given}")
-            }
-        })
+        .take(shown)
+        .map(|n| format!("{} {}", n.family, n.given).trim().to_string())
         .collect();
-    if p.more > 0 {
-        format!("{} … {} more", names.join(", "), p.more)
+    if all.len() > shown {
+        format!("{} … {} more", names.join(", "), all.len() - shown)
     } else {
         names.join(", ")
     }
@@ -164,52 +165,54 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .shown
         .iter()
-        .map(|&i| {
-            let p = &app.papers[i];
-            let mark = if app.marked.contains(&i) {
+        .map(|h| {
+            let r = &h.record;
+            let mark = if app.marked.contains(&r.key) {
                 Span::styled("● ", Style::new().fg(Color::Cyan))
             } else {
                 Span::raw("  ")
             };
-            let star = if p.starred {
+            let star = if r.paperstack.starred {
                 Span::styled(" ★", Style::new().fg(Color::Yellow))
             } else {
                 Span::raw("")
             };
-            let title: String = clip(p.title, width.saturating_sub(4));
-            let pdf = if p.pdf {
+            let pdf = if h.has_pdf {
                 Span::styled(" PDF ", Style::new().fg(Color::Black).bg(Color::Gray))
             } else {
                 Span::styled(" no PDF ", dim())
             };
+            let year = r
+                .year()
+                .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
             ListItem::new(Text::from(vec![
                 Line::from(vec![
                     mark,
-                    Span::styled(title, Style::new().fg(Color::LightBlue).bold()),
+                    Span::styled(
+                        clip(r.title(), width.saturating_sub(4)),
+                        Style::new().fg(Color::LightBlue).bold(),
+                    ),
                     star,
                 ]),
-                Line::from(vec![Span::raw("  "), Span::raw(clip(&authors(p), width))]),
                 Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(p.venue, venue()),
-                    Span::styled(format!(" · {} · {}  ", p.year, p.kind.name()), dim()),
+                    Span::raw(clip(&authors(r, AUTHORS_SHOWN), width)),
+                ]),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(r.venue().to_string(), venue()),
+                    Span::styled(format!(" · {year} · {}  ", r.kind()), dim()),
                     pdf,
-                    Span::styled(format!("  {}", p.key), dim()),
+                    Span::styled(format!("  {}", r.key), dim()),
                 ]),
                 Line::raw(""),
             ]))
         })
         .collect();
-    let shelf = match app.shelves[app.shelf] {
-        Shelf::Heading(h) => h.to_string(),
-        Shelf::All => "All".to_string(),
-        Shelf::Starred => "Starred".to_string(),
-        Shelf::NoPdf => "No PDF".to_string(),
-        Shelf::Folder(name) | Shelf::Label(name) | Shelf::Project(name) => name.to_string(),
-    };
     let focused = app.focus == Focus::List;
+    let title = app.shelves[app.shelf].0.name().to_string();
     let list = List::new(items)
-        .block(frame(&shelf, focused))
+        .block(frame(&title, focused))
         .highlight_symbol("▌")
         .highlight_style(Style::new().bg(Color::Indexed(236)));
     f.render_stateful_widget(list, area, &mut app.list);
@@ -217,18 +220,12 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn details(f: &mut Frame, app: &App, area: Rect) {
     let block = frame("Details", false);
-    let Some(p) = app.current() else {
+    let Some(h) = app.current() else {
         f.render_widget(block, area);
         return;
     };
-    let path = app.pdf(p);
-    let name = |path: &std::path::Path| {
-        path.file_name()
-            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-    };
-    let folder = crate::layout::record(p)
-        .parent()
-        .map_or_else(String::new, |d| format!("{}/", d.display()));
+    let r = &h.record;
+    let m = &r.paperstack;
     let field = |name: &'static str, value: String| {
         Line::from(vec![
             Span::styled(format!("{name:<9}"), dim()),
@@ -236,43 +233,50 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         ])
     };
     let none = || "—".to_string();
+    let file = h
+        .path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let folder = h
+        .path
+        .parent()
+        .map_or_else(String::new, |d| format!("{}/", d.display()));
     let mut lines = vec![
-        Line::styled(p.title, Style::new().bold()),
+        Line::styled(r.title().to_string(), Style::new().bold()),
         Line::raw(""),
-        Line::raw(authors(p)),
+        Line::raw(authors(r, usize::MAX)),
         Line::from(vec![
-            Span::styled(p.venue, venue()),
-            Span::styled(format!(" · {}", p.year), dim()),
+            Span::styled(r.venue().to_string(), venue()),
+            Span::styled(
+                format!(" · {}", r.year().map_or_else(none, |y| y.to_string())),
+                dim(),
+            ),
         ]),
         Line::raw(""),
-        field("key", p.key.to_string()),
-        field("DOI", p.doi.map_or_else(none, str::to_string)),
-        field("arXiv", p.arxiv.map_or_else(none, str::to_string)),
+        field("key", r.key.clone()),
+        field("DOI", r.doi().map_or_else(none, str::to_string)),
+        field("arXiv", m.arxiv.clone().unwrap_or_else(none)),
         field("folder", folder),
         Line::from(vec![
             Span::styled(format!("{:<9}", "PDF"), dim()),
-            if path.exists() {
-                Span::styled("✓ ", Style::new().fg(Color::Green))
-            } else if p.pdf {
-                Span::styled("✓ (mock) ", Style::new().fg(Color::Green))
+            if h.has_pdf {
+                Span::styled("✓", Style::new().fg(Color::Green))
             } else {
-                Span::styled("✗ ", Style::new().fg(Color::Red))
+                Span::styled("✗", Style::new().fg(Color::Red))
             },
-            Span::raw(name(&path)),
         ]),
-        field("record", name(&crate::layout::record(p))),
-        field("folders", join(p.folders)),
-        field("labels", join(p.labels)),
-        field("cited in", join(p.cited_in)),
+        field("record", file),
+        field("folders", join(&m.folders)),
+        field("labels", join(&m.labels)),
         Line::raw(""),
-        Line::styled("Summary", dim()),
-        Line::raw(p.summary),
+        Line::styled("Abstract", dim()),
+        Line::raw(r.abstract_text().unwrap_or("—").to_string()),
     ];
     if !app.marked.is_empty() {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             format!(
-                "{} marked: c cites them all, y yanks their keys",
+                "{} marked: c gives their BibTeX, y their keys",
                 app.marked.len()
             ),
             Style::new().fg(Color::Cyan),
@@ -289,13 +293,15 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
 fn keys(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
     for (k, what) in [
-        ("a", "add"),
         ("/", "search"),
+        ("S", "sort"),
         ("⏎", "open in ohp"),
+        ("␣", "mark"),
+        ("*", "mark all"),
         ("c", "BibTeX"),
         ("y", "yank [@key]"),
-        ("␣", "mark"),
         ("s", "star"),
+        ("a", "add"),
         ("?", "help"),
         ("q", "quit"),
     ] {
@@ -317,8 +323,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
 fn add(f: &mut Frame, line: &str) {
     let area = centered(f.area(), 84, 16);
     f.render_widget(Clear, area);
-    let source = Source::of(line);
-    let (what, steps) = source.plan();
+    let (what, steps) = Source::of(line).plan();
     let mut lines = vec![
         Line::styled(
             "DOI, arXiv id, PMID, URL, a PDF's path, BibTeX or words",
@@ -365,21 +370,35 @@ fn cite(f: &mut Frame, text: &str, scroll: u16) {
 
 fn help(f: &mut Frame) {
     let rows = [
-        ("j k ↑ ↓", "move; on the left, change folder"),
-        ("h l tab", "switch between folders and papers"),
-        ("/", "search title, authors, key, venue, DOI; esc clears"),
+        ("j k ↑ ↓", "move; on the left, change shelf"),
+        ("h l tab", "switch between shelves and papers"),
+        (
+            "/",
+            "search; esc clears. Words and \"phrases\" in title, abstract, authors",
+        ),
+        (
+            "",
+            "author:  year:2020..2026  folder:\"name\"  label:  has:pdf  is:starred  -...",
+        ),
+        (
+            "S",
+            "sort: relevance, date added, year, first author, title",
+        ),
         ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
         (
-            "a",
-            "add from a DOI, arXiv, PMID, URL, PDF or BibTeX; the clipboard is filled in",
+            "space",
+            "mark a paper; * marks all shown, again unmarks; esc unmarks all",
         ),
-        ("space", "mark a paper, for c and y to take several"),
-        ("c", "BibTeX of the marked papers, or the one picked"),
+        ("c", "BibTeX of the papers marked, or the one picked"),
         ("y", "copy [@key; @key] to the clipboard"),
-        ("s", "star"),
+        ("s", "star, written to the paper's record"),
+        (
+            "a",
+            "add from a DOI, arXiv, PMID, URL, PDF or BibTeX (not yet)",
+        ),
         ("q", "quit"),
     ];
-    let area = centered(f.area(), 92, rows.len() as u16 + 4);
+    let area = centered(f.area(), 92, rows.len() as u16 + 2);
     f.render_widget(Clear, area);
     let lines: Vec<Line> = rows
         .iter()
@@ -414,7 +433,7 @@ fn clip(s: &str, width: usize) -> String {
     }
 }
 
-fn join(items: &[&str]) -> String {
+fn join(items: &[String]) -> String {
     if items.is_empty() {
         "—".to_string()
     } else {

@@ -4,36 +4,42 @@
 //! the given name or, where only that is known, the initials; the slug is
 //! the title's first words, lowercase ASCII.
 
-use crate::mock::Paper;
+use crate::record::Record;
 use std::path::PathBuf;
+use unicode_normalization::UnicodeNormalization;
 
 /// Words of the title in the slug, and its longest.
 const SLUG_WORDS: usize = 6;
 const SLUG_CHARS: usize = 60;
 
-pub fn pdf(p: &Paper) -> PathBuf {
-    stem(p).with_extension("pdf")
+pub fn pdf(r: &Record) -> PathBuf {
+    stem(r).with_extension("pdf")
 }
 
-pub fn record(p: &Paper) -> PathBuf {
-    stem(p).with_extension("json")
+pub fn record(r: &Record) -> PathBuf {
+    stem(r).with_extension("json")
 }
 
 /// The path, from the library's root, without the extension.
-fn stem(p: &Paper) -> PathBuf {
-    let (family, given) = p.authors.first().copied().unwrap_or(("", ""));
-    let mut path = PathBuf::from(p.year.to_string());
-    path.push(part(family));
-    path.push(part(given));
-    path.push(format!("{}_{}", p.key, slug(p.title)));
+fn stem(r: &Record) -> PathBuf {
+    let first = r.authors().into_iter().next();
+    let (family, given) = first.map_or_else(Default::default, |n| (n.family, n.given));
+    let year = r
+        .year()
+        .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
+    let mut path = PathBuf::from(year);
+    path.push(part(&family));
+    path.push(part(&given));
+    path.push(format!("{}_{}", r.key, slug(r.title())));
     path
 }
 
-/// A name as a folder: what no file system takes replaced, `_` for none.
+/// A name as a folder, in NFC: what no file system takes replaced, `_` for
+/// none.
 fn part(name: &str) -> String {
     let s: String = name
         .trim()
-        .chars()
+        .nfc()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
             c if c.is_control() => '-',
@@ -47,14 +53,9 @@ fn part(name: &str) -> String {
 /// `deep-learning-based-gene-perturbation-effect`: the title's first words,
 /// lowercase, in ASCII letters and digits.
 pub fn slug(title: &str) -> String {
-    let words = title
-        .split(|c: char| !c.is_alphanumeric())
-        .map(|w| {
-            w.chars()
-                .filter(char::is_ascii_alphanumeric)
-                .collect::<String>()
-                .to_lowercase()
-        })
+    let ascii = deunicode::deunicode(title).to_lowercase();
+    let words = ascii
+        .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
         .take(SLUG_WORDS);
     let mut slug = String::new();
@@ -65,7 +66,7 @@ pub fn slug(title: &str) -> String {
         if !slug.is_empty() {
             slug.push('-');
         }
-        slug.push_str(&w);
+        slug.push_str(w);
     }
     slug.truncate(SLUG_CHARS);
     slug

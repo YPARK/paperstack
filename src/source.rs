@@ -1,45 +1,5 @@
-//! BibTeX for papers, and what a line pasted into "add" names.
-
-use crate::mock::Paper;
-use std::fmt::Write;
-
-pub fn bibtex(p: &Paper) -> String {
-    let authors = p
-        .authors
-        .iter()
-        .map(|(family, given)| {
-            if given.is_empty() {
-                format!("{{{family}}}")
-            } else {
-                format!("{family}, {given}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" and ");
-    let authors = if p.more > 0 {
-        format!("{authors} and others")
-    } else {
-        authors
-    };
-    let venue = match p.kind {
-        crate::mock::Kind::Conference => "booktitle",
-        crate::mock::Kind::Preprint => "howpublished",
-        crate::mock::Kind::Article => "journal",
-    };
-    let mut s = format!("@{}{{{},\n", p.kind.bibtex(), p.key);
-    let _ = writeln!(s, "  title = \"{}\",", p.title);
-    let _ = writeln!(s, "  author = \"{authors}\",");
-    let _ = writeln!(s, "  {venue} = \"{}\",", p.venue);
-    let _ = writeln!(s, "  year = {},", p.year);
-    if let Some(doi) = p.doi {
-        let _ = writeln!(s, "  doi = \"{doi}\",");
-    }
-    if let Some(id) = p.arxiv {
-        let _ = writeln!(s, "  eprint = \"{id}\",\n  archivePrefix = \"arXiv\",");
-    }
-    s.push_str("}\n");
-    s
-}
+//! What a line given to "add" names: a DOI, an arXiv id, a PMID, a page,
+//! a PDF, BibTeX or words to search for; and how it would be read.
 
 /// What a line given to "add" names, and how it would be read.
 pub enum Source {
