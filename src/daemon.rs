@@ -3,8 +3,10 @@
 //! too, and takes papers from the browser extension at `127.0.0.1`, their
 //! PDFs fetched in the browser, past paywalls and bot checks.
 //!
-//! The server answers only this machine, and of browsers only their
-//! extensions: a page cannot add papers.
+//! The server answers only this machine, and of browsers only paperstack's
+//! extension, or those named: a page cannot add papers. Each request is
+//! read on a thread of its own, so a slow one keeps no other waiting; what
+//! they ask is done one at a time, as the index is one.
 
 use crate::add::{Added, Adder, Options, Page, one_line};
 use crate::index::Index;
@@ -17,9 +19,13 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
 pub const PORT: u16 = 8765;
+/// The extension in `extension/`: its id, as the `key` in its manifest
+/// fixes it wherever it is loaded from.
+pub const EXTENSION: &str = "kckhjncnkhapnmnjlpjefjamffaecmcf";
 /// How long a request may take to come, all of it, and each part of it.
 const DEADLINE: Duration = Duration::from_secs(60);
 const PAUSE: Duration = Duration::from_secs(10);
@@ -28,7 +34,6 @@ const LINE_LIMIT: u64 = 16 << 10;
 const HEADERS: usize = 100;
 /// How often folders are looked in.
 const SCAN: Duration = Duration::from_secs(2);
-const TICK: Duration = Duration::from_millis(200);
 /// The largest request taken: a PDF, in base64.
 const BODY_LIMIT: usize = 400 << 20;
 
@@ -50,6 +55,16 @@ pub struct Daemon<'a> {
     pub index: &'a mut Index,
     pub net: &'a Net,
     pub folders: Vec<String>,
+    /// Ids of the extensions that may ask, besides paperstack's.
+    pub extensions: Vec<String>,
+}
+
+/// A request read whole, and the connection to answer it on.
+struct Request {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    stream: TcpStream,
 }
 
 impl Daemon<'_> {
@@ -67,19 +82,31 @@ impl Daemon<'_> {
     }
 
     pub fn run(&mut self, port: Option<u16>, watched: &[Watched]) -> anyhow::Result<()> {
-        let listener = match port {
-            Some(p) => {
-                let l = TcpListener::bind(("127.0.0.1", p)).with_context(|| {
-                    format!("cannot listen at 127.0.0.1:{p}: is paperstack serve running already?")
-                })?;
-                l.set_nonblocking(true)?;
-                say(&format!(
-                    "listening at http://127.0.0.1:{p} for the browser extension"
-                ));
-                Some(l)
-            }
-            None => None,
-        };
+        // Kept here, so waiting on it waits, whether or not anything listens.
+        let (tx, rx) = mpsc::channel::<Request>();
+        if let Some(p) = port {
+            let listener = TcpListener::bind(("127.0.0.1", p)).with_context(|| {
+                format!("cannot listen at 127.0.0.1:{p}: is paperstack serve running already?")
+            })?;
+            say(&format!(
+                "listening at http://127.0.0.1:{p} for the browser extension"
+            ));
+            let mut allowed = vec![EXTENSION.to_string()];
+            allowed.extend(self.extensions.iter().cloned());
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let (tx, allowed) = (tx.clone(), allowed.clone());
+                    std::thread::spawn(move || match read(stream, p, &allowed) {
+                        Ok(Some(request)) => {
+                            let _ = tx.send(request);
+                        }
+                        Ok(None) => {}
+                        Err(e) => say(&format!("a request failed: {e:#}")),
+                    });
+                }
+            });
+        }
         // Files done with, or given up on, as they were then; and files
         // seen once, by their size, to be taken when it has not changed.
         let mut done: HashMap<PathBuf, (u64, SystemTime)> = HashMap::new();
@@ -94,18 +121,10 @@ impl Daemon<'_> {
         }
         let mut last_scan = Instant::now() - SCAN;
         loop {
-            if let Some(l) = &listener {
-                loop {
-                    match l.accept() {
-                        Ok((stream, _)) => {
-                            if let Err(e) = self.answer(stream, port.unwrap_or(PORT)) {
-                                say(&format!("a request failed: {e:#}"));
-                            }
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(e) => return Err(e.into()),
-                    }
-                }
+            if let Ok(request) = rx.recv_timeout(SCAN.saturating_sub(last_scan.elapsed()))
+                && let Err(e) = self.answer(request)
+            {
+                say(&format!("a request failed: {e:#}"));
             }
             if last_scan.elapsed() >= SCAN {
                 last_scan = Instant::now();
@@ -123,7 +142,6 @@ impl Daemon<'_> {
                     }
                 }
             }
-            std::thread::sleep(TICK);
         }
     }
 
@@ -147,70 +165,13 @@ impl Daemon<'_> {
         }
     }
 
-    /// Answer one request. It is given a while to come, all of it, so a
-    /// slow one or an idle one does not keep the others waiting long.
-    fn answer(&mut self, mut stream: TcpStream, port: u16) -> anyhow::Result<()> {
-        stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(PAUSE))?;
-        stream.set_write_timeout(Some(PAUSE))?;
-        let started = Instant::now();
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut line = String::new();
-        (&mut reader).take(LINE_LIMIT).read_line(&mut line)?;
-        let mut parts = line.split_whitespace();
-        let method = parts.next().unwrap_or("").to_string();
-        let path = parts.next().unwrap_or("").to_string();
-        let mut headers: HashMap<String, String> = HashMap::new();
-        for _ in 0..HEADERS {
-            let mut h = String::new();
-            if (&mut reader).take(LINE_LIMIT).read_line(&mut h)? == 0 || h.trim().is_empty() {
-                break;
-            }
-            if started.elapsed() > DEADLINE {
-                anyhow::bail!("a request too slow in coming");
-            }
-            if let Some((k, v)) = h.split_once(':') {
-                headers.insert(k.trim().to_lowercase(), v.trim().to_string());
-            }
-        }
-        // A page renamed to this machine, as by DNS rebinding, names its
-        // own host.
-        let host = headers.get("host").map(String::as_str).unwrap_or("");
-        if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
-            return reply(&mut stream, 403, &json!({ "error": "not this machine's" }));
-        }
-        // A page's request names the page; an extension's, the extension;
-        // a program on this machine's, nothing.
-        if let Some(origin) = headers.get("origin")
-            && !origin.starts_with("chrome-extension://")
-            && !origin.starts_with("moz-extension://")
-        {
-            return reply(
-                &mut stream,
-                403,
-                &json!({ "error": "only paperstack's extension may ask" }),
-            );
-        }
-        let length: usize = headers
-            .get("content-length")
-            .and_then(|l| l.parse().ok())
-            .unwrap_or(0);
-        if length > BODY_LIMIT {
-            return reply(&mut stream, 413, &json!({ "error": "too large" }));
-        }
-        let mut body = Vec::with_capacity(length.min(1 << 20));
-        let mut chunk = vec![0; 64 << 10];
-        while body.len() < length {
-            if started.elapsed() > DEADLINE {
-                anyhow::bail!("a request too slow in coming");
-            }
-            let want = (length - body.len()).min(chunk.len());
-            let n = reader.read(&mut chunk[..want])?;
-            if n == 0 {
-                anyhow::bail!("a request cut short");
-            }
-            body.extend_from_slice(&chunk[..n]);
-        }
+    fn answer(&mut self, request: Request) -> anyhow::Result<()> {
+        let Request {
+            method,
+            path,
+            body,
+            mut stream,
+        } = request;
         match (method.as_str(), path.as_str()) {
             ("GET", "/ping") => reply(
                 &mut stream,
@@ -273,6 +234,83 @@ impl Daemon<'_> {
             .unwrap_or_default();
         Ok((added, title))
     }
+}
+
+/// The request on `stream`, read whole, if it may be answered; one that may
+/// not is answered here. It is given a while to come, all of it.
+fn read(mut stream: TcpStream, port: u16, allowed: &[String]) -> anyhow::Result<Option<Request>> {
+    stream.set_read_timeout(Some(PAUSE))?;
+    stream.set_write_timeout(Some(PAUSE))?;
+    let started = Instant::now();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    (&mut reader).take(LINE_LIMIT).read_line(&mut line)?;
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let path = parts.next().unwrap_or("").to_string();
+    let mut headers: HashMap<String, String> = HashMap::new();
+    for _ in 0..HEADERS {
+        let mut h = String::new();
+        if (&mut reader).take(LINE_LIMIT).read_line(&mut h)? == 0 || h.trim().is_empty() {
+            break;
+        }
+        if started.elapsed() > DEADLINE {
+            anyhow::bail!("a request too slow in coming");
+        }
+        if let Some((k, v)) = h.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+    let length: usize = headers
+        .get("content-length")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(0);
+    // A page renamed to this machine, as by DNS rebinding, names its own
+    // host; a page's request names the page as its origin, an extension's
+    // the extension, a program on this machine's nothing.
+    let host = headers.get("host").map(String::as_str).unwrap_or("");
+    let refusal = if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
+        Some((403, "not this machine's"))
+    } else if let Some(origin) = headers.get("origin")
+        && !allowed
+            .iter()
+            .any(|id| *origin == format!("chrome-extension://{id}"))
+    {
+        Some((403, "only paperstack's extension may ask"))
+    } else if length > BODY_LIMIT {
+        Some((413, "too large"))
+    } else {
+        None
+    };
+    if let Some((code, why)) = refusal {
+        // What was sent is read first, as far as a little of it: a
+        // connection closed with some unread is cut, not answered.
+        let _ = std::io::copy(
+            &mut (&mut reader).take(length.min(1 << 20) as u64),
+            &mut std::io::sink(),
+        );
+        reply(&mut stream, code, &json!({ "error": why }))?;
+        return Ok(None);
+    }
+    let mut body = Vec::with_capacity(length.min(1 << 20));
+    let mut chunk = vec![0; 64 << 10];
+    while body.len() < length {
+        if started.elapsed() > DEADLINE {
+            anyhow::bail!("a request too slow in coming");
+        }
+        let want = (length - body.len()).min(chunk.len());
+        let n = reader.read(&mut chunk[..want])?;
+        if n == 0 {
+            anyhow::bail!("a request cut short");
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    Ok(Some(Request {
+        method,
+        path,
+        body,
+        stream,
+    }))
 }
 
 /// The PDFs in `dir`, not hidden, nor still downloading.

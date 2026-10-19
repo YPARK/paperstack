@@ -3,12 +3,23 @@
   "name": "paperstack",
   "version": "0.1.0",
   "description": "Add the paper on this page, with its PDF fetched here, to paperstack (paperstack serve, on this machine).",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArNTOOBN2KBelYLYStQGeC4LvIgIeV4iBHk2w4YKKCS+LuoO/EfPhePDgwO8QedMwIvfIVcnTCwRXqM9NKS4gV94jhRJ639MxfBts/7Qdeh1ygE2pVs0kyaL8Hqgbd3IH2T05+tksYg1lNd1VyEhJqiJEA+93MzA6Z38s9Xwbu2+Suy1e6OgiiNkgIAsBPGAPPs33qtjiiZtjx8vrrpqKpdy3Wzrb4h2hMyz46mm/kfcCHsnb87KMrKkfaKgcHetKQvN8zg1+om/ZGnag7LOa7tA+zDWuOM5yFsuhI9L5ePtZa2nFxgldDbtUauymRAFaEfjgalt1ooHotMxS7KMOUQIDAQAB",
   "action": {
     "default_title": "Add to paperstack",
     "default_icon": "icon.png"
   },
-  "icons": { "128": "icon.png" },
-  "background": { "service_worker": "background.js" },
-  "permissions": ["activeTab", "scripting", "notifications"],
-  "host_permissions": ["<all_urls>"]
+  "icons": {
+    "128": "icon.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
 }
