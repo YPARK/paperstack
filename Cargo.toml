@@ -1,0 +1,14 @@
+[package]
+name = "paperstack"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+authors = ["Yongjin Park <yongjin.park@ubc.ca>"]
+description = "A library of papers in the terminal: PDFs and their references, kept in a folder an agent can read"
+keywords = ["bibtex", "pdf", "references", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0"
+ratatui = "0.30"
