@@ -81,12 +81,16 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `S` | sort by relevance, date added, year, first author or title |
 | `enter`, `o` | open the PDF in ohp; quit ohp to come back |
 | `space` | mark a paper; `*` marks all shown, or unmarks them; `esc` unmarks all |
-| `c` | BibTeX of the papers marked, or the one picked |
+| `ctrl-e` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `q` | quit |
+
+The mouse works too: click a shelf or a paper to pick it, its box to mark
+it, its star to star it, or a paper twice to open it; the wheel moves
+through the list under it.
 
 ## From the browser
 

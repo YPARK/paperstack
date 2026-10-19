@@ -213,6 +213,54 @@ fn draws_the_library() {
     assert!(s.contains("2017/VanderWeele/TJ/"));
 }
 
+/// A left click where any of `what` is drawn the `nth` time, on the
+/// sidebar or right of it.
+fn click(app: &mut App, what: &str, nth: usize, side: bool) -> Option<crate::app::Action> {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let s = screen(app, 160, 44);
+    let (row, column) = s
+        .lines()
+        .enumerate()
+        .flat_map(|(y, l)| {
+            l.chars()
+                .enumerate()
+                .filter(|&(x, c)| what.contains(c) && (x < 30) == side)
+                .map(move |(x, _)| (y as u16, x as u16))
+        })
+        .nth(nth)
+        .unwrap_or_else(|| panic!("no {what} drawn\n{s}"));
+    app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn clicks() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let second = app.shown[1].record.key.clone();
+    click(&mut app, "☐☑", 1, false);
+    assert!(app.marked.contains(&second));
+    assert_eq!(app.list.selected(), Some(0));
+    let starred = app.shown[1].record.paperstack.starred;
+    click(&mut app, "★☆", 1, false);
+    assert_eq!(app.list.selected(), Some(1));
+    assert_eq!(app.current().unwrap().record.paperstack.starred, !starred);
+
+    app.marked.clear();
+    app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+    assert!(matches!(&app.popup, Popup::Cite(text, _) if text.contains(&second)));
+    click(&mut app, "▤", 0, true);
+    assert!(matches!(app.popup, Popup::None));
+
+    click(&mut app, "∅", 0, true);
+    assert_eq!(app.shelves[app.shelf].0.name(), "No PDF");
+}
+
 #[test]
 fn draws_add() {
     let (_dir, lib, index) = library();

@@ -12,13 +12,22 @@ use crate::source::Source;
 use crate::theme::{self, Theme};
 use crate::ui;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Modifier;
 use ratatui::widgets::ListState;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Two clicks on a paper within this open it.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -73,6 +82,23 @@ pub enum Action {
     Add(String),
 }
 
+/// What a click lands on, as the screen was last drawn.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Target {
+    Search,
+    Add,
+    /// The sidebar, and a shelf on it, by its place in `shelves`.
+    Side,
+    Shelf(usize),
+    /// The papers, and one of them, its box and its star, by its place in
+    /// `shown`.
+    List,
+    Paper(usize),
+    Mark(usize),
+    Star(usize),
+    Popup,
+}
+
 pub enum Popup {
     None,
     /// What is typed, as a DOI, arXiv id, PMID, URL, PDF or BibTeX.
@@ -101,6 +127,10 @@ pub struct App {
     pub marked: BTreeSet<String>,
     pub popup: Popup,
     pub status: String,
+    /// Where each thing clicked on was drawn; the last drawn over the rest.
+    pub targets: Vec<(Rect, Target)>,
+    /// The paper last clicked, and when, to know a double click.
+    clicked: Option<(Instant, usize)>,
     quit: bool,
 }
 
@@ -108,27 +138,40 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
     let mut app = App::new(lib, index)?;
     app.net = Some(net);
     app.theme = theme;
-    let mut terminal = ratatui::init();
+    let mut terminal = take();
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
             terminal.draw(|f| ui::draw(f, &mut app))?;
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                match app.key(key) {
-                    Some(Action::Add(line)) => {
-                        terminal.draw(|f| ui::draw(f, &mut app))?;
-                        app.add(&line);
-                    }
-                    Some(Action::Open) => app.open(&mut terminal),
-                    None => {}
+            let action = match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key),
+                Event::Mouse(m) => app.mouse(m),
+                _ => None,
+            };
+            match action {
+                Some(Action::Add(line)) => {
+                    terminal.draw(|f| ui::draw(f, &mut app))?;
+                    app.add(&line);
                 }
+                Some(Action::Open) => app.open(&mut terminal),
+                None => {}
             }
         }
         Ok(())
     })();
-    ratatui::restore();
+    give_back();
     result
+}
+
+/// The terminal, as ratatui takes it, with the mouse's clicks and wheel.
+fn take() -> DefaultTerminal {
+    let terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    terminal
+}
+
+fn give_back() {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
 }
 
 impl App {
@@ -149,6 +192,8 @@ impl App {
             marked: BTreeSet::new(),
             popup: Popup::None,
             status: String::new(),
+            targets: Vec::new(),
+            clicked: None,
             quit: false,
         };
         app.restock()?;
@@ -291,6 +336,15 @@ impl App {
             }
             Popup::None => {}
         }
+        if ctrl && key.code == KeyCode::Char('e') {
+            self.searching = false;
+            let picked = self.picked();
+            let records: Vec<_> = picked.iter().map(|h| h.record.as_ref()).collect();
+            if !records.is_empty() {
+                self.popup = Popup::Cite(bibtex::entries(&records), 0);
+            }
+            return None;
+        }
         if self.searching {
             match key.code {
                 KeyCode::Esc => {
@@ -379,13 +433,6 @@ impl App {
                 }
                 self.narrow();
             }
-            KeyCode::Char('c') => {
-                let picked = self.picked();
-                let records: Vec<_> = picked.iter().map(|h| h.record.as_ref()).collect();
-                if !records.is_empty() {
-                    self.popup = Popup::Cite(bibtex::entries(&records), 0);
-                }
-            }
             KeyCode::Char('y') => {
                 let keys: Vec<String> = self
                     .picked()
@@ -402,6 +449,90 @@ impl App {
             }
             KeyCode::Enter => self.focus = Focus::List,
             _ => {}
+        }
+        None
+    }
+
+    /// Take a click or a turn of the wheel at where it lands.
+    pub fn mouse(&mut self, m: MouseEvent) -> Option<Action> {
+        let at = self
+            .targets
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(Position::new(m.column, m.row)))
+            .map(|&(_, t)| t);
+        let by = match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => return self.click(at),
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => return None,
+        };
+        match (&mut self.popup, at) {
+            (Popup::Cite(_, scroll), _) => *scroll = scroll.saturating_add_signed(by as i16),
+            (Popup::None, Some(Target::Side | Target::Shelf(_))) => {
+                self.focus = Focus::Side;
+                self.step(by);
+            }
+            (
+                Popup::None,
+                Some(Target::List | Target::Paper(_) | Target::Mark(_) | Target::Star(_)),
+            ) => {
+                self.focus = Focus::List;
+                self.step(by);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn click(&mut self, at: Option<Target>) -> Option<Action> {
+        if !matches!(self.popup, Popup::None) {
+            if at != Some(Target::Popup) {
+                self.popup = Popup::None;
+            }
+            return None;
+        }
+        self.searching = false;
+        match at? {
+            Target::Search => {
+                self.searching = true;
+                self.focus = Focus::List;
+            }
+            Target::Add => return self.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Target::Side => self.focus = Focus::Side,
+            Target::Shelf(i) => {
+                self.focus = Focus::Side;
+                if i != self.shelf {
+                    self.shelf = i;
+                    self.list.select(Some(0));
+                    self.narrow();
+                }
+            }
+            Target::List | Target::Popup => self.focus = Focus::List,
+            Target::Paper(i) => {
+                self.focus = Focus::List;
+                self.list.select(Some(i));
+                let again = self
+                    .clicked
+                    .is_some_and(|(when, j)| j == i && when.elapsed() < DOUBLE_CLICK);
+                self.clicked = (!again).then(|| (Instant::now(), i));
+                if again {
+                    return Some(Action::Open);
+                }
+            }
+            Target::Mark(i) => {
+                self.focus = Focus::List;
+                if let Some(key) = self.shown.get(i).map(|h| h.record.key.clone())
+                    && !self.marked.remove(&key)
+                {
+                    self.marked.insert(key);
+                }
+            }
+            Target::Star(i) => {
+                self.focus = Focus::List;
+                self.list.select(Some(i));
+                self.star();
+            }
         }
         None
     }
@@ -511,9 +642,9 @@ impl App {
             self.status = format!("no PDF: {}", path.display());
             return;
         }
-        ratatui::restore();
+        give_back();
         let ran = Command::new("ohp").arg(&path).status();
-        *terminal = ratatui::init();
+        *terminal = take();
         self.status = match ran {
             Ok(s) if s.success() => String::new(),
             Ok(s) => format!("ohp: {s}"),
@@ -633,8 +764,8 @@ pub fn screen_svg(app: &mut App, width: u16, height: u16) -> String {
 }
 
 /// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
-/// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, `<c-u>`;
-/// anything else, each character typed.
+/// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, and
+/// with control, as `<c-u>` or `<c-e>`; anything else, each character typed.
 pub fn keys(spec: &str) -> Vec<KeyEvent> {
     let named = match spec {
         "<enter>" => Some(KeyCode::Enter),
@@ -651,8 +782,12 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
     if let Some(code) = named {
         return vec![KeyEvent::new(code, KeyModifiers::NONE)];
     }
-    if spec == "<c-u>" {
-        return vec![KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)];
+    let ctrl: Option<Vec<char>> = spec
+        .strip_prefix("<c-")
+        .and_then(|s| s.strip_suffix('>'))
+        .map(|s| s.chars().collect());
+    if let Some(&[c]) = ctrl.as_deref() {
+        return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)];
     }
     spec.chars()
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))

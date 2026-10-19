@@ -3,7 +3,7 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Focus, Popup, Shelf};
+use crate::app::{App, Focus, Popup, Shelf, Target};
 use crate::record::Record;
 use crate::source::Source;
 use crate::theme::Theme;
@@ -24,6 +24,7 @@ const WIDE: u16 = 130;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let t = app.theme;
+    app.targets.clear();
     f.render_widget(
         Block::new().style(Style::new().bg(t.page).fg(t.text)),
         f.area(),
@@ -50,15 +51,34 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         details(f, app, detail);
     }
     keys(f, app, foot);
-    match &app.popup {
-        Popup::Add(line) => add(f, &t, line),
-        Popup::Cite(text, scroll) => cite(f, &t, text, *scroll),
-        Popup::Help => help(f, &t),
-        Popup::None => {}
+    let popup = match &app.popup {
+        Popup::Add(line) => Some(add(f, &t, line)),
+        Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
+        Popup::Help => Some(help(f, &t)),
+        Popup::None => None,
+    };
+    if let Some(area) = popup {
+        app.targets.push((area, Target::Popup));
     }
 }
 
-fn search(f: &mut Frame, app: &App, area: Rect) {
+/// Where the items of a list drawn in `area`, from `offset`, each as high
+/// as `heights` says, are on the screen, by their place in the list.
+fn rows(area: Rect, offset: usize, heights: &[u16]) -> Vec<(usize, Rect)> {
+    let mut y = area.y;
+    let mut rows = Vec::new();
+    for (i, &h) in heights.iter().enumerate().skip(offset) {
+        if y >= area.bottom() {
+            break;
+        }
+        let height = h.min(area.bottom() - y);
+        rows.push((i, Rect { y, height, ..area }));
+        y += height;
+    }
+    rows
+}
+
+fn search(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
     f.render_widget(Block::new().style(Style::new().bg(t.side)), area);
     let [brand, box_, right] = Layout::horizontal([
@@ -67,13 +87,23 @@ fn search(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(42),
     ])
     .areas(area);
+    let (name, button) = (" ▤ paperstack ", " + Add ");
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ▤ paperstack ", Style::new().fg(t.title).bold()),
-            Span::styled(" + Add ", Style::new().fg(t.on_accent).bg(t.add).bold()),
+            Span::styled(name, Style::new().fg(t.title).bold()),
+            Span::styled(button, Style::new().fg(t.on_accent).bg(t.add).bold()),
         ])),
         brand,
     );
+    let at = name.chars().count() as u16;
+    app.targets.push((
+        Rect {
+            x: brand.x + at,
+            width: (button.len() as u16).min(brand.width.saturating_sub(at)),
+            ..brand
+        },
+        Target::Add,
+    ));
     let mut field = vec![Span::raw(" ⌕ ")];
     if app.query.is_empty() && !app.searching {
         field.push(Span::styled("Search library", Style::new().fg(t.dim)));
@@ -85,6 +115,7 @@ fn search(f: &mut Frame, app: &App, area: Rect) {
     }
     let width = box_.width.saturating_sub(2).min(72);
     let field_area = Rect { width, ..box_ };
+    app.targets.push((field_area, Target::Search));
     f.render_widget(
         Paragraph::new(Line::from(field)).style(Style::new().bg(t.field).fg(t.dim)),
         field_area,
@@ -119,7 +150,7 @@ fn sorted_by(app: &App) -> String {
         .unwrap_or_default()
 }
 
-fn shelves(f: &mut Frame, app: &App, area: Rect) {
+fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
     let focused = app.focus == Focus::Side;
     let items: Vec<ListItem> = app
@@ -162,6 +193,17 @@ fn shelves(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::new().bg(t.side))
         .highlight_style(picked);
     f.render_stateful_widget(list, area, &mut state);
+    app.targets.push((area, Target::Side));
+    let heights: Vec<u16> = app
+        .shelves
+        .iter()
+        .map(|(s, _)| if matches!(s, Shelf::Heading(_)) { 2 } else { 1 })
+        .collect();
+    for (i, row) in rows(area, state.offset(), &heights) {
+        if !matches!(app.shelves[i].0, Shelf::Heading(_)) {
+            app.targets.push((row, Target::Shelf(i)));
+        }
+    }
 }
 
 /// `A, B, C … n more`, as a reference manager shortens a long list of authors.
@@ -183,7 +225,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
     let width = area.width.saturating_sub(4) as usize;
     let rule = Line::styled("─".repeat(area.width as usize), Style::new().fg(t.rule));
-    let items: Vec<ListItem> = app
+    let (items, titles): (Vec<ListItem>, Vec<u16>) = app
         .shown
         .iter()
         .map(|h| {
@@ -222,13 +264,12 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw(" ".repeat(pad)),
                 Span::styled(pdf, Style::new().fg(t.on_badge).bg(t.badge)),
             ];
-            ListItem::new(Text::from(vec![
+            let title = clip(r.title(), width.saturating_sub(4));
+            let title_width = title.chars().count() as u16;
+            let item = ListItem::new(Text::from(vec![
                 Line::from(vec![
                     mark,
-                    Span::styled(
-                        clip(r.title(), width.saturating_sub(4)),
-                        Style::new().fg(t.title).bold(),
-                    ),
+                    Span::styled(title, Style::new().fg(t.title).bold()),
                     star,
                 ]),
                 Line::from(vec![
@@ -240,9 +281,10 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
                 ]),
                 Line::from(meta),
                 rule.clone(),
-            ]))
+            ]));
+            (item, title_width)
         })
-        .collect();
+        .unzip();
     let focused = app.focus == Focus::List;
     let shelf = app.shelves[app.shelf].0.name().to_string();
     let block = Block::new()
@@ -251,12 +293,30 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
         ))
         .style(Style::new().bg(t.page));
+    let inner = block.inner(area);
     let list = List::new(items)
         .block(block)
         .highlight_symbol(if focused { "▎" } else { " " })
         .highlight_style(Style::new().bg(t.row))
         .style(Style::new().bg(t.page));
     f.render_stateful_widget(list, area, &mut app.list);
+    app.targets.push((area, Target::List));
+    let heights = vec![4; titles.len()];
+    for (i, row) in rows(inner, app.list.offset(), &heights) {
+        app.targets.push((row, Target::Paper(i)));
+        // Past the highlight's column: the box, then the title, then the star.
+        let line = |x: u16, width: u16| {
+            let x = (row.x + x).min(row.right());
+            Rect {
+                x,
+                width: width.min(row.right() - x),
+                height: 1,
+                ..row
+            }
+        };
+        app.targets.push((line(1, 3), Target::Mark(i)));
+        app.targets.push((line(4 + titles[i], 2), Target::Star(i)));
+    }
 }
 
 fn details(f: &mut Frame, app: &App, area: Rect) {
@@ -330,7 +390,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             format!(
-                "{} marked: c gives their BibTeX, y their keys",
+                "{} marked: ctrl-e gives their BibTeX, y their keys",
                 app.marked.len()
             ),
             Style::new().fg(t.accent).bold(),
@@ -353,7 +413,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
         ("⏎", "open in ohp"),
         ("␣", "mark"),
         ("*", "mark all"),
-        ("c", "BibTeX"),
+        ("^E", "BibTeX"),
         ("y", "yank [@key]"),
         ("s", "star"),
         ("a", "add"),
@@ -391,7 +451,7 @@ fn dialog<'a>(t: &Theme, title: &'a str) -> Block<'a> {
         .style(Style::new().bg(t.page).fg(t.text))
 }
 
-fn add(f: &mut Frame, t: &Theme, line: &str) {
+fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     let area = centered(f.area(), 86, 16);
     f.render_widget(Clear, area);
     let (what, steps) = Source::of(line).plan();
@@ -422,9 +482,10 @@ fn add(f: &mut Frame, t: &Theme, line: &str) {
     let block = dialog(t, "Add paper")
         .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", dim));
     f.render_widget(Paragraph::new(lines).block(block), area);
+    area
 }
 
-fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) {
+fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     let area = centered(f.area(), 92, 26);
     f.render_widget(Clear, area);
     let block = dialog(t, "BibTeX").title_bottom(Line::styled(
@@ -438,9 +499,10 @@ fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) {
             .scroll((scroll, 0)),
         area,
     );
+    area
 }
 
-fn help(f: &mut Frame, t: &Theme) {
+fn help(f: &mut Frame, t: &Theme) -> Rect {
     let rows = [
         ("j k ↑ ↓", "move; on the left, change shelf"),
         ("h l tab", "switch between shelves and papers"),
@@ -461,7 +523,11 @@ fn help(f: &mut Frame, t: &Theme) {
             "space",
             "mark a paper; * marks all shown, again unmarks; esc unmarks all",
         ),
-        ("c", "BibTeX of the papers marked, or the one picked"),
+        ("ctrl-e", "BibTeX of the papers marked, or the one picked"),
+        (
+            "click",
+            "pick; on a box, mark; on a star, star; twice, open",
+        ),
         ("y", "copy [@key; @key] to the clipboard"),
         ("s", "star, written to the paper's record"),
         ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
@@ -483,6 +549,7 @@ fn help(f: &mut Frame, t: &Theme) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines).block(dialog(t, "Keys")), area);
+    area
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
