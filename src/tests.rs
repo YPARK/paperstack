@@ -414,3 +414,17 @@ fn reads_a_paper_from_a_pages_tags() {
         "{bib}"
     );
 }
+
+#[test]
+fn reads_pubmeds_abstract() {
+    let xml = r#"<Abstract><AbstractText Label="BACKGROUND" NlmCategory="BACKGROUND">Deep <i>learning</i> &amp; more.</AbstractText>
+        <AbstractText Label="RESULTS">It works.</AbstractText></Abstract>"#;
+    assert_eq!(
+        crate::resolve::pubmed_abstract_of(xml).unwrap(),
+        "BACKGROUND: Deep learning & more. RESULTS: It works."
+    );
+    assert_eq!(
+        crate::resolve::pubmed_abstract_of("<AbstractText>One part.</AbstractText>").unwrap(),
+        "One part."
+    );
+}

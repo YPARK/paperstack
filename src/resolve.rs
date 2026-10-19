@@ -474,6 +474,16 @@ pub fn enrich(net: &Net, found: &mut Found) {
     {
         found.csl["PMID"] = json!(pmid);
     }
+    if found.csl.get("abstract").is_none()
+        && let Some(pmid) = found
+            .csl
+            .get("PMID")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        && let Some(text) = pubmed_abstract(net, &pmid)
+    {
+        found.csl["abstract"] = json!(text);
+    }
     let mut pdfs: Vec<String> = Vec::new();
     let best = work.get("best_oa_location").into_iter();
     let all = work
@@ -490,6 +500,46 @@ pub fn enrich(net: &Net, found: &mut Found) {
         }
     }
     found.pdfs.extend(pdfs);
+}
+
+/// PubMed's abstract, its sections' labels kept: for journals, as Nature's,
+/// that give Crossref none.
+fn pubmed_abstract(net: &Net, pmid: &str) -> Option<String> {
+    let mut query = vec![
+        ("db", "pubmed"),
+        ("id", pmid),
+        ("retmode", "xml"),
+        ("tool", "paperstack"),
+    ];
+    if let Some(e) = &net.email {
+        query.push(("email", e));
+    }
+    let xml = net
+        .text(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+            &query,
+        )
+        .ok()?;
+    pubmed_abstract_of(&xml)
+}
+
+pub fn pubmed_abstract_of(xml: &str) -> Option<String> {
+    static PART: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?s)<AbstractText(?:\s+[^>]*?Label="([^"]*)")?[^>]*>(.*?)</AbstractText>"#)
+            .unwrap()
+    });
+    let parts: Vec<String> = PART
+        .captures_iter(xml)
+        .map(|c| {
+            let text = squash(&unescape(&strip_tags(&c[2])));
+            match c.get(1) {
+                Some(label) => format!("{}: {text}", label.as_str()),
+                None => text,
+            }
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 /// OpenAlex's abstract, given as each word's places, as text.
