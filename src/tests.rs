@@ -555,3 +555,58 @@ fn moves_no_pdf_over_anothers() {
     assert_eq!(std::fs::read(&target).unwrap(), b"%PDF-another's");
     assert!(lib.root.join(&hit.path).exists(), "left where it was");
 }
+
+#[test]
+fn extension_id_is_its_manifest_keys() {
+    use base64::Engine;
+    use sha2::Digest;
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../extension/manifest.json")).unwrap();
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(manifest["key"].as_str().unwrap())
+        .unwrap();
+    // Chrome's id: the first 32 hex digits of the key's SHA-256, 0-f as a-p.
+    let id: String = sha2::Sha256::digest(&key)[..16]
+        .iter()
+        .flat_map(|b| [b >> 4, b & 15])
+        .map(|d| (b'a' + d) as char)
+        .collect();
+    assert_eq!(id, crate::daemon::EXTENSION);
+}
+
+#[test]
+fn serves_only_the_extensions_named() {
+    use crate::daemon::{EXTENSION, origin, refusal};
+    let origins = [origin(EXTENSION), origin("moz-extension://ID1")];
+    let ask = |host: &str, from: Option<&str>, length: usize| {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("host".to_string(), host.to_string());
+        if let Some(o) = from {
+            headers.insert("origin".to_string(), o.to_string());
+        }
+        refusal(&headers, 8765, &origins, length).map(|(code, _)| code)
+    };
+    let ours = format!("chrome-extension://{EXTENSION}");
+    assert_eq!(ask("127.0.0.1:8765", Some(&ours), 10), None);
+    assert_eq!(ask("localhost:8765", None, 10), None, "a program here");
+    assert_eq!(ask("127.0.0.1:8765", Some("moz-extension://ID1"), 10), None);
+    assert_eq!(
+        ask("127.0.0.1:8765", Some("chrome-extension://ID2"), 10),
+        Some(403)
+    );
+    assert_eq!(
+        ask("127.0.0.1:8765", Some("moz-extension://ID2"), 10),
+        Some(403)
+    );
+    assert_eq!(
+        ask("127.0.0.1:8765", Some("https://example.org"), 10),
+        Some(403)
+    );
+    assert_eq!(
+        ask("example.org:8765", Some(&ours), 10),
+        Some(403),
+        "rebound"
+    );
+    assert_eq!(ask("127.0.0.1:9999", None, 10), Some(403));
+    assert_eq!(ask("127.0.0.1:8765", Some(&ours), usize::MAX), Some(413));
+}

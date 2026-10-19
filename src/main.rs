@@ -130,7 +130,8 @@ enum Command {
         take: bool,
         #[arg(long)]
         folder: Vec<String>,
-        /// Ids of other extensions that may ask, besides paperstack's own
+        /// Other extensions that may ask, besides paperstack's own: a Chrome
+        /// extension's id, or an origin whole, as moz-extension://ID
         #[arg(long)]
         extension: Vec<String>,
     },
@@ -197,7 +198,7 @@ fn run_daemon(
         index: &mut index,
         net,
         folders,
-        extensions,
+        origins: extensions.iter().map(|e| daemon::origin(e)).collect(),
     }
     .run(port, &watched)
 }

@@ -113,8 +113,9 @@ went: `✓`, `✓·` without a PDF, `!` and a notification of why not. The
 server answers only this machine, and of browsers only paperstack's
 extension, whose id the `key` in its manifest fixes as
 `kckhjncnkhapnmnjlpjefjamffaecmcf` wherever it is loaded from; others are
-let in with `--extension ID`. No page can add papers. Each request is read
-on a thread of its own, so a slow one keeps no other waiting.
+let in with `--extension ID`, or with their origin whole, as
+`--extension moz-extension://ID`. No page can add papers. Requests are read
+by a few threads, so a slow one keeps no other waiting.
 
 To have `serve` run from login on macOS, a LaunchAgent:
 
