@@ -359,7 +359,7 @@ impl App {
             }
             KeyCode::Char('c') => {
                 let picked = self.picked();
-                let records: Vec<_> = picked.iter().map(|h| &h.record).collect();
+                let records: Vec<_> = picked.iter().map(|h| h.record.as_ref()).collect();
                 if !records.is_empty() {
                     self.popup = Popup::Cite(bibtex::entries(&records), 0);
                 }
@@ -450,7 +450,7 @@ impl App {
     /// Star the paper picked, or take its star away, in its record.
     pub fn star(&mut self) {
         let Some(hit) = self.current() else { return };
-        let mut record = hit.record.clone();
+        let mut record = crate::record::Record::clone(&hit.record);
         let was = hit.path.clone();
         record.paperstack.starred = !record.paperstack.starred;
         let done = self

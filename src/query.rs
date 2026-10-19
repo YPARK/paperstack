@@ -39,6 +39,14 @@ pub enum Field {
 }
 
 impl Field {
+    /// Looked for in the text, rather than held to, as `year:` is.
+    pub fn is_text(self) -> bool {
+        matches!(
+            self,
+            Field::Any | Field::Title | Field::Abstract | Field::Author | Field::Venue
+        )
+    }
+
     fn named(name: &str) -> Option<Field> {
         Some(match name.to_lowercase().as_str() {
             "title" => Field::Title,

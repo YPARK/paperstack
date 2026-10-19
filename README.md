@@ -15,7 +15,8 @@ Rust 1.92 or later, and `ohp` on the `PATH` to open PDFs:
 cargo install --git https://github.com/YPARK/paperstack
 ```
 
-SQLite is built in, which needs the system C compiler.
+Pure Rust: nothing in C is compiled, as for ohp. HTTPS is rustls with
+RustCrypto's algorithms, which are not yet audited.
 
 ## Use
 
@@ -172,12 +173,14 @@ paper. The record is CSL JSON, as pandoc and ohp read it, under `csl`, with
 the paper's folders, labels and star under `paperstack`. `AGENTS.md`, at the
 root, tells an agent how to find papers and cite them.
 
-The index searched, SQLite with full-text search, is kept on the machine, in
+The index searched is the records, read and kept in memory with the words
+of their text, ranked by BM25: a search among 6,000 papers takes a few
+milliseconds. Between runs it is cached on the machine, in
 `~/Library/Caches/paperstack` (`~/.cache` elsewhere), not in Dropbox, and is
 brought up to the records whenever paperstack starts, reading only those
-changed: a database synced between machines can be corrupted, while a
-record can at worst be a conflicted copy of itself, which paperstack names
-rather than reads.
+changed, in about a tenth of a second. A database synced between machines
+can be corrupted, while a record can at worst be a conflicted copy of
+itself, which paperstack names rather than reads.
 
 ## License
 

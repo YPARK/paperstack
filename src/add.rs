@@ -339,7 +339,7 @@ impl Adder<'_> {
         pdf: Option<&[u8]>,
         how: &str,
     ) -> anyhow::Result<Added> {
-        let mut record = hit.record.clone();
+        let mut record = Record::clone(&hit.record);
         let mut outcome = Outcome::Known;
         let mut changed = false;
         if is_preprint(&record.csl) && !is_preprint(&found.csl) {

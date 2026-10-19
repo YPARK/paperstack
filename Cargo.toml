@@ -18,14 +18,13 @@ deunicode = "1.6"
 pdf-extract = "0.12"
 ratatui = "0.30"
 regex = "1.13.1"
-# SQLite built in, with FTS5: the index is a cache on this machine, so no
-# system library need match it.
-rusqlite = { version = "0.40", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
 unicode-normalization = "0.1"
-ureq = "3"
+# HTTPS in pure Rust: rustls, with RustCrypto's algorithms rather than ring's C.
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+rustls-rustcrypto = "0.0.2-alpha"
 
 [dev-dependencies]
 tempfile = "3.27"
