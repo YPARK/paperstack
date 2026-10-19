@@ -234,12 +234,27 @@ impl Index {
         Ok(index)
     }
 
-    /// Work out again what is worked out over all papers.
-    fn reckon(&mut self) {
+    /// Work out again what is worked out over all papers; say of an alias
+    /// that is another paper's key, which the key is kept for.
+    fn reckon(&mut self) -> Vec<String> {
         self.by_key.clear();
         for (i, p) in self.papers.iter().enumerate() {
-            for k in &p.keys {
-                self.by_key.entry(k.clone()).or_insert(i);
+            self.by_key.insert(p.keys[0].clone(), i);
+        }
+        let mut clashes = Vec::new();
+        for (i, p) in self.papers.iter().enumerate() {
+            for alias in &p.keys[1..] {
+                match self.by_key.get(alias) {
+                    Some(&j) if j != i => clashes.push(format!(
+                        "{}: its alias {alias} is {}'s key",
+                        p.kept.path,
+                        self.papers[j].record().key
+                    )),
+                    Some(_) => {}
+                    None => {
+                        self.by_key.insert(alias.clone(), i);
+                    }
+                }
             }
         }
         let n = self.papers.len().max(1) as f64;
@@ -247,6 +262,7 @@ impl Index {
             let total: usize = self.papers.iter().map(|p| p.words[f].len()).sum();
             self.mean[f] = total as f64 / n;
         }
+        clashes
     }
 
     /// Bring the index up to the records: read those new or changed since,
@@ -301,7 +317,7 @@ impl Index {
         }
         done.removed = old.len();
         changed |= done.removed > 0;
-        self.reckon();
+        done.errors.extend(self.reckon());
         if changed {
             self.save()?;
         }

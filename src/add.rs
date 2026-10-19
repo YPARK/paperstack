@@ -218,6 +218,18 @@ impl Adder<'_> {
 
     /// The paper a PDF is, with the PDF.
     pub fn add_pdf(&mut self, bytes: &[u8], name: &str) -> anyhow::Result<Added> {
+        self.add_pdf_with(bytes, name, true)
+    }
+
+    /// The same, its text searched for only if `search`: a PDF from a folder
+    /// as ~/Downloads may be anyone's letter, not to be sent to registries;
+    /// without an id in it, it is not filed.
+    pub fn add_pdf_with(
+        &mut self,
+        bytes: &[u8],
+        name: &str,
+        search: bool,
+    ) -> anyhow::Result<Added> {
         let reading = pdf::read(bytes)?;
         let text = reading.text();
         if text.split_whitespace().count() < 20 {
@@ -231,6 +243,9 @@ impl Adder<'_> {
                 let how = format!("the {} in it", id_name(&id));
                 return self.file(found, Some(bytes), &how);
             }
+        }
+        if !search {
+            bail!("{name}: no DOI or arXiv id in it; saved to inbox/, its text is searched for");
         }
         // The same text may be a block and a line; a candidate turned down
         // for one query would be for the next.

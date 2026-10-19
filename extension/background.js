@@ -20,12 +20,21 @@ chrome.action.onClicked.addListener(async (tab) => {
         break;
       }
     }
-    const res = await fetch(`${SERVER}/add`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: page.url, tags: page.tags, pdf_url: pdfUrl, pdf }),
-    });
-    const out = await res.json();
+    // Chrome stops a worker whose fetch takes over 30 s, and telling a paper
+    // by its PDF can take longer: asking Chrome something now and then
+    // keeps it going.
+    const alive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+    let res, out;
+    try {
+      res = await fetch(`${SERVER}/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: page.url, tags: page.tags, pdf_url: pdfUrl, pdf }),
+      });
+      out = await res.json();
+    } finally {
+      clearInterval(alive);
+    }
     if (!res.ok) throw new Error(out.error || res.statusText);
     badge(tab.id, out.has_pdf ? "✓" : "✓·", "#2a7d2a");
     const what = { added: "Added", known: "Already there", published: "Now as published", "pdf-attached": "Given its PDF" };

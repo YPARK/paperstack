@@ -141,6 +141,11 @@ pub fn years(s: &str) -> Option<(i32, i32)> {
             s.parse().ok()
         }
     };
+    // `2020-2024`, as a range is mostly written, as `2020..2024`.
+    let s = match s.split_once('-') {
+        Some((a, b)) if a.len() == 4 && b.len() == 4 => format!("{a}..{b}"),
+        _ => s.to_string(),
+    };
     match s.split_once("..") {
         Some((from, to)) => Some((year(from, i32::MIN)?, year(to, i32::MAX)?)),
         None => {
