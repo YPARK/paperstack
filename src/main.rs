@@ -19,6 +19,7 @@ mod query;
 mod record;
 mod resolve;
 mod source;
+mod theme;
 mod ui;
 
 use clap::{Parser, Subcommand};
@@ -43,6 +44,15 @@ struct Args {
     /// git's user.email without it
     #[arg(long, env = "PAPERSTACK_EMAIL", global = true)]
     email: Option<String>,
+    /// The TUI's colours: Paperpile's light page, or the terminal's own dark one
+    #[arg(
+        long,
+        env = "PAPERSTACK_THEME",
+        value_enum,
+        default_value_t,
+        global = true
+    )]
+    theme: theme::Name,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -128,6 +138,9 @@ enum Command {
         width: u16,
         #[arg(long, default_value_t = 44)]
         height: u16,
+        /// As an SVG, with its colours
+        #[arg(long)]
+        svg: bool,
         keys: Vec<String>,
     },
     /// What paperstack reads in a PDF to tell which paper it is
@@ -200,7 +213,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let net = || net::Net::new(email(args.email.clone()));
     match args.command {
-        None => app::run(open(&args.library)?, net()),
+        None => app::run(open(&args.library)?, net(), theme::Theme::of(args.theme)),
         Some(Command::Add {
             what,
             folder,
@@ -244,14 +257,20 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Screen {
             width,
             height,
+            svg,
             keys,
         }) => {
             let (lib, index) = open(&args.library)?;
             let mut app = app::App::new(lib, index)?;
+            app.theme = theme::Theme::of(args.theme);
             for key in keys.iter().flat_map(|k| app::keys(k)) {
                 let _ = app.key(key);
             }
-            println!("{}", app::screen(&mut app, width, height));
+            if svg {
+                print!("{}", app::screen_svg(&mut app, width, height));
+            } else {
+                println!("{}", app::screen(&mut app, width, height));
+            }
             Ok(())
         }
         Some(Command::Pdf { file, title }) => {

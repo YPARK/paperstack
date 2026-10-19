@@ -1,57 +1,47 @@
-//! The screen: a search line, shelves on the left, papers in the middle,
-//! the paper picked on the right, and the keys at the foot.
+//! The screen, laid out as Paperpile's: a search line, the library's
+//! shelves on a tinted sidebar, the papers on the page, each with its box
+//! to mark and its star, the paper picked on the right, and the keys at
+//! the foot. Colours are the theme's.
 
 use crate::app::{App, Focus, Popup, Shelf};
 use crate::record::Record;
 use crate::source::Source;
+use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
+};
 
 /// Authors listed before `… n more`.
 const AUTHORS_SHOWN: usize = 5;
-
-fn dim() -> Style {
-    Style::new().fg(Color::DarkGray)
-}
-
-fn picked() -> Style {
-    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-}
-
-fn venue() -> Style {
-    Style::new().fg(Color::Green)
-}
-
-fn frame(title: &str, focused: bool) -> Block<'_> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            Style::new().fg(Color::Yellow)
-        } else {
-            dim()
-        })
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::new().add_modifier(Modifier::BOLD),
-        ))
-}
+const SIDEBAR: u16 = 30;
+const DETAILS: u16 = 54;
+/// The narrowest screen the details are shown on.
+const WIDE: u16 = 130;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let [top, main, foot] = Layout::vertical([
+    let t = app.theme;
+    f.render_widget(
+        Block::new().style(Style::new().bg(t.page).fg(t.text)),
+        f.area(),
+    );
+    let [top, gap, main, foot] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(5),
         Constraint::Length(1),
     ])
     .areas(f.area());
+    f.render_widget(Block::new().style(Style::new().bg(t.side)), gap);
     search(f, app, top);
-    let wide = main.width >= 130;
+    let wide = main.width >= WIDE;
     let [side, list, detail] = Layout::horizontal([
-        Constraint::Length(30),
+        Constraint::Length(SIDEBAR),
         Constraint::Min(40),
-        Constraint::Length(if wide { 52 } else { 0 }),
+        Constraint::Length(if wide { DETAILS } else { 0 }),
     ])
     .areas(main);
     shelves(f, app, side);
@@ -61,87 +51,116 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     keys(f, app, foot);
     match &app.popup {
-        Popup::Add(line) => add(f, line),
-        Popup::Cite(text, scroll) => cite(f, text, *scroll),
-        Popup::Help => help(f),
+        Popup::Add(line) => add(f, &t, line),
+        Popup::Cite(text, scroll) => cite(f, &t, text, *scroll),
+        Popup::Help => help(f, &t),
         Popup::None => {}
     }
 }
 
 fn search(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![
-        Span::styled(
-            " paperstack ",
-            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
-        ),
-        Span::styled(
-            format!(" {} ", tilde(&app.lib.root.display().to_string())),
-            dim(),
-        ),
-        Span::raw(" / "),
-    ];
-    if app.query.is_empty() && !app.searching {
-        spans.push(Span::styled("search library", dim()));
-    } else {
-        spans.push(Span::raw(app.query.clone()));
-    }
-    if app.searching {
-        spans.push(Span::styled("▏", Style::new().fg(Color::Yellow)));
-    }
-    let all = app.total();
-    let right = format!(
-        "{} of {all} references · {} ",
-        app.shown.len(),
-        app.sort.name()
-    );
-    let [l, r] = Layout::horizontal([
-        Constraint::Min(1),
-        Constraint::Length(right.chars().count() as u16),
+    let t = app.theme;
+    f.render_widget(Block::new().style(Style::new().bg(t.side)), area);
+    let [brand, box_, right] = Layout::horizontal([
+        Constraint::Length(SIDEBAR),
+        Constraint::Min(20),
+        Constraint::Length(42),
     ])
     .areas(area);
-    f.render_widget(Paragraph::new(Line::from(spans)), l);
-    f.render_widget(Paragraph::new(Span::styled(right, dim())), r);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ▤ paperstack ", Style::new().fg(t.title).bold()),
+            Span::styled(" + Add ", Style::new().fg(t.on_accent).bg(t.add).bold()),
+        ])),
+        brand,
+    );
+    let mut field = vec![Span::raw(" ⌕ ")];
+    if app.query.is_empty() && !app.searching {
+        field.push(Span::styled("Search library", Style::new().fg(t.dim)));
+    } else {
+        field.push(Span::styled(app.query.clone(), Style::new().fg(t.text)));
+    }
+    if app.searching {
+        field.push(Span::styled("▏", Style::new().fg(t.accent)));
+    }
+    let width = box_.width.saturating_sub(2).min(72);
+    let field_area = Rect { width, ..box_ };
+    f.render_widget(
+        Paragraph::new(Line::from(field)).style(Style::new().bg(t.field).fg(t.dim)),
+        field_area,
+    );
+    let hint = Rect {
+        x: field_area.x + width.saturating_sub(4),
+        width: 3,
+        ..field_area
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(" / ", Style::new().fg(t.dim).bg(t.page))),
+        hint,
+    );
+    let count = format!(
+        "↓ {}   {} of {} references ",
+        sorted_by(app),
+        app.shown.len(),
+        app.total()
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(count, Style::new().fg(t.dim)))
+            .alignment(ratatui::layout::Alignment::Right),
+        right,
+    );
+}
+
+fn sorted_by(app: &App) -> String {
+    let name = app.sort.name();
+    let mut c = name.chars();
+    c.next()
+        .map(|first| first.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 fn shelves(f: &mut Frame, app: &App, area: Rect) {
-    let width = area.width.saturating_sub(4) as usize;
+    let t = app.theme;
+    let focused = app.focus == Focus::Side;
     let items: Vec<ListItem> = app
         .shelves
         .iter()
         .map(|(shelf, n)| {
-            let icon = match shelf {
+            let (icon, colour) = match shelf {
                 Shelf::Heading(h) => {
-                    return ListItem::new(Line::styled(*h, dim().add_modifier(Modifier::BOLD)));
+                    return ListItem::new(vec![
+                        Line::raw(""),
+                        Line::styled(
+                            format!(" {h}"),
+                            Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
+                        ),
+                    ]);
                 }
-                Shelf::All => "▤",
-                Shelf::Starred => "★",
-                Shelf::NoPdf => "∅",
-                Shelf::NoAbstract => "¶",
-                Shelf::Folder(_) => "▸",
-                Shelf::Label(_) => "#",
+                Shelf::All => ("▤", t.title),
+                Shelf::Starred => ("★", t.dim),
+                Shelf::NoPdf => ("∅", t.dim),
+                Shelf::NoAbstract => ("¶", t.dim),
+                Shelf::Folder(_) => ("■", t.folder),
+                Shelf::Label(_) => ("●", t.dim),
             };
-            let count = n.to_string();
-            let room = width.saturating_sub(count.len() + 3);
+            let room = (area.width as usize).saturating_sub(n.to_string().len() + 6);
             let name: String = shelf.name().chars().take(room).collect();
-            let pad = width.saturating_sub(name.chars().count() + count.len() + 2);
-            let style = if *n == 0 { dim() } else { Style::new() };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(Color::Yellow)),
-                Span::styled(name, style),
-                Span::raw(" ".repeat(pad)),
-                Span::styled(count, dim()),
+                Span::styled(format!(" {icon} "), Style::new().fg(colour)),
+                Span::styled(name, Style::new().fg(t.text).bold()),
+                Span::styled(format!(" {n}"), Style::new().fg(t.dim)),
             ]))
         })
         .collect();
-    let focused = app.focus == Focus::Side;
     let mut state = ListState::default().with_selected(Some(app.shelf));
+    let picked = if focused {
+        Style::new().bg(t.accent).fg(t.on_accent)
+    } else {
+        Style::new().bg(t.row)
+    };
     let list = List::new(items)
-        .block(frame("Library", focused))
-        .highlight_style(if focused {
-            picked().bg(Color::Indexed(236))
-        } else {
-            Style::new().bg(Color::Indexed(236))
-        });
+        .style(Style::new().bg(t.side))
+        .highlight_style(picked);
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -161,75 +180,103 @@ fn authors(r: &Record, shown: usize) -> String {
 }
 
 fn papers(f: &mut Frame, app: &mut App, area: Rect) {
-    let width = area.width.saturating_sub(5) as usize;
+    let t = app.theme;
+    let width = area.width.saturating_sub(4) as usize;
+    let rule = Line::styled("─".repeat(area.width as usize), Style::new().fg(t.rule));
     let items: Vec<ListItem> = app
         .shown
         .iter()
         .map(|h| {
             let r = &h.record;
             let mark = if app.marked.contains(&r.key) {
-                Span::styled("● ", Style::new().fg(Color::Cyan))
+                Span::styled(" ☑ ", Style::new().fg(t.accent).bold())
             } else {
-                Span::raw("  ")
+                Span::styled(" ☐ ", Style::new().fg(t.dim))
             };
             let star = if r.paperstack.starred {
-                Span::styled(" ★", Style::new().fg(Color::Yellow))
+                Span::styled(" ★", Style::new().fg(t.star))
             } else {
-                Span::raw("")
-            };
-            let pdf = if h.has_pdf {
-                Span::styled(" PDF ", Style::new().fg(Color::Black).bg(Color::Gray))
-            } else {
-                Span::styled(" no PDF ", dim())
+                Span::styled(" ☆", Style::new().fg(t.dim))
             };
             let year = r
                 .year()
                 .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
+            let venue = clip(r.venue(), width / 2);
+            let rest = format!(" · {year} · {}", r.kind());
+            // The PDF's badge at the right, as Paperpile's; the key before
+            // it, where there is room.
+            let pdf = if h.has_pdf { " PDF " } else { "" };
+            let room = (width + 2)
+                .saturating_sub(3 + venue.chars().count() + rest.chars().count() + pdf.len());
+            let key = if room > r.key.len() + 4 {
+                format!("  {}", r.key)
+            } else {
+                String::new()
+            };
+            let pad = room.saturating_sub(key.len());
+            let meta = vec![
+                Span::raw("   "),
+                Span::styled(venue, Style::new().fg(t.venue)),
+                Span::styled(rest, Style::new().fg(t.dim)),
+                Span::styled(key, Style::new().fg(t.dim)),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(pdf, Style::new().fg(t.on_badge).bg(t.badge)),
+            ];
             ListItem::new(Text::from(vec![
                 Line::from(vec![
                     mark,
                     Span::styled(
                         clip(r.title(), width.saturating_sub(4)),
-                        Style::new().fg(Color::LightBlue).bold(),
+                        Style::new().fg(t.title).bold(),
                     ),
                     star,
                 ]),
                 Line::from(vec![
-                    Span::raw("  "),
-                    Span::raw(clip(&authors(r, AUTHORS_SHOWN), width)),
+                    Span::raw("   "),
+                    Span::styled(
+                        clip(&authors(r, AUTHORS_SHOWN), width),
+                        Style::new().fg(t.text),
+                    ),
                 ]),
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(r.venue().to_string(), venue()),
-                    Span::styled(format!(" · {year} · {}  ", r.kind()), dim()),
-                    pdf,
-                    Span::styled(format!("  {}", r.key), dim()),
-                ]),
-                Line::raw(""),
+                Line::from(meta),
+                rule.clone(),
             ]))
         })
         .collect();
     let focused = app.focus == Focus::List;
-    let title = app.shelves[app.shelf].0.name().to_string();
+    let shelf = app.shelves[app.shelf].0.name().to_string();
+    let block = Block::new()
+        .title(Line::styled(
+            format!(" {shelf}"),
+            Style::new().fg(t.dim).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(t.page));
     let list = List::new(items)
-        .block(frame(&title, focused))
-        .highlight_symbol("▌")
-        .highlight_style(Style::new().bg(Color::Indexed(236)));
+        .block(block)
+        .highlight_symbol(if focused { "▎" } else { " " })
+        .highlight_style(Style::new().bg(t.row))
+        .style(Style::new().bg(t.page));
     f.render_stateful_widget(list, area, &mut app.list);
 }
 
 fn details(f: &mut Frame, app: &App, area: Rect) {
-    let block = frame("Details", false);
+    let t = app.theme;
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_style(Style::new().fg(t.rule))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.page));
     let Some(h) = app.current() else {
         f.render_widget(block, area);
         return;
     };
     let r = &h.record;
     let m = &r.paperstack;
+    let dim = Style::new().fg(t.dim);
     let field = |name: &'static str, value: String| {
         Line::from(vec![
-            Span::styled(format!("{name:<9}"), dim()),
-            Span::raw(value),
+            Span::styled(format!("{name:<9}"), dim),
+            Span::styled(value, Style::new().fg(t.text)),
         ])
     };
     let none = || "—".to_string();
@@ -242,14 +289,18 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         .parent()
         .map_or_else(String::new, |d| format!("{}/", d.display()));
     let mut lines = vec![
-        Line::styled(r.title().to_string(), Style::new().bold()),
+        Line::styled(r.title().to_string(), Style::new().fg(t.title).bold()),
         Line::raw(""),
-        Line::raw(authors(r, usize::MAX)),
+        Line::styled(authors(r, usize::MAX), Style::new().fg(t.text)),
         Line::from(vec![
-            Span::styled(r.venue().to_string(), venue()),
+            Span::styled(r.venue().to_string(), Style::new().fg(t.venue)),
             Span::styled(
-                format!(" · {}", r.year().map_or_else(none, |y| y.to_string())),
-                dim(),
+                format!(
+                    " · {} · {}",
+                    r.year().map_or_else(none, |y| y.to_string()),
+                    r.kind()
+                ),
+                dim,
             ),
         ]),
         Line::raw(""),
@@ -258,19 +309,22 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         field("arXiv", m.arxiv.clone().unwrap_or_else(none)),
         field("folder", folder),
         Line::from(vec![
-            Span::styled(format!("{:<9}", "PDF"), dim()),
+            Span::styled(format!("{:<9}", "PDF"), dim),
             if h.has_pdf {
-                Span::styled("✓", Style::new().fg(Color::Green))
+                Span::styled(" PDF ", Style::new().fg(t.on_badge).bg(t.badge))
             } else {
-                Span::styled("✗", Style::new().fg(Color::Red))
+                Span::styled("none", dim)
             },
         ]),
         field("record", file),
         field("folders", join(&m.folders)),
         field("labels", join(&m.labels)),
         Line::raw(""),
-        Line::styled("Abstract", dim()),
-        Line::raw(r.abstract_text().unwrap_or("—").to_string()),
+        Line::styled("ABSTRACT", dim.add_modifier(Modifier::BOLD)),
+        Line::styled(
+            r.abstract_text().unwrap_or("—").to_string(),
+            Style::new().fg(t.text),
+        ),
     ];
     if !app.marked.is_empty() {
         lines.push(Line::raw(""));
@@ -279,7 +333,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
                 "{} marked: c gives their BibTeX, y their keys",
                 app.marked.len()
             ),
-            Style::new().fg(Color::Cyan),
+            Style::new().fg(t.accent).bold(),
         ));
     }
     f.render_widget(
@@ -291,6 +345,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn keys(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
     let mut spans = Vec::new();
     for (k, what) in [
         ("/", "search"),
@@ -307,58 +362,74 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
     ] {
         spans.push(Span::styled(
             format!(" {k} "),
-            Style::new().fg(Color::Yellow).bold(),
+            Style::new().fg(t.title).bold(),
         ));
-        spans.push(Span::styled(format!("{what} "), dim()));
+        spans.push(Span::styled(format!("{what} "), Style::new().fg(t.dim)));
     }
     if !app.status.is_empty() {
         spans.push(Span::styled(
             format!("  {}", app.status),
-            Style::new().add_modifier(Modifier::BOLD),
+            Style::new().fg(t.text).bold(),
         ));
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(t.side)),
+        area,
+    );
 }
 
-fn add(f: &mut Frame, line: &str) {
-    let area = centered(f.area(), 84, 16);
+/// A box over the screen, as Paperpile's dialogs are.
+fn dialog<'a>(t: &Theme, title: &'a str) -> Block<'a> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.accent))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(t.title).bold(),
+        ))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.page).fg(t.text))
+}
+
+fn add(f: &mut Frame, t: &Theme, line: &str) {
+    let area = centered(f.area(), 86, 16);
     f.render_widget(Clear, area);
     let (what, steps) = Source::of(line).plan();
+    let dim = Style::new().fg(t.dim);
     let mut lines = vec![
         Line::styled(
-            "DOI, arXiv id, PMID, URL, a PDF's path, BibTeX or words",
-            dim(),
+            "DOI, arXiv id, PMID, address, a PDF's path, or a title",
+            dim,
         ),
         Line::from(vec![
-            Span::styled("› ", Style::new().fg(Color::Yellow)),
-            Span::raw(line.to_string()),
-            Span::styled("▏", Style::new().fg(Color::Yellow)),
+            Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
+            Span::styled(format!("{line}▏"), Style::new().fg(t.text).bg(t.field)),
         ]),
         Line::raw(""),
     ];
     if !what.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("reads as ", dim()),
-            Span::styled(what, Style::new().fg(Color::Cyan).bold()),
+            Span::styled("reads as ", dim),
+            Span::styled(what, Style::new().fg(t.title).bold()),
         ]));
         for (n, step) in steps.iter().enumerate() {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {}. ", n + 1), dim()),
+                Span::styled(format!("  {}. ", n + 1), dim),
                 Span::raw(*step),
             ]));
         }
     }
-    let block = frame("Add paper", true)
-        .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", dim()));
+    let block = dialog(t, "Add paper")
+        .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", dim));
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn cite(f: &mut Frame, text: &str, scroll: u16) {
-    let area = centered(f.area(), 90, 24);
+fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) {
+    let area = centered(f.area(), 92, 26);
     f.render_widget(Clear, area);
-    let block = frame("BibTeX", true).title_bottom(Line::styled(
+    let block = dialog(t, "BibTeX").title_bottom(Line::styled(
         " y copy · j/k scroll · any key closes ",
-        dim(),
+        Style::new().fg(t.dim),
     ));
     f.render_widget(
         Paragraph::new(text.to_string())
@@ -369,7 +440,7 @@ fn cite(f: &mut Frame, text: &str, scroll: u16) {
     );
 }
 
-fn help(f: &mut Frame) {
+fn help(f: &mut Frame, t: &Theme) {
     let rows = [
         ("j k ↑ ↓", "move; on the left, change shelf"),
         ("h l tab", "switch between shelves and papers"),
@@ -400,18 +471,18 @@ fn help(f: &mut Frame) {
         ),
         ("q", "quit"),
     ];
-    let area = centered(f.area(), 92, rows.len() as u16 + 2);
+    let area = centered(f.area(), 94, rows.len() as u16 + 2);
     f.render_widget(Clear, area);
     let lines: Vec<Line> = rows
         .iter()
         .map(|(k, what)| {
             Line::from(vec![
-                Span::styled(format!(" {k:<9}"), Style::new().fg(Color::Yellow).bold()),
+                Span::styled(format!("{k:<9}"), Style::new().fg(t.title).bold()),
                 Span::raw(*what),
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(lines).block(frame("Keys", true)), area);
+    f.render_widget(Paragraph::new(lines).block(dialog(t, "Keys")), area);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -440,12 +511,5 @@ fn join(items: &[String]) -> String {
         "—".to_string()
     } else {
         items.join(", ")
-    }
-}
-
-fn tilde(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
     }
 }

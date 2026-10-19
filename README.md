@@ -7,6 +7,11 @@ PDFs are presented with [ohp](https://github.com/YPARK/ohp).
 Early days. `paperstack init --demo` makes a library of nine papers to try
 it with.
 
+![paperstack's TUI, in its Paperpile-like theme](docs/tui.png)
+
+`--theme dark`, or `PAPERSTACK_THEME=dark`, draws it in the terminal's own
+colours instead.
+
 ## Install
 
 Rust 1.92 or later, and `ohp` on the `PATH` to open PDFs:
