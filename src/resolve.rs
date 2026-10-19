@@ -290,19 +290,112 @@ pub fn from_page(html: &str) -> Option<Source> {
 }
 
 pub fn by_page(net: &Net, url: &str) -> anyhow::Result<Found> {
-    let (_, html) = net.page(url).with_context(
+    let (at, html) = net.page(url).with_context(
         || "the publisher would not give its page: give the paper's DOI, or save its PDF to inbox/",
     )?;
-    let source = from_page(&html)
-        .with_context(|| format!("{url} names no DOI, arXiv id or PMID in its meta tags"))?;
-    let mut found = by_source(net, &source)?;
-    if let Some((_, pdf)) = metas(&html)
-        .into_iter()
-        .find(|(k, _)| k == "citation_pdf_url")
-    {
+    let metas = metas(&html);
+    let mut found = match from_page(&html) {
+        Some(source) => by_source(net, &source)?,
+        None => from_tags(&metas, &at).with_context(|| {
+            format!(
+                "{url} names no DOI, arXiv id or PMID, nor a title and authors, in its meta tags"
+            )
+        })?,
+    };
+    if let Some((_, pdf)) = metas.into_iter().find(|(k, _)| k == "citation_pdf_url") {
         found.pdfs.insert(0, pdf);
     }
     Ok(found)
+}
+
+/// The paper a page's Highwire tags describe, `citation_title`,
+/// `citation_author` and the rest, as Google Scholar reads them: for a page
+/// of a paper no registry has, as NeurIPS's before 2022 or PMLR's.
+pub fn from_tags(metas: &[(String, String)], url: &str) -> Option<Found> {
+    let all = |name: &str| -> Vec<&str> {
+        metas
+            .iter()
+            .filter(|(k, v)| k == name && !v.trim().is_empty())
+            .map(|(_, v)| v.trim())
+            .collect()
+    };
+    let one = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| all(n).first().map(|v| v.to_string()))
+    };
+    let title = one(&["citation_title"])?;
+    let authors: Vec<Value> = all("citation_author")
+        .into_iter()
+        .flat_map(|a| a.split(';').map(str::trim).collect::<Vec<_>>())
+        .filter(|a| !a.is_empty())
+        .map(|a| match a.split_once(',') {
+            Some((family, given)) => json!({ "family": family.trim(), "given": given.trim() }),
+            None => name(a),
+        })
+        .collect();
+    if authors.is_empty() {
+        return None;
+    }
+    let conference = one(&["citation_conference_title", "citation_conference"]);
+    let journal = one(&["citation_journal_title"]);
+    let book = one(&["citation_inbook_title", "citation_book_title"]);
+    let proceedings = |v: &str| {
+        let v = v.to_lowercase();
+        v.contains("proceedings")
+            || v.contains("conference")
+            || v.contains("neural information processing")
+    };
+    let (kind, venue) = match (conference, journal, book) {
+        (Some(c), _, _) => ("paper-conference", Some(c)),
+        (None, Some(j), _) if proceedings(&j) => ("paper-conference", Some(j)),
+        (None, Some(j), _) => ("article-journal", Some(j)),
+        (None, None, Some(b)) => ("chapter", Some(b)),
+        _ => ("article", None),
+    };
+    let date = one(&[
+        "citation_publication_date",
+        "citation_date",
+        "citation_online_date",
+        "citation_year",
+    ])
+    .unwrap_or_default();
+    let parts: Vec<i64> = date
+        .split(['/', '-', ' '])
+        .filter_map(|p| p.parse().ok())
+        .take(3)
+        .collect();
+    let mut csl = json!({ "type": kind, "title": squash(&title), "author": authors, "URL": url });
+    if let Some(v) = venue {
+        csl["container-title"] = json!(v);
+    }
+    if parts.first().is_some_and(|&y| y > 1000) {
+        csl["issued"] = json!({ "date-parts": [parts] });
+    }
+    for (tag, field) in [
+        ("citation_volume", "volume"),
+        ("citation_issue", "issue"),
+        ("citation_publisher", "publisher"),
+        ("citation_issn", "ISSN"),
+        ("citation_isbn", "ISBN"),
+        ("citation_abstract", "abstract"),
+    ] {
+        if let Some(v) = one(&[tag]) {
+            csl[field] = json!(squash(&strip_tags(&v)));
+        }
+    }
+    match (one(&["citation_firstpage"]), one(&["citation_lastpage"])) {
+        (Some(a), Some(b)) => csl["page"] = json!(format!("{a}-{b}")),
+        (Some(a), None) => csl["page"] = json!(a),
+        _ => {}
+    }
+    Some(Found {
+        csl,
+        arxiv: one(&["citation_arxiv_id"]),
+        preprint: None,
+        pdfs: Vec::new(),
+        source: "page",
+    })
 }
 
 /// Where open publishers keep a paper's PDF, by its DOI, as their pages,
