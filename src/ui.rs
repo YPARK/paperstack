@@ -284,10 +284,10 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         .path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let folder = h
-        .path
-        .parent()
-        .map_or_else(String::new, |d| format!("{}/", d.display()));
+    let folder = h.path.parent().map_or_else(String::new, |d| {
+        // With `/` between folders on any system, as the library is shared.
+        d.iter().map(|c| c.to_string_lossy() + "/").collect()
+    });
     let mut lines = vec![
         Line::styled(r.title().to_string(), Style::new().fg(t.title).bold()),
         Line::raw(""),
