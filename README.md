@@ -224,11 +224,15 @@ Cursor, in `~/.cursor/mcp.json`, or a project's `.cursor/mcp.json`:
 }
 ```
 
-Claude Code:
+Claude Code, for all your projects:
 
 ```sh
-claude mcp add paperstack --env PAPERSTACK_LIBRARY=$HOME/Dropbox/paperstack -- paperstack mcp
+claude mcp add --scope user paperstack -- paperstack mcp
 ```
+
+Without `--scope user` it is for the folder it was added in only. The library
+is found as `paperstack` finds it; one elsewhere is given with
+`--env PAPERSTACK_LIBRARY=/path/to/library` before the `--`.
 
 Claude Desktop takes the same as Cursor, in
 `~/Library/Application Support/Claude/claude_desktop_config.json`. A program
