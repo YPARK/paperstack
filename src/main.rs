@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// The library: a folder, as in Dropbox
+    /// The library: a folder, in Dropbox if Dropbox is here, else ~/paperstack
     #[arg(
         long,
         short = 'L',
@@ -191,7 +191,36 @@ enum Command {
 }
 
 fn default_root() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Dropbox/paperstack")
+    default_root_in(&PathBuf::from(std::env::var_os("HOME").unwrap_or_default()))
+}
+
+/// Where the library is, with `home` the home folder and nothing given:
+/// in Dropbox, if Dropbox is there, as `~/Dropbox`, or, on recent macOS,
+/// in `~/Library/CloudStorage`; else `~/paperstack`. A library already
+/// made in any of them is kept to, as Dropbox installed after it would
+/// otherwise move the default to an empty folder. No Dropbox folder is
+/// made where there is none.
+fn default_root_in(home: &Path) -> PathBuf {
+    let mut places = Vec::new();
+    if home.join("Dropbox").is_dir() {
+        places.push(home.join("Dropbox/paperstack"));
+    }
+    if let Ok(clouds) = std::fs::read_dir(home.join("Library/CloudStorage")) {
+        let mut dropboxes: Vec<PathBuf> = clouds
+            .flatten()
+            .filter(|c| c.file_name().to_string_lossy().starts_with("Dropbox"))
+            .map(|c| c.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dropboxes.sort();
+        places.extend(dropboxes.into_iter().map(|d| d.join("paperstack")));
+    }
+    places.push(home.join("paperstack"));
+    places
+        .iter()
+        .find(|p| p.join(library::MARKER).is_file())
+        .unwrap_or(&places[0])
+        .clone()
 }
 
 /// The library at `root`, and its index brought up to it; what could not

@@ -26,15 +26,18 @@ RustCrypto's algorithms, which are not yet audited.
 ## Use
 
 ```sh
-paperstack init --demo                 # a library at ~/Dropbox/paperstack, with papers to try
+paperstack init --demo                 # a library, with papers to try
 paperstack                             # browse it
 paperstack find perturbation 'author:Huber'
 paperstack find 'collection:"Single Cell Data" -label:benchmark' --sort year --bib > refs.bib
 paperstack get Ahlmann-Eltze2025-pb --json
 ```
 
-The library is `--library`, else `$PAPERSTACK_LIBRARY`, else
-`~/Dropbox/paperstack`.
+The library is `--library`, else `$PAPERSTACK_LIBRARY`, else one made
+already in one of these, else the first of them there is:
+`~/Dropbox/paperstack`, if `~/Dropbox` is there; Dropbox's folder in
+`~/Library/CloudStorage`, as recent macOS has it; `~/paperstack`. No Dropbox
+folder is made where there is none.
 
 ## Moving from another reference manager
 

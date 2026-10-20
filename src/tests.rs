@@ -1025,3 +1025,26 @@ fn serves_the_library_over_mcp() {
             .is_none()
     );
 }
+
+#[test]
+fn finds_the_library_where_it_is_or_should_be() {
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path();
+    // No Dropbox: a folder of its own, and no Dropbox folder made.
+    assert_eq!(crate::default_root_in(h), h.join("paperstack"));
+    // Dropbox, as recent macOS keeps it.
+    let cloud = h.join("Library/CloudStorage/Dropbox");
+    std::fs::create_dir_all(&cloud).unwrap();
+    assert_eq!(crate::default_root_in(h), cloud.join("paperstack"));
+    // ~/Dropbox first, where it is.
+    std::fs::create_dir(h.join("Dropbox")).unwrap();
+    assert_eq!(crate::default_root_in(h), h.join("Dropbox/paperstack"));
+    // A library made before Dropbox came is kept to.
+    std::fs::create_dir(h.join("paperstack")).unwrap();
+    std::fs::write(
+        h.join("paperstack").join(crate::library::MARKER),
+        "version = 1",
+    )
+    .unwrap();
+    assert_eq!(crate::default_root_in(h), h.join("paperstack"));
+}
