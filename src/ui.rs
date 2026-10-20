@@ -175,7 +175,7 @@ fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
                 Shelf::Starred => ("★", t.dim),
                 Shelf::NoPdf => ("∅", t.dim),
                 Shelf::NoAbstract => ("¶", t.dim),
-                Shelf::Folder(_) => ("■", t.folder),
+                Shelf::Folder(_) => ("▸", t.collection),
                 Shelf::Label(_) => ("●", t.dim),
             };
             let room = (area.width as usize).saturating_sub(n.to_string().len() + 6);
@@ -431,7 +431,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         field("key", r.key.clone()),
         field("DOI", r.doi().map_or_else(none, str::to_string)),
         field("arXiv", m.arxiv.clone().unwrap_or_else(none)),
-        field("folder", folder),
+        field("on disk", folder),
         Line::from(vec![
             Span::styled(format!("{:<9}", "PDF"), dim),
             if h.has_pdf {
@@ -441,7 +441,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
             },
         ]),
         field("record", file),
-        field("folders", join(&m.folders)),
+        field("in", join(&m.folders)),
         field("labels", join(&m.labels)),
         Line::raw(""),
         Line::styled("ABSTRACT", dim.add_modifier(Modifier::BOLD)),

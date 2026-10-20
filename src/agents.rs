@@ -17,7 +17,7 @@ records and the PDFs together. Reading them is fine.
 ```sh
 paperstack find 'perturbation "linear baseline"' --json      # best match first
 paperstack find 'author:Huber year:2020..2026 has:pdf' --json
-paperstack find 'folder:"Single Cell Data" -label:benchmark' --sort year --json
+paperstack find 'collection:"Single Cell Data" -label:benchmark' --sort year --json
 paperstack get Ahlmann-Eltze2025-pb --json                   # one paper, by key
 find . -name 'Ahlmann-Eltze2025-pb_*'                        # its files
 ```
@@ -25,7 +25,7 @@ find . -name 'Ahlmann-Eltze2025-pb_*'                        # its files
 Words and "phrases" are searched in the title, abstract, authors, venue,
 keywords, key and identifiers; a word matches the words it starts. Fields:
 `title:` `abstract:` `author:` `venue:` `year:2020..2026` `folder:` `label:`
-`key:` `doi:` `has:pdf` `has:abstract` `has:doi` `is:starred`; `-` before
+`key:` `doi:` `collection:` `has:pdf` `has:abstract` `has:doi` `is:starred`; `-` before
 any of them leaves out what it matches. `--sort relevance|year|added|author|title`,
 `--reverse`, `--limit N`.
 

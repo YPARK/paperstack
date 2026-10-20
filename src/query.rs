@@ -54,7 +54,7 @@ impl Field {
             "author" | "au" => Field::Author,
             "venue" | "journal" => Field::Venue,
             "year" | "y" => Field::Year,
-            "folder" | "in" => Field::Folder,
+            "folder" | "collection" | "in" => Field::Folder,
             "label" | "tag" => Field::Label,
             "key" => Field::Key,
             "doi" => Field::Doi,

@@ -92,8 +92,8 @@ enum Command {
     Add {
         #[arg(required = true)]
         what: Vec<String>,
-        /// Put them in this folder too
-        #[arg(long)]
+        /// Put them in this collection too
+        #[arg(long, visible_alias = "collection")]
         folder: Vec<String>,
         #[arg(long)]
         label: Vec<String>,
@@ -143,8 +143,8 @@ enum Command {
         /// Take a PDF filed out of the folders given too, as out of inbox/
         #[arg(long)]
         take: bool,
-        /// Put what is filed in this folder of the library too
-        #[arg(long)]
+        /// Put what is filed in this collection too
+        #[arg(long, visible_alias = "collection")]
         folder: Vec<String>,
     },
     /// Watch as `watch` does, and take papers from the browser extension
@@ -157,7 +157,7 @@ enum Command {
         watch: Vec<PathBuf>,
         #[arg(long)]
         take: bool,
-        #[arg(long)]
+        #[arg(long, visible_alias = "collection")]
         folder: Vec<String>,
         /// Other extensions that may ask, besides paperstack's own: a Chrome
         /// extension's id, or an origin whole, as moz-extension://ID

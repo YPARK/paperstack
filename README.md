@@ -29,7 +29,7 @@ RustCrypto's algorithms, which are not yet audited.
 paperstack init --demo                 # a library at ~/Dropbox/paperstack, with papers to try
 paperstack                             # browse it
 paperstack find perturbation 'author:Huber'
-paperstack find 'folder:"Single Cell Data" -label:benchmark' --sort year --bib > refs.bib
+paperstack find 'collection:"Single Cell Data" -label:benchmark' --sort year --bib > refs.bib
 paperstack get Ahlmann-Eltze2025-pb --json
 ```
 
@@ -54,7 +54,7 @@ looked for beside it, in Downloads and in Google Drive. Nothing is fetched,
 so 6,000 references take a second or so.
 
 The library's citation keys are kept as they are, so what cites them still
-does. Its folders, subfolders as `Research/ML/NLP`, become paperstack's;
+does. Its folders, subfolders as `Research/ML/NLP`, become paperstack's collections;
 its labels, labels; papers in its trash are left. A PDF is found by the
 name the export gives it, in the unzipped folder, accents however the zip
 stored them, or by its key. A paper already here, by its key, DOI or title,
@@ -67,7 +67,7 @@ alias, so either key finds it; importing again adds nothing twice.
 paperstack add 10.1038/s41586-020-2649-2            # a DOI
 paperstack add arXiv:2412.08821 'PMID: 28693043'    # an arXiv id, a PMID, a PMCID
 paperstack add https://onlinelibrary.wiley.com/doi/full/10.1002/sim.7400
-paperstack add ~/Downloads/paper.pdf --folder mediation
+paperstack add ~/Downloads/paper.pdf --collection mediation
 paperstack add 'Array programming with NumPy'       # a title, if just one paper has it
 paperstack inbox                                    # file what was saved to inbox/
 echo 10.7554/eLife.10047 | paperstack add -         # one a line, as an agent would
@@ -192,14 +192,14 @@ launchctl load ~/Library/LaunchAgents/com.github.ypark.paperstack.plist
 The TUI's `/` and `paperstack find` read the same query:
 
 ```
-perturbation "linear baseline" author:Huber year:2020..2026 folder:"Single Cell Data" -label:benchmark has:pdf
+perturbation "linear baseline" author:Huber year:2020..2026 collection:"Single Cell Data" -label:benchmark has:pdf
 ```
 
 Words, and phrases in quotes, are looked for in the title, abstract,
 authors, venue, keywords, key and DOI, title first; a word matches the words
 it starts, and accents need not be typed. `title:`, `abstract:`, `author:`
 and `venue:` look in one of those; `year:` takes a year or a range,
-`2020..2026`, `2020..` or `..2020`; `folder:`, `label:`, `key:` and `doi:`
+`2020..2026`, `2020..` or `..2020`; `collection:` (or `folder:`), `label:`, `key:` and `doi:`
 match whole; `has:pdf`, `has:abstract`, `has:doi` and `is:starred` say what a
 paper has. A `-` before any of them leaves out what it matches.
 

@@ -243,7 +243,7 @@ impl App {
             (Shelf::Starred, starred),
             (Shelf::NoPdf, no_pdf),
             (Shelf::NoAbstract, no_abstract),
-            (Shelf::Heading("FOLDERS"), 0),
+            (Shelf::Heading("COLLECTIONS"), 0),
         ];
         shelves.extend(folders.into_iter().map(|(f, n)| (Shelf::Folder(f), n)));
         shelves.push((Shelf::Heading("LABELS"), 0));
