@@ -195,8 +195,97 @@ launchctl load ~/Library/LaunchAgents/paperstack.serve.plist
 ## For AI agents: MCP
 
 `paperstack mcp` serves the library to an AI agent over the Model Context
-Protocol, on stdin and stdout: the agent's program runs it, no server to
-keep up. Its tools:
+Protocol (MCP), on stdin and stdout. The agent's program starts it when it
+needs it: there is no server to keep running.
+
+### Setting it up
+
+1. **Install paperstack**, as above, and find where it went:
+
+   ```sh
+   which paperstack          # ~/.cargo/bin/paperstack after cargo install
+   ```
+
+   Programs opened from the Dock may not have your shell's `PATH`, so give
+   them this whole path, as below.
+
+2. **Check the library** it will serve:
+
+   ```sh
+   paperstack find '' --keys        # the keys of every paper in it
+   ```
+
+   This is the library at `--library`, `$PAPERSTACK_LIBRARY` or the default
+   (see [Use](#use)), and the one the agent gets. For another, set
+   `PAPERSTACK_LIBRARY` in the client's settings, as below.
+
+3. **Tell your agent's program about it.**
+
+   **Claude Code**, for all your projects:
+
+   ```sh
+   claude mcp add --scope user paperstack -- ~/.cargo/bin/paperstack mcp
+   ```
+
+   Without `--scope user` it is for the folder it was added in only. For
+   another library, put `--env PAPERSTACK_LIBRARY=/path/to/library` before
+   the `--`.
+
+   **Cursor**: in `~/.cursor/mcp.json`, for all your projects, or a
+   project's `.cursor/mcp.json`, add `paperstack` to `mcpServers`, keeping
+   any servers there already:
+
+   ```json
+   {
+     "mcpServers": {
+       "paperstack": {
+         "command": "/Users/you/.cargo/bin/paperstack",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+
+   **Claude Desktop**: the same JSON, in
+   `~/Library/Application Support/Claude/claude_desktop_config.json`
+   (Settings → Developer → Edit Config).
+
+   **Others**: a stdio server, its command `paperstack` and its arguments
+   `mcp`.
+
+   For another library, in the JSON, add
+   `"env": { "PAPERSTACK_LIBRARY": "/path/to/library" }` beside `"args"`.
+   JSON takes no `~`: write out the whole path.
+
+4. **Restart the program, and see that it is connected.** In Claude Code,
+   `claude mcp list` or `/mcp` in a session shows `paperstack` connected. In
+   Cursor, Cursor Settings → Tools & MCP (MCP in older versions) shows it
+   with its eight tools; switch it on if it is off. In Claude Desktop, it is under the tools button in a chat.
+
+5. **Ask for papers**, as: "find the papers in my library on single-cell
+   foundation models, and give me their BibTeX".
+
+### If it does not connect
+
+- *Command not found*: give the whole path from `which paperstack`.
+- *No `mcp` command*: the `paperstack` installed is older; install it again.
+- *The wrong papers, or none*: the program sees another library. Ask
+  paperstack itself what it serves, as the program would run it:
+
+  ```sh
+  echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_collections","arguments":{}}}' \
+    | ~/.cargo/bin/paperstack mcp
+  ```
+
+  It answers with how many papers it holds. Set `PAPERSTACK_LIBRARY` in the
+  program's settings if they are not yours.
+- To see every tool and try it: `npx @modelcontextprotocol/inspector
+  ~/.cargo/bin/paperstack mcp`.
+
+To remove it: `claude mcp remove paperstack -s user`, or delete its entry
+from the JSON.
+
+### Its tools
 
 | Tool | | |
 |---|---|---|
@@ -209,37 +298,9 @@ keep up. Its tools:
 | `attach_pdf` | give a paper the PDF at a path, if it is that paper's | adds |
 | `update_paper` | its collections, labels and star | changes |
 
-The first five are marked read-only, so a client may let an agent use them
-without asking. The library's `AGENTS.md` is a resource too.
-
-Cursor, in `~/.cursor/mcp.json`, or a project's `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "paperstack": {
-      "command": "paperstack",
-      "args": ["mcp"],
-      "env": { "PAPERSTACK_LIBRARY": "/Users/you/Dropbox/paperstack" }
-    }
-  }
-}
-```
-
-Claude Code, for all your projects:
-
-```sh
-claude mcp add --scope user paperstack -- paperstack mcp
-```
-
-Without `--scope user` it is for the folder it was added in only. The library
-is found as `paperstack` finds it; one elsewhere is given with
-`--env PAPERSTACK_LIBRARY=/path/to/library` before the `--`.
-
-Claude Desktop takes the same as Cursor, in
-`~/Library/Application Support/Claude/claude_desktop_config.json`. A program
-that does not find `paperstack` on its `PATH` is given its whole path,
-`~/.cargo/bin/paperstack` after `cargo install`.
+The first five are marked read-only, so a program may let the agent use them
+without asking; it asks before the other three. The library's `AGENTS.md`,
+which tells an agent how the library is laid out, is a resource too.
 
 ## Searching
 
