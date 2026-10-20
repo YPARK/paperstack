@@ -82,6 +82,50 @@ impl Added {
     }
 }
 
+/// Give the paper `key` the PDF `bytes`, from `from`, as one got in the
+/// browser: only if it is that paper's, its title on its first pages, and
+/// only if it has none yet. A PDF with no text to tell by, as a scan, is
+/// taken on trust, and said to be.
+pub fn attach(
+    lib: &Library,
+    index: &mut Index,
+    key: &str,
+    bytes: &[u8],
+    from: &str,
+) -> anyhow::Result<Added> {
+    let hit = index
+        .get(key)?
+        .with_context(|| format!("no paper with the key {key}"))?;
+    if hit.has_pdf {
+        bail!("{key} has its PDF already");
+    }
+    if !bytes.starts_with(b"%PDF") {
+        bail!("{from} is not a PDF");
+    }
+    let text = pdf::read(bytes)?.text();
+    let unread = text.split_whitespace().count() < 20;
+    if !unread && !pdf::has_title(hit.record.title(), &text) {
+        bail!("{from} is not \"{}\"", hit.record.title());
+    }
+    let mut record = Record::clone(&hit.record);
+    record.paperstack.pdf_sha256 = Some(sha256(bytes));
+    let path = lib.save(&record, Some(&hit.path))?;
+    library::write(&lib.root.join(&path).with_extension("pdf"), bytes)?;
+    index.refresh(lib)?;
+    let how = if unread {
+        format!("{from}, with no text to check it by")
+    } else {
+        from.to_string()
+    };
+    Ok(Added {
+        key: record.key,
+        path,
+        has_pdf: true,
+        outcome: Outcome::PdfAttached,
+        how,
+    })
+}
+
 /// An error, its causes after it, on one line.
 pub fn one_line(e: &anyhow::Error) -> String {
     format!("{e:#}").replace('\n', " ")

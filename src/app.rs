@@ -2,8 +2,9 @@
 //! search line are one query, searched in the index; a star is written to
 //! the paper's record, and read back into the index.
 
-use crate::add::{Adder, Options, one_line};
+use crate::add::{Adder, Options, attach, one_line};
 use crate::bibtex;
+use crate::browser::{self, Arrivals};
 use crate::index::{Hit, Index, Shelves, Sort};
 use crate::library::Library;
 use crate::net::Net;
@@ -28,6 +29,8 @@ use std::time::{Duration, Instant};
 
 /// Two clicks on a paper within this open it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// How often the downloads folder is looked in, while a PDF is awaited.
+const LOOK: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -96,7 +99,22 @@ pub enum Target {
     Paper(usize),
     Mark(usize),
     Star(usize),
+    /// The badge of a paper with no PDF, to get it in the browser.
+    GetPdf(usize),
     Popup,
+}
+
+/// A PDF awaited from the browser, for the paper `key`.
+pub struct Fetch {
+    pub key: String,
+    pub title: String,
+    /// The page opened.
+    pub page: String,
+    /// A path or an address typed, or pasted, instead.
+    pub line: String,
+    pub arrivals: Arrivals,
+    /// What came of the last PDF that came, if it was not this paper's.
+    pub note: String,
 }
 
 pub enum Popup {
@@ -106,6 +124,8 @@ pub enum Popup {
     /// BibTeX shown, and how far it is scrolled.
     Cite(String, u16),
     Help,
+    /// A PDF awaited from the browser.
+    Fetch(Box<Fetch>),
 }
 
 pub struct App {
@@ -142,6 +162,11 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
             terminal.draw(|f| ui::draw(f, &mut app))?;
+            // Awaiting a PDF, the downloads folder is looked in between keys.
+            if matches!(app.popup, Popup::Fetch(_)) && !event::poll(LOOK)? {
+                app.tick();
+                continue;
+            }
             let action = match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key),
                 Event::Mouse(m) => app.mouse(m),
@@ -334,6 +359,33 @@ impl App {
                 self.popup = Popup::None;
                 return None;
             }
+            Popup::Fetch(fetch) => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.popup = Popup::None;
+                        self.status = "no PDF got".to_string();
+                    }
+                    KeyCode::Enter => {
+                        let line = fetch.line.trim().to_string();
+                        if !line.is_empty() {
+                            self.attach_from(&line);
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        fetch.line.pop();
+                    }
+                    KeyCode::Char('o') if ctrl => {
+                        if let Err(e) = browser::open(&fetch.page) {
+                            fetch.note = one_line(&e);
+                        }
+                    }
+                    KeyCode::Char('u') if ctrl => fetch.line.clear(),
+                    KeyCode::Char('v') if ctrl => fetch.line.push_str(paste().trim()),
+                    KeyCode::Char(c) => fetch.line.push(c),
+                    _ => {}
+                }
+                return None;
+            }
             Popup::None => {}
         }
         if ctrl && key.code == KeyCode::Char('e') {
@@ -422,6 +474,7 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.star(),
+            KeyCode::Char('p') => self.get_pdf(),
             KeyCode::Char('r') => {
                 let before = self.total();
                 match self.index.refresh(&self.lib).and_then(|_| self.restock()) {
@@ -533,6 +586,11 @@ impl App {
                 self.list.select(Some(i));
                 self.star();
             }
+            Target::GetPdf(i) => {
+                self.focus = Focus::List;
+                self.list.select(Some(i));
+                self.get_pdf();
+            }
         }
         None
     }
@@ -629,6 +687,84 @@ impl App {
         });
         if let Err(e) = done {
             self.status = format!("cannot star: {e:#}");
+        }
+        self.narrow();
+    }
+
+    /// Get the PDF of the paper picked in the browser: its page opened
+    /// there, the PDF downloaded there awaited.
+    pub fn get_pdf(&mut self) {
+        let Some(h) = self.current() else { return };
+        if h.has_pdf {
+            self.status = format!("{} has its PDF: ⏎ opens it", h.record.key);
+            return;
+        }
+        let page = browser::page(&h.record);
+        let note = match browser::open(&page) {
+            Ok(()) => String::new(),
+            Err(e) => one_line(&e),
+        };
+        self.popup = Popup::Fetch(Box::new(Fetch {
+            key: h.record.key.clone(),
+            title: h.record.title().to_string(),
+            page,
+            line: String::new(),
+            arrivals: Arrivals::new(browser::downloads()),
+            note,
+        }));
+    }
+
+    /// Look for the PDF awaited among what has been downloaded since.
+    pub fn tick(&mut self) {
+        let Popup::Fetch(fetch) = &mut self.popup else {
+            return;
+        };
+        for path in fetch.arrivals.next() {
+            let from = browser::tilde(&path);
+            let done = std::fs::read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| attach(&self.lib, &mut self.index, &fetch.key, &bytes, &from));
+            match done {
+                Ok(added) => return self.attached(&added),
+                Err(e) => fetch.note = one_line(&e),
+            }
+        }
+    }
+
+    /// Give the paper awaited the PDF at `line`, a path or an address.
+    fn attach_from(&mut self, line: &str) {
+        let Popup::Fetch(fetch) = &mut self.popup else {
+            return;
+        };
+        let bytes = if line.starts_with("http://") || line.starts_with("https://") {
+            match &self.net {
+                Some(net) => net.pdf(line),
+                None => Err(anyhow::anyhow!("cannot download here")),
+            }
+        } else {
+            // A path dropped on a terminal comes quoted, or its spaces
+            // escaped.
+            let path = line.trim_matches(['\'', '"']).replace("\\ ", " ");
+            let path = match path.strip_prefix("~/") {
+                Some(rest) => {
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest)
+                }
+                None => PathBuf::from(path),
+            };
+            std::fs::read(&path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))
+        };
+        let done = bytes.and_then(|b| attach(&self.lib, &mut self.index, &fetch.key, &b, line));
+        match done {
+            Ok(added) => self.attached(&added),
+            Err(e) => fetch.note = one_line(&e),
+        }
+    }
+
+    fn attached(&mut self, added: &crate::add::Added) {
+        self.popup = Popup::None;
+        self.status = format!("{}: {}", added.key, added.summary());
+        if let Err(e) = self.restock() {
+            self.status = one_line(&e);
         }
         self.narrow();
     }

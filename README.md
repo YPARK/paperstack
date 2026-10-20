@@ -84,6 +84,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `ctrl-e` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
+| `p` | get the PDF of a paper without one, in the browser |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `q` | quit |
@@ -95,7 +96,27 @@ through the list under it.
 ## From the browser
 
 PDFs behind a paywall, or a publisher's bot check, are had only in the
-browser, signed in as you. Two ways bring them in:
+browser, signed in as you.
+
+A paper here without its PDF shows **get PDF**: click it, or press `p`, and
+its page opens in the browser, by its DOI. Download the PDF there, as you
+would, and it is filed beside the paper as soon as it lands in
+`~/Downloads`, if its first page has the paper's title; anything else
+downloaded meanwhile is left alone. Or paste the PDF's path, or its address,
+into the dialog. From the shell, the same:
+
+```sh
+paperstack attach Ahlmann-Eltze2025-pk                 # open its page, await the download
+paperstack attach Ahlmann-Eltze2025-pk ~/Downloads/s41592-025-02772-6.pdf
+```
+
+| | |
+|---|---|
+| `PAPERSTACK_PROXY` | your library's proxy, put before the page's address: `https://ezproxy.library.ubc.ca/login?url=` |
+| `PAPERSTACK_BROWSER` | the browser to open, as `open -a "Google Chrome"`, where the extension is; `none` to only show the address |
+| `PAPERSTACK_DOWNLOADS` | where the browser saves downloads, if not `~/Downloads` |
+
+Two ways bring in PDFs of papers not yet here, or many at once:
 
 ```sh
 paperstack watch ~/Downloads        # file PDFs as they come into inbox/ and ~/Downloads

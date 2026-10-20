@@ -7,6 +7,7 @@ mod add;
 mod agents;
 mod app;
 mod bibtex;
+mod browser;
 mod cli;
 mod daemon;
 mod demo;
@@ -99,6 +100,18 @@ enum Command {
         #[arg(long)]
         no_pdf: bool,
         /// What was added, as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a paper the PDF behind a paywall: its page opened in the
+    /// browser, the PDF downloaded there awaited; or a PDF's path or address
+    Attach {
+        key: String,
+        /// A PDF's path, or its address, to take instead of waiting
+        pdf: Option<String>,
+        /// How long to wait for the download, in minutes
+        #[arg(long, default_value_t = 15)]
+        wait: u64,
         #[arg(long)]
         json: bool,
     },
@@ -309,6 +322,55 @@ fn main() -> anyhow::Result<()> {
                 println!("| {line}");
             }
             Ok(())
+        }
+        Some(Command::Attach {
+            key,
+            pdf,
+            wait,
+            json,
+        }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let done = match pdf {
+                Some(given) => {
+                    let bytes = if given.starts_with("http://") || given.starts_with("https://") {
+                        net().pdf(&given)?
+                    } else {
+                        std::fs::read(&given)?
+                    };
+                    add::attach(&lib, &mut index, &key, &bytes, &given)
+                }
+                None => {
+                    let hit = index
+                        .get(&key)?
+                        .ok_or_else(|| anyhow::anyhow!("no paper with the key {key}"))?;
+                    let page = browser::page(&hit.record);
+                    browser::open(&page)?;
+                    let mut arrivals = browser::Arrivals::new(browser::downloads());
+                    eprintln!(
+                        "opened {page}\ndownload its PDF there; waiting for it in {} …",
+                        browser::tilde(&arrivals.dir)
+                    );
+                    let until =
+                        std::time::Instant::now() + std::time::Duration::from_secs(wait * 60);
+                    let mut done = Err(anyhow::anyhow!("no PDF of {key} came in {wait} minutes"));
+                    'waiting: while std::time::Instant::now() < until {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        for path in arrivals.next() {
+                            let from = browser::tilde(&path);
+                            match add::attach(&lib, &mut index, &key, &std::fs::read(&path)?, &from)
+                            {
+                                Ok(added) => {
+                                    done = Ok(added);
+                                    break 'waiting;
+                                }
+                                Err(e) => eprintln!("paperstack: {}", add::one_line(&e)),
+                            }
+                        }
+                    }
+                    done
+                }
+            };
+            cli::print_added(&lib, &[(key, done)], json)
         }
         Some(Command::Inbox { json }) => {
             let (lib, mut index) = open(&args.library)?;

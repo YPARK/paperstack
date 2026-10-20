@@ -658,3 +658,133 @@ fn serves_only_the_extensions_named() {
     assert_eq!(ask("127.0.0.1:9999", None, 10), Some(403));
     assert_eq!(ask("127.0.0.1:8765", Some(&ours), usize::MAX), Some(413));
 }
+
+/// A PDF of one page, its lines set in Helvetica, as `pdf-extract` reads
+/// it: to tell papers by, without PDFs kept in the repository.
+fn tiny_pdf(lines: &[&str]) -> Vec<u8> {
+    let text: String = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            format!(
+                "BT /F1 11 Tf 72 {} Td ({}) Tj ET\n",
+                740 - 16 * i,
+                l.replace('(', "\\(").replace(')', "\\)")
+            )
+        })
+        .collect();
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{text}endstream", text.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .bytes(),
+    );
+    out
+}
+
+/// The first page of the demo paper `key`'s PDF, or another's.
+fn first_page(title: &str) -> Vec<u8> {
+    tiny_pdf(&[
+        title,
+        "A. Author, B. Author",
+        "Abstract",
+        "We study what the title says, and report what we found, in some detail,",
+        "with methods, data and results set out over the pages that follow this one.",
+    ])
+}
+
+#[test]
+fn attaches_only_the_papers_own_pdf() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kedzierska2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    let other = crate::add::attach(
+        &lib,
+        &mut index,
+        key,
+        &first_page("Another paper altogether, on other things"),
+        "x.pdf",
+    );
+    assert!(other.unwrap_err().to_string().contains("is not"));
+    let added = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf").unwrap();
+    assert_eq!(added.outcome, crate::add::Outcome::PdfAttached);
+    let hit = index.get(key).unwrap().unwrap();
+    assert!(hit.has_pdf && hit.record.paperstack.pdf_sha256.is_some());
+    assert!(lib.root.join(&hit.path).with_extension("pdf").exists());
+    let again = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf");
+    assert!(again.unwrap_err().to_string().contains("already"));
+}
+
+#[test]
+fn notices_a_pdf_once_it_is_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("old.pdf"), b"%PDF").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut arrivals = crate::browser::Arrivals::new(dir.path().to_path_buf());
+    std::fs::write(dir.path().join("new.pdf"), b"%PDF-1.4").unwrap();
+    std::fs::write(dir.path().join("new.pdf.crdownload"), b"%PDF").unwrap();
+    assert!(
+        arrivals.next().is_empty(),
+        "seen once, not yet known to be whole"
+    );
+    assert_eq!(arrivals.next(), [dir.path().join("new.pdf")]);
+    assert!(arrivals.next().is_empty(), "given once");
+}
+
+#[test]
+fn files_the_pdf_downloaded_for_the_paper_awaited() {
+    let (dir, lib, index) = library();
+    let downloads = dir.path().join("Downloads");
+    std::fs::create_dir(&downloads).unwrap();
+    let mut app = App::new(lib, index).unwrap();
+    let key = "Kedzierska2025-zs".to_string();
+    let title = app
+        .index
+        .get(&key)
+        .unwrap()
+        .unwrap()
+        .record
+        .title()
+        .to_string();
+    app.popup = Popup::Fetch(Box::new(crate::app::Fetch {
+        key: key.clone(),
+        title: title.clone(),
+        page: "https://doi.org/x".into(),
+        line: String::new(),
+        arrivals: crate::browser::Arrivals::new(downloads.clone()),
+        note: String::new(),
+    }));
+    std::fs::write(
+        downloads.join("unrelated.pdf"),
+        first_page("A bank statement, of no paper"),
+    )
+    .unwrap();
+    std::fs::write(downloads.join("paper.pdf"), first_page(&title)).unwrap();
+    app.tick();
+    app.tick();
+    assert!(
+        matches!(app.popup, Popup::None),
+        "filed, and the dialog closed"
+    );
+    assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
+    assert!(app.status.contains("given its PDF"), "{}", app.status);
+}

@@ -3,7 +3,8 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Focus, Popup, Shelf, Target};
+use crate::app::{App, Fetch, Focus, Popup, Shelf, Target};
+use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
 use crate::theme::Theme;
@@ -15,6 +16,8 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 
+/// The badge of a paper without its PDF, to get it in the browser.
+const GET_PDF: &str = " get PDF ";
 /// Authors listed before `… n more`.
 const AUTHORS_SHOWN: usize = 5;
 const SIDEBAR: u16 = 30;
@@ -55,6 +58,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Popup::Add(line) => Some(add(f, &t, line)),
         Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
         Popup::Help => Some(help(f, &t)),
+        Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::None => None,
     };
     if let Some(area) = popup {
@@ -247,7 +251,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
             let rest = format!(" · {year} · {}", r.kind());
             // The PDF's badge at the right, as a reference manager's; the key before
             // it, where there is room.
-            let pdf = if h.has_pdf { " PDF " } else { "" };
+            let pdf = if h.has_pdf { " PDF " } else { GET_PDF };
             let room = (width + 2)
                 .saturating_sub(3 + venue.chars().count() + rest.chars().count() + pdf.len());
             let key = if room > r.key.len() + 4 {
@@ -262,7 +266,11 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(rest, Style::new().fg(t.dim)),
                 Span::styled(key, Style::new().fg(t.dim)),
                 Span::raw(" ".repeat(pad)),
-                Span::styled(pdf, Style::new().fg(t.on_badge).bg(t.badge)),
+                if h.has_pdf {
+                    Span::styled(pdf, Style::new().fg(t.on_badge).bg(t.badge))
+                } else {
+                    Span::styled(pdf, Style::new().fg(t.accent).underlined())
+                },
             ];
             let title = clip(r.title(), width.saturating_sub(4));
             let title_width = title.chars().count() as u16;
@@ -316,6 +324,19 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
         };
         app.targets.push((line(1, 3), Target::Mark(i)));
         app.targets.push((line(4 + titles[i], 2), Target::Star(i)));
+        if !app.shown[i].has_pdf {
+            let badge = GET_PDF.chars().count() as u16;
+            let x = row.right().saturating_sub(badge + 1);
+            app.targets.push((
+                Rect {
+                    x,
+                    y: row.y + 2,
+                    width: badge,
+                    height: 1,
+                },
+                Target::GetPdf(i),
+            ));
+        }
     }
 }
 
@@ -373,7 +394,7 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
             if h.has_pdf {
                 Span::styled(" PDF ", Style::new().fg(t.on_badge).bg(t.badge))
             } else {
-                Span::styled("none", dim)
+                Span::styled("none · p gets it in your browser", dim)
             },
         ]),
         field("record", file),
@@ -411,6 +432,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
         ("/", "search"),
         ("S", "sort"),
         ("⏎", "open in ohp"),
+        ("p", "get PDF"),
         ("␣", "mark"),
         ("*", "mark all"),
         ("^E", "BibTeX"),
@@ -485,6 +507,55 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     area
 }
 
+/// A paper's PDF, awaited from the browser.
+fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
+    let area = centered(f.area(), 88, 15);
+    f.render_widget(Clear, area);
+    let dim = Style::new().fg(t.dim);
+    let mut lines = vec![
+        Line::styled(fetch.title.clone(), Style::new().fg(t.title).bold()),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("opened  ", dim),
+            Span::styled(fetch.page.clone(), Style::new().fg(t.accent)),
+        ]),
+        Line::raw(""),
+        Line::raw("Download its PDF there, signed in, as you would: it is filed as soon"),
+        Line::from(vec![
+            Span::raw("as it lands in "),
+            Span::styled(browser::tilde(&fetch.arrivals.dir), Style::new().bold()),
+            Span::raw(", if it is this paper's."),
+        ]),
+        Line::styled(
+            "Or paste its path or its address; or press paperstack's button in Chrome.",
+            dim,
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
+            Span::styled(
+                format!("{}▏", fetch.line),
+                Style::new().fg(t.text).bg(t.field),
+            ),
+        ]),
+    ];
+    if !fetch.note.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(fetch.note.clone(), Style::new().fg(t.star)));
+    }
+    let block = dialog(t, "Get the PDF").title_bottom(Line::styled(
+        " ⏎ take what is pasted · ctrl-v paste · ctrl-o open the page again · esc stop ",
+        dim,
+    ));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    area
+}
+
 fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     let area = centered(f.area(), 92, 26);
     f.render_widget(Clear, area);
@@ -519,6 +590,10 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
             "sort: relevance, date added, year, first author, title",
         ),
         ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
+        (
+            "p",
+            "get the PDF in your browser, signed in: download it there, as you would",
+        ),
         (
             "space",
             "mark a paper; * marks all shown, again unmarks; esc unmarks all",
