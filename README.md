@@ -2,7 +2,7 @@
 
 A library of papers in the terminal: PDFs and their references, kept in a
 folder, as in Dropbox, that an AI agent can read as easily as you can.
-PDFs are presented with [ohp](https://github.com/YPARK/ohp).
+PDFs are presented with [ohp](https://crates.io/crates/ohp).
 
 Early days. `paperstack init --demo` makes a library of nine papers to try
 it with.
@@ -17,8 +17,10 @@ colours instead.
 Rust 1.92 or later, and `ohp` on the `PATH` to open PDFs:
 
 ```sh
-cargo install --git https://github.com/YPARK/paperstack
+cargo install paperstack ohp
 ```
+
+or `cargo install --path .` in a clone of this repository.
 
 Pure Rust: nothing in C is compiled, as for ohp. HTTPS is rustls with
 RustCrypto's algorithms, which are not yet audited.
@@ -140,7 +142,7 @@ paperstack attach Ahlmann-Eltze2025-pk ~/Downloads/s41592-025-02772-6.pdf
 
 | | |
 |---|---|
-| `PAPERSTACK_PROXY` | your library's proxy, put before the page's address: `https://ezproxy.library.ubc.ca/login?url=` |
+| `PAPERSTACK_PROXY` | your library's proxy, put before the page's address: `https://ezproxy.example.edu/login?url=` |
 | `PAPERSTACK_BROWSER` | the browser to open, as `open -a "Google Chrome"`, where the extension is; `none` to only show the address |
 | `PAPERSTACK_DOWNLOADS` | where the browser saves downloads, if not `~/Downloads` |
 
@@ -173,11 +175,11 @@ by a few threads, so a slow one keeps no other waiting.
 To have `serve` run from login on macOS, a LaunchAgent:
 
 ```sh
-cat > ~/Library/LaunchAgents/com.github.ypark.paperstack.plist <<PLIST
+cat > ~/Library/LaunchAgents/paperstack.serve.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.github.ypark.paperstack</string>
+  <key>Label</key><string>paperstack.serve</string>
   <key>ProgramArguments</key><array>
     <string>$HOME/.cargo/bin/paperstack</string><string>serve</string>
     <string>--watch</string><string>$HOME/Downloads</string>
@@ -187,7 +189,7 @@ cat > ~/Library/LaunchAgents/com.github.ypark.paperstack.plist <<PLIST
   <key>StandardErrorPath</key><string>/tmp/paperstack.log</string>
 </dict></plist>
 PLIST
-launchctl load ~/Library/LaunchAgents/com.github.ypark.paperstack.plist
+launchctl load ~/Library/LaunchAgents/paperstack.serve.plist
 ```
 
 ## For AI agents: MCP
