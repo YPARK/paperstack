@@ -788,3 +788,123 @@ fn files_the_pdf_downloaded_for_the_paper_awaited() {
     assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
     assert!(app.status.contains("given its PDF"), "{}", app.status);
 }
+
+/// A a reference manager export, in its form, as from Settings › Data and files ›
+/// Export data › JSON.
+fn library_export() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "_id": "1", "pubtype": "PP_ARTICLE", "citekey": "Gonzalez-Rosa2018-vd",
+            "title": "Myocardial polyploidization creates a barrier to heart regeneration in zebrafish",
+            "author": [
+                { "first": "Juan Manuel", "last": "González-Rosa", "initials": "JM" },
+                { "first": "Michka", "last": "Sharpe", "initials": "M" }
+            ],
+            "published": { "year": "2018", "month": "2", "day": "26" },
+            "journal": "Dev. Cell", "journalfull": "Developmental Cell",
+            "volume": "44", "issue": "4", "pages": "433-446.e7",
+            "doi": "10.1016/j.devcel.2018.01.021", "pmid": "29486195", "pmc": "PMC5830170",
+            "abstract": "Polyploid hearts regenerate less.",
+            "foldersNamed": ["Research/Heart"], "labelsNamed": ["to-read"], "star": 1,
+            "attachments": [{
+                "article_pdf": 1,
+                "filename": "All Papers/G/González-Rosa et al. 2018 - Myocardial polyploidization creates a barrier to heart regeneration in zebrafish.pdf"
+            }],
+            "url": ["http://dx.doi.org/10.1016/j.devcel.2018.01.021"]
+        },
+        {
+            "_id": "2", "pubtype": "PP_CONFERENCE_PAPER", "citekey": "Vaswani2017-pp",
+            "title": "Attention is all you need",
+            "author": [{ "first": "Ashish", "last": "Vaswani" }],
+            "published": { "year": "2017" }, "booktitle": "Advances in Neural Information Processing Systems",
+            "foldersNamed": ["Research/ML/NLP", "Research/ML/Transformers"], "labelsNamed": ["Machine Learning"]
+        },
+        {
+            "_id": "3", "pubtype": "PP_MISC", "title": "Notes on nothing in particular, unkeyed",
+            "author": [{ "first": "A", "last": "Nobody" }], "published": { "year": "2020" }
+        },
+        { "_id": "4", "pubtype": "PP_ARTICLE", "citekey": "Gone2019-xx", "title": "In the trash", "trashed": 1 },
+        {
+            "_id": "5", "pubtype": "PP_ARTICLE", "citekey": "VanderWeele2017-pp",
+            "title": "Sensitivity analysis in observational research: Introducing the E-value",
+            "doi": "10.7326/M16-2607", "foldersNamed": ["grant_NFRF"]
+        }
+    ])
+}
+
+#[test]
+fn moves_a_library_from_its_export() {
+    let (dir, lib, mut index) = library();
+    let export = dir.path().join("export.json");
+    std::fs::write(&export, serde_json::to_vec(&library_export()).unwrap()).unwrap();
+    // Unzipped from a reference manager's ZIP, its accents stored apart, as a Mac may.
+    let pdfs = dir.path().join("a reference manager");
+    let name = "González-Rosa et al. 2018 - Myocardial polyploidization creates a barrier to heart regeneration in zebrafish.pdf";
+    let nfd: String = unicode_normalization::UnicodeNormalization::nfd(name).collect();
+    std::fs::create_dir_all(pdfs.join("All Papers/G")).unwrap();
+    std::fs::write(
+        pdfs.join("All Papers/G").join(nfd),
+        tiny_pdf(&["Myocardial polyploidization"]),
+    )
+    .unwrap();
+
+    let dry = crate::migrate::import(&lib, &mut index, &export, Some(&pdfs), true).unwrap();
+    assert_eq!((dry.added, dry.merged, dry.trashed, dry.pdfs), (3, 1, 1, 1));
+    assert!(
+        index.get("Gonzalez-Rosa2018-vd").unwrap().is_none(),
+        "a dry run writes nothing"
+    );
+
+    let done = crate::migrate::import(&lib, &mut index, &export, Some(&pdfs), false).unwrap();
+    assert_eq!(
+        (done.read, done.added, done.merged, done.trashed, done.pdfs),
+        (5, 3, 1, 1, 1)
+    );
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+
+    let hit = index.get("Gonzalez-Rosa2018-vd").unwrap().unwrap();
+    let r = &hit.record;
+    assert_eq!(r.csl_type(), "article-journal");
+    assert_eq!(r.venue(), "Developmental Cell");
+    assert_eq!(r.year(), Some(2018));
+    assert_eq!(r.csl["PMCID"], "PMC5830170");
+    assert_eq!(r.paperstack.folders, ["Research/Heart"]);
+    assert!(r.paperstack.starred && hit.has_pdf);
+    assert!(hit.path.starts_with("2018/González-Rosa/Juan Manuel/"));
+    let bib = bibtex::entry(r);
+    assert!(
+        bib.starts_with("@article{Gonzalez-Rosa2018-vd,")
+            && bib.contains("journal = {Developmental Cell}"),
+        "{bib}"
+    );
+
+    let ml = index.get("Vaswani2017-pp").unwrap().unwrap();
+    assert_eq!(ml.record.csl_type(), "paper-conference");
+    assert_eq!(
+        keys(&index, "folder:\"Research/ML/NLP\"", Sort::Added),
+        ["Vaswani2017-pp"]
+    );
+    assert!(
+        index.get("Gone2019-xx").unwrap().is_none(),
+        "the trash is left"
+    );
+    assert_eq!(
+        keys(&index, "unkeyed", Sort::Added).len(),
+        1,
+        "given a key of its own"
+    );
+
+    // Already here, by its DOI: given the folder, its a reference manager key an alias.
+    let here = index.get("VanderWeele2017-pp").unwrap().unwrap();
+    assert_eq!(here.record.key, "VanderWeele2017-ex");
+    assert!(
+        here.record
+            .paperstack
+            .folders
+            .contains(&"grant_NFRF".to_string())
+    );
+
+    // Again: nothing added twice.
+    let again = crate::migrate::import(&lib, &mut index, &export, Some(&pdfs), false).unwrap();
+    assert_eq!((again.added, again.merged), (0, 4));
+}

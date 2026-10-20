@@ -15,6 +15,7 @@ mod index;
 mod layout;
 mod library;
 mod net;
+mod migrate;
 mod pdf;
 mod query;
 mod record;
@@ -112,6 +113,22 @@ enum Command {
         /// How long to wait for the download, in minutes
         #[arg(long, default_value_t = 15)]
         wait: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move from a reference manager: its JSON export (Settings › Data and files ›
+    /// Export data › JSON), its folders, labels and stars, its keys kept;
+    /// and its PDFs, from "Download files as ZIP", unzipped, or its Google
+    /// Drive folder
+    Import {
+        export: PathBuf,
+        /// Where a reference manager's PDFs are; else looked for beside the export,
+        /// in Downloads, and in Google Drive
+        #[arg(long)]
+        pdfs: Option<PathBuf>,
+        /// Say what would be done, and do nothing
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -371,6 +388,32 @@ fn main() -> anyhow::Result<()> {
                 }
             };
             cli::print_added(&lib, &[(key, done)], json)
+        }
+        Some(Command::Import {
+            export,
+            pdfs,
+            dry_run,
+            json,
+        }) => {
+            if pdfs
+                .as_ref()
+                .is_some_and(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")))
+            {
+                anyhow::bail!("unzip a reference manager's ZIP first, and give the folder it makes");
+            }
+            let (lib, mut index) = open(&args.library)?;
+            let pdfs = pdfs.or_else(|| migrate::find_pdf_dir(&export));
+            let done = migrate::import(&lib, &mut index, &export, pdfs.as_deref(), dry_run)?;
+            for e in done.errors.iter().take(20) {
+                eprintln!("paperstack: {e}");
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&done)?);
+            } else {
+                let would = if dry_run { "would be: " } else { "" };
+                println!("{would}{}", done.summary());
+            }
+            Ok(())
         }
         Some(Command::Inbox { json }) => {
             let (lib, mut index) = open(&args.library)?;

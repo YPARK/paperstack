@@ -625,6 +625,31 @@ impl App {
     /// Add what `line` names, into the folder or label picked on the left,
     /// and show it.
     fn add(&mut self, line: &str) {
+        // A whole library, from a reference manager: nothing is fetched for it.
+        if let Source::Export(given) = Source::of(line) {
+            let export = browser::dropped(&given);
+            let pdfs = crate::migrate::find_pdf_dir(&export);
+            let done = self.index.refresh(&self.lib).and_then(|_| {
+                crate::migrate::import(
+                    &self.lib,
+                    &mut self.index,
+                    &export,
+                    pdfs.as_deref(),
+                    false,
+                )
+            });
+            match done {
+                Ok(imported) => {
+                    self.status = format!("from a reference manager: {}", imported.summary());
+                    if let Err(e) = self.restock() {
+                        self.status = one_line(&e);
+                    }
+                    self.narrow();
+                }
+                Err(e) => self.status = one_line(&e),
+            }
+            return;
+        }
         let Some(net) = &self.net else {
             self.status = "cannot add here: nothing is fetched".to_string();
             return;
@@ -742,15 +767,7 @@ impl App {
                 None => Err(anyhow::anyhow!("cannot download here")),
             }
         } else {
-            // A path dropped on a terminal comes quoted, or its spaces
-            // escaped.
-            let path = line.trim_matches(['\'', '"']).replace("\\ ", " ");
-            let path = match path.strip_prefix("~/") {
-                Some(rest) => {
-                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest)
-                }
-                None => PathBuf::from(path),
-            };
+            let path = browser::dropped(line);
             std::fs::read(&path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))
         };
         let done = bytes.and_then(|b| attach(&self.lib, &mut self.index, &fetch.key, &b, line));

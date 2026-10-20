@@ -38,6 +38,7 @@ paperstack add https://www.sciencedirect.com/science/article/pii/S00928674230134
 paperstack add ~/Downloads/paper.pdf --folder grant_OCRA_AI  # a PDF, read to tell which paper
 paperstack add 'Array programming with NumPy'                # a title: added only if one paper has it
 paperstack inbox                                             # file the PDFs saved to inbox/
+paperstack import library-export.json --dry-run          # a a reference manager library, its keys kept
 paperstack attach KEY ~/Downloads/paper.pdf                  # give a paper the PDF it lacks
 ```
 

@@ -36,6 +36,31 @@ paperstack get Ahlmann-Eltze2025-pb --json
 The library is `--library`, else `$PAPERSTACK_LIBRARY`, else
 `~/Dropbox/paperstack`.
 
+## Moving from a reference manager
+
+1. In a reference manager, Settings › Data and files › Export data › **JSON**: every
+   reference, with its citation key, folders, labels and star.
+2. For the PDFs: select all papers, ⋯ › **Download files as ZIP**, and unzip
+   it. A Google Drive folder a reference manager syncs to will do as well.
+3. Then:
+
+```sh
+paperstack import ~/Downloads/library-export.json --dry-run   # what it would do
+paperstack import ~/Downloads/library-export.json --pdfs ~/Downloads/a reference manager
+```
+
+Or press `a` in the browser, and drop the `.json` on it: the same, the PDFs
+looked for beside it, in Downloads and in Google Drive. Nothing is fetched,
+so 6,000 references take a second or so.
+
+a reference manager's citation keys are kept as they are, so what cites them still
+does. Its folders, subfolders as `Research/ML/NLP`, become paperstack's;
+its labels, labels; papers in its trash are left. A PDF is found by the
+name the export gives it, in the unzipped folder, accents however the zip
+stored them, or by its key. A paper already here, by its key, DOI or title,
+is given the export's folders and labels, and its a reference manager key as an
+alias, so either key finds it; importing again adds nothing twice.
+
 ## Adding papers
 
 ```sh

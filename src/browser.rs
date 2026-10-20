@@ -105,6 +105,16 @@ impl Arrivals {
     }
 }
 
+/// A path as typed, or dropped on a terminal, which quotes it or escapes
+/// its spaces; `~/` as the home folder.
+pub fn dropped(line: &str) -> PathBuf {
+    let path = line.trim().trim_matches(['\'', '"']).replace("\\ ", " ");
+    match path.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(path),
+    }
+}
+
 /// `path` with the home folder as `~`, as it is shown.
 pub fn tilde(path: &Path) -> String {
     let home = std::env::var("HOME").unwrap_or_default();

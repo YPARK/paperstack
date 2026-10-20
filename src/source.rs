@@ -17,6 +17,8 @@ pub enum Source {
     /// A page to read the paper's ids from.
     Url(String),
     Pdf(String),
+    /// a reference manager's JSON export, its whole library.
+    Export(String),
     Bibtex,
     Words(String),
     Nothing,
@@ -164,6 +166,13 @@ impl Source {
         if s.to_lowercase().ends_with(".pdf") && !s.contains("://") {
             return Source::Pdf(s.to_string());
         }
+        if s.to_lowercase()
+            .trim_end_matches(['\'', '"'])
+            .ends_with(".json")
+            && !s.contains("://")
+        {
+            return Source::Export(s.to_string());
+        }
         let lower = s.to_lowercase();
         let web = lower.starts_with("http://") || lower.starts_with("https://");
         if web {
@@ -229,6 +238,16 @@ impl Source {
                 ],
             ),
             Source::Bibtex => ("BibTeX".to_string(), vec!["not yet"]),
+            Source::Export(p) => {
+                return (
+                    format!("a reference manager's export {p}"),
+                    vec![
+                        "its references, their keys kept, with their folders, labels and stars",
+                        "their PDFs, from its \"Download files as ZIP\" unzipped, or Google Drive",
+                        "papers already here given the folders and labels it adds",
+                    ],
+                );
+            }
             Source::Words(w) => (
                 format!("search \"{w}\""),
                 vec!["OpenAlex, Crossref and arXiv: added only if one paper has the title"],

@@ -309,6 +309,9 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::new().bg(t.page));
     f.render_stateful_widget(list, area, &mut app.list);
     app.targets.push((area, Target::List));
+    if app.total() == 0 {
+        empty(f, &t, inner);
+    }
     let heights = vec![4; titles.len()];
     for (i, row) in rows(inner, app.list.offset(), &heights) {
         app.targets.push((row, Target::Paper(i)));
@@ -338,6 +341,46 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
     }
+}
+
+/// What an empty library says: how to fill it, from a reference manager first.
+fn empty(f: &mut Frame, t: &Theme, area: Rect) {
+    let dim = Style::new().fg(t.dim);
+    let key = Style::new().fg(t.title).bold();
+    let lines = vec![
+        Line::raw(""),
+        Line::styled("  No papers yet.", Style::new().fg(t.title).bold()),
+        Line::raw(""),
+        Line::styled("  From a reference manager:", Style::new().bold()),
+        Line::styled(
+            "   1. Settings › Data and files › Export data › JSON",
+            Style::new().fg(t.text),
+        ),
+        Line::styled(
+            "   2. PDFs: select all, ⋯ › Download files as ZIP; unzip it",
+            Style::new().fg(t.text),
+        ),
+        Line::from(vec![
+            Span::styled("   3. press ", Style::new().fg(t.text)),
+            Span::styled("a", key),
+            Span::styled(
+                " and drop the .json in, or run paperstack import",
+                Style::new().fg(t.text),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Or press ", dim),
+            Span::styled("a", key),
+            Span::styled(" for a DOI, arXiv id, PMID, address, PDF or title.", dim),
+        ]),
+    ];
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Style::new().bg(t.page))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn details(f: &mut Frame, app: &App, area: Rect) {
@@ -480,7 +523,7 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     let dim = Style::new().fg(t.dim);
     let mut lines = vec![
         Line::styled(
-            "DOI, arXiv id, PMID, address, a PDF's path, or a title",
+            "DOI, arXiv id, PMID, address, a PDF's path, a title, or a reference manager's export",
             dim,
         ),
         Line::from(vec![

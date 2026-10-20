@@ -144,6 +144,9 @@ impl Adder<'_> {
         match &source {
             Source::Nothing => bail!("nothing to add"),
             Source::Bibtex => bail!("BibTeX is not read yet: give the paper's DOI"),
+            Source::Export(path) => {
+                bail!("{path}: a whole library is moved with paperstack import")
+            }
             Source::Pdf(path) => {
                 let path = tilde(path);
                 let bytes = std::fs::read(&path)
@@ -518,7 +521,7 @@ fn id_name(id: &Source) -> String {
     }
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -537,6 +540,11 @@ pub fn now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
+    rfc3339(secs)
+}
+
+/// A time, in seconds since 1970, in RFC 3339, UTC.
+pub fn rfc3339(secs: i64) -> String {
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Days to a civil date, after Howard Hinnant's `civil_from_days`.
     let z = days + 719_468;
