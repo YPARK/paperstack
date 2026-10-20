@@ -1,4 +1,4 @@
-//! The screen's colours: `light`'s light page, as a reference manager's web app
+//! The screen's colours: `light`, a light page, as a reference manager's
 //! looks, painted whatever the terminal's own colours; or `dark`, in the
 //! terminal's own background.
 
@@ -7,7 +7,7 @@ use ratatui::style::Color;
 #[derive(Clone, Copy, Debug, Default, PartialEq, clap::ValueEnum)]
 pub enum Name {
     #[default]
-    a reference manager,
+    Light,
     Dark,
 }
 

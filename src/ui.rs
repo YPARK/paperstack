@@ -210,7 +210,7 @@ fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// `A, B, C … n more`, as a reference manager shortens a long list of authors.
+/// `A, B, C … n more`, a long list of authors shortened.
 fn authors(r: &Record, shown: usize) -> String {
     let all = r.authors();
     let names: Vec<String> = all
@@ -249,7 +249,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
                 .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
             let venue = clip(r.venue(), width / 2);
             let rest = format!(" · {year} · {}", r.kind());
-            // The PDF's badge at the right, as a reference manager's; the key before
+            // The PDF's badge at the right; the key before
             // it, where there is room.
             let pdf = if h.has_pdf { " PDF " } else { GET_PDF };
             let room = (width + 2)
@@ -343,7 +343,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// What an empty library says: how to fill it, from a reference manager first.
+/// What an empty library says: how to fill it, from another library first.
 fn empty(f: &mut Frame, t: &Theme, area: Rect) {
     let dim = Style::new().fg(t.dim);
     let key = Style::new().fg(t.title).bold();
@@ -351,13 +351,13 @@ fn empty(f: &mut Frame, t: &Theme, area: Rect) {
         Line::raw(""),
         Line::styled("  No papers yet.", Style::new().fg(t.title).bold()),
         Line::raw(""),
-        Line::styled("  From a reference manager:", Style::new().bold()),
+        Line::styled("  From another reference manager:", Style::new().bold()),
         Line::styled(
-            "   1. Settings › Data and files › Export data › JSON",
+            "   1. export its library as JSON, with folders and labels",
             Style::new().fg(t.text),
         ),
         Line::styled(
-            "   2. PDFs: select all, ⋯ › Download files as ZIP; unzip it",
+            "   2. download its PDFs as a ZIP, and unzip it",
             Style::new().fg(t.text),
         ),
         Line::from(vec![
@@ -503,7 +503,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// A box over the screen, as a reference manager's dialogs are.
+/// A box over the screen.
 fn dialog<'a>(t: &Theme, title: &'a str) -> Block<'a> {
     Block::bordered()
         .border_type(BorderType::Rounded)
@@ -523,7 +523,7 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     let dim = Style::new().fg(t.dim);
     let mut lines = vec![
         Line::styled(
-            "DOI, arXiv id, PMID, address, a PDF's path, a title, or a reference manager's export",
+            "DOI, arXiv id, PMID, address, a PDF's path, a title, or a library's export",
             dim,
         ),
         Line::from(vec![

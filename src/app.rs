@@ -625,22 +625,16 @@ impl App {
     /// Add what `line` names, into the folder or label picked on the left,
     /// and show it.
     fn add(&mut self, line: &str) {
-        // A whole library, from a reference manager: nothing is fetched for it.
+        // A whole library, from its export: nothing is fetched for it.
         if let Source::Export(given) = Source::of(line) {
             let export = browser::dropped(&given);
             let pdfs = crate::migrate::find_pdf_dir(&export);
             let done = self.index.refresh(&self.lib).and_then(|_| {
-                crate::migrate::import(
-                    &self.lib,
-                    &mut self.index,
-                    &export,
-                    pdfs.as_deref(),
-                    false,
-                )
+                crate::migrate::import(&self.lib, &mut self.index, &export, pdfs.as_deref(), false)
             });
             match done {
                 Ok(imported) => {
-                    self.status = format!("from a reference manager: {}", imported.summary());
+                    self.status = format!("imported: {}", imported.summary());
                     if let Err(e) = self.restock() {
                         self.status = one_line(&e);
                     }

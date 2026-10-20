@@ -143,7 +143,7 @@ fn parses_queries() {
 }
 
 #[test]
-fn writes_bibtex_as_others_do() {
+fn writes_plain_bibtex() {
     let records = demo::records();
     let find = |key| records.iter().find(|r| r.key == key).unwrap();
     let bib = bibtex::entry(find("VanderWeele2017-ex"));
@@ -179,7 +179,7 @@ fn reads_crossrefs_types_as_csls() {
 }
 
 #[test]
-fn makes_keys_in_surname_year_form() {
+fn makes_keys_as_surname_year() {
     let mut r = demo::records().remove(6);
     r.key.clear();
     let a = new_key(&r, "10.1038/s41592-025-02772-6", |_| false);
@@ -428,7 +428,7 @@ fn tidies_what_registries_give() {
 }
 
 #[test]
-fn writes_initials_as_others_do() {
+fn writes_initials_run_together() {
     let mut r = demo::records().remove(0);
     r.csl["author"] = serde_json::json!([{ "family": "Abbott", "given": "B. P." }]);
     assert!(layout::record(&r).starts_with("2017/Abbott/BP/"));
@@ -789,8 +789,8 @@ fn files_the_pdf_downloaded_for_the_paper_awaited() {
     assert!(app.status.contains("given its PDF"), "{}", app.status);
 }
 
-/// A a reference manager export, in its form, as from Settings › Data and files ›
-/// Export data › JSON.
+/// A library's JSON export, its references with their keys, folders,
+/// labels and PDFs' names.
 fn library_export() -> serde_json::Value {
     serde_json::json!([
         {
@@ -837,8 +837,8 @@ fn moves_a_library_from_its_export() {
     let (dir, lib, mut index) = library();
     let export = dir.path().join("export.json");
     std::fs::write(&export, serde_json::to_vec(&library_export()).unwrap()).unwrap();
-    // Unzipped from a reference manager's ZIP, its accents stored apart, as a Mac may.
-    let pdfs = dir.path().join("a reference manager");
+    // Unzipped from the library's ZIP, its accents stored apart, as a Mac may.
+    let pdfs = dir.path().join("Library PDFs");
     let name = "González-Rosa et al. 2018 - Myocardial polyploidization creates a barrier to heart regeneration in zebrafish.pdf";
     let nfd: String = unicode_normalization::UnicodeNormalization::nfd(name).collect();
     std::fs::create_dir_all(pdfs.join("All Papers/G")).unwrap();
@@ -894,7 +894,7 @@ fn moves_a_library_from_its_export() {
         "given a key of its own"
     );
 
-    // Already here, by its DOI: given the folder, its a reference manager key an alias.
+    // Already here, by its DOI: given the folder, its other key an alias.
     let here = index.get("VanderWeele2017-pp").unwrap().unwrap();
     assert_eq!(here.record.key, "VanderWeele2017-ex");
     assert!(

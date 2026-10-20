@@ -6,7 +6,7 @@ pub const TEXT: &str = r#"# This folder is a paperstack library
 Papers are filed as `year/lastname/firstname/<key>_<slug>.pdf`, each with
 its record beside it, the same name ending `.json`: the paper as CSL JSON
 under `csl`, its folders, labels and star under `paperstack`. The year is
-the year issued, the names the first author's. The key, a reference manager's form
+the year issued, the names the first author's. The key, of the form
 `Surname2025-xy`, starts the file's name and never changes.
 
 Do not write or rename files here by hand; use `paperstack`, which keeps the
@@ -38,7 +38,7 @@ paperstack add https://www.sciencedirect.com/science/article/pii/S00928674230134
 paperstack add ~/Downloads/paper.pdf --folder grant_OCRA_AI  # a PDF, read to tell which paper
 paperstack add 'Array programming with NumPy'                # a title: added only if one paper has it
 paperstack inbox                                             # file the PDFs saved to inbox/
-paperstack import library-export.json --dry-run          # a a reference manager library, its keys kept
+paperstack import library-export.json --dry-run            # another library, its keys kept
 paperstack attach KEY ~/Downloads/paper.pdf                  # give a paper the PDF it lacks
 ```
 
@@ -49,7 +49,7 @@ by its id. Never add a paper you have not checked is the one meant.
 ## Making a bibliography
 
 ```sh
-paperstack find 'QUERY' --bib > refs.bib      # BibTeX, a reference manager's form
+paperstack find 'QUERY' --bib > refs.bib      # BibTeX, plain
 paperstack find 'QUERY' --csl > refs.json     # CSL JSON, for pandoc and ohp
 paperstack find 'QUERY' --keys                # [@a; @b], to cite them
 paperstack get KEY --bib                      # one entry

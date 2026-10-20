@@ -1,11 +1,11 @@
-//! Moving from a reference manager: its JSON export, from Settings › Data and files ›
-//! Export data › JSON, read into records; and the PDFs it names, from
-//! a reference manager's "Download files as ZIP", unzipped, or its Google Drive
-//! folder, put beside them.
+//! Moving a library from another reference manager: its JSON export, with
+//! its citation keys, folders, labels and stars, read into records; and
+//! the PDFs it names, downloaded from it as a ZIP and unzipped, or from the
+//! Google Drive folder it syncs to, put beside them.
 //!
-//! The export's form is a reference manager's own, and not documented; what it is
-//! known to hold is read, and the rest left. Its citation keys are kept as
-//! they are, so what cites them still does. Nothing is fetched.
+//! The export's form is the other program's own, and not documented; what
+//! it is known to hold is read, and the rest left. Its citation keys are
+//! kept as they are, so what cites them still does. Nothing is fetched.
 
 use crate::index::Index;
 use crate::library::{self, Library};
@@ -57,7 +57,7 @@ pub fn read(path: &Path) -> anyhow::Result<Vec<Value>> {
     Ok(items)
 }
 
-/// a reference manager's types, as CSL's.
+/// The export's types, as CSL's.
 fn csl_type(pubtype: &str) -> &'static str {
     match pubtype {
         "PP_ARTICLE" => "article-journal",
@@ -111,7 +111,7 @@ fn names(v: &Value, k: &str) -> Vec<Value> {
         .collect()
 }
 
-/// When it was added to a reference manager, if the export says, as RFC 3339.
+/// When it was added to the other library, if the export says, as RFC 3339.
 fn added(v: &Value) -> Option<String> {
     for k in ["created", "added", "imported", "date_added"] {
         match v.get(k) {
@@ -278,7 +278,7 @@ fn pdfs(dir: &Path) -> (HashMap<String, PathBuf>, HashMap<String, Vec<PathBuf>>)
     (by_path, by_name)
 }
 
-/// Where a reference manager's PDFs may be, as `--pdfs` was not given: unzipped
+/// Where the export's PDFs may be, as `--pdfs` was not given: unzipped
 /// beside the export, or in the Downloads folder, or in Google Drive.
 pub fn find_pdf_dir(export: &Path) -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
@@ -289,12 +289,12 @@ pub fn find_pdf_dir(export: &Path) -> Option<PathBuf> {
     places.push(home.join("Downloads"));
     if let Ok(clouds) = std::fs::read_dir(home.join("Library/CloudStorage")) {
         for c in clouds.flatten() {
-            places.push(c.path().join("My Drive/a reference manager"));
-            places.push(c.path().join("a reference manager"));
+            places.push(c.path().join("My Drive"));
+            places.push(c.path());
         }
     }
-    places.push(home.join("Google Drive/My Drive/a reference manager"));
-    // A folder holding a reference manager's "All Papers", there or one level down.
+    places.push(home.join("Google Drive/My Drive"));
+    // A folder holding the PDFs' "All Papers", there or one level down.
     for place in places {
         if place.join("All Papers").is_dir() {
             return Some(place);
@@ -458,9 +458,8 @@ impl Imported {
                 self.pdfs_missing
             ),
             Some(d) => format!(", {} PDFs from {}", self.pdfs, crate::browser::tilde(d)),
-            None => {
-                ", no PDFs: give --pdfs, a reference manager's \"Download files as ZIP\" unzipped".to_string()
-            }
+            None => ", no PDFs: give --pdfs, the folder its PDFs, downloaded as a ZIP, unzip to"
+                .to_string(),
         };
         format!(
             "{} references: {} added, {} already here, {} in the trash left out; {} folders, {} labels{pdfs}",

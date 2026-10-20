@@ -13,7 +13,7 @@ pub struct Format {
     /// Each paper as JSON: key, title, authors, year, ids, folders, files
     #[arg(long)]
     pub json: bool,
-    /// BibTeX, as a reference manager writes it
+    /// BibTeX, plain: `journal` and `year`, as reference managers write it
     #[arg(long)]
     pub bib: bool,
     /// A CSL JSON list, for pandoc's and ohp's `bibliography:`

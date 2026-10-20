@@ -35,7 +35,7 @@ fn stem(r: &Record) -> PathBuf {
 }
 
 /// Given names that are initials alone, `B. P.` or `B.-P.`, as `BP`, as
-/// a reference manager writes them.
+/// reference managers write them.
 fn initials(given: &str) -> Option<String> {
     let letters: Vec<&str> = given
         .split(|c: char| c.is_whitespace() || c == '.' || c == '-')

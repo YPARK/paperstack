@@ -17,7 +17,7 @@ pub enum Source {
     /// A page to read the paper's ids from.
     Url(String),
     Pdf(String),
-    /// a reference manager's JSON export, its whole library.
+    /// A library's JSON export, as another reference manager gives it.
     Export(String),
     Bibtex,
     Words(String),
@@ -240,10 +240,10 @@ impl Source {
             Source::Bibtex => ("BibTeX".to_string(), vec!["not yet"]),
             Source::Export(p) => {
                 return (
-                    format!("a reference manager's export {p}"),
+                    format!("the library exported to {p}"),
                     vec![
                         "its references, their keys kept, with their folders, labels and stars",
-                        "their PDFs, from its \"Download files as ZIP\" unzipped, or Google Drive",
+                        "their PDFs, from its ZIP of them unzipped beside it, or Google Drive",
                         "papers already here given the folders and labels it adds",
                     ],
                 );

@@ -1,4 +1,4 @@
-//! Records as BibTeX, as a reference manager writes it: `journal` and `year`, which
+//! Records as plain BibTeX, as reference managers write it: `journal` and `year`, which
 //! BibTeX, BibLaTeX and pandoc all read. After ohp's `csl.rs`, which writes
 //! BibLaTeX for typst.
 

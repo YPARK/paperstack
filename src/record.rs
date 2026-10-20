@@ -7,7 +7,7 @@ use serde_json::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
-    /// The citation key, a reference manager's `Surname2025-xy`: given once, never
+    /// The citation key, `Surname2025-xy`: given once, never
     /// changed, and the start of the files' names.
     pub key: String,
     pub csl: Value,
@@ -34,7 +34,7 @@ pub struct Meta {
     /// Keys of papers merged into this one, which still cite it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    /// Where the metadata came from, as `doi.org` or `light`.
+    /// Where the metadata came from, as `doi.org`, or `import`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
@@ -175,7 +175,7 @@ pub fn csl_type(t: &str) -> &str {
     }
 }
 
-/// A key in a reference manager's form, `Surname2025-xy`: the first author's family
+/// A key of the form `Surname2025-xy`: the first author's family
 /// name in ASCII, the year, and two letters from `identity`, a DOI or a
 /// title, so a paper gets the same key wherever it is added. `taken` says
 /// which keys are another paper's; the letters are drawn again until one is

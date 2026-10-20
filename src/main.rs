@@ -14,8 +14,8 @@ mod demo;
 mod index;
 mod layout;
 mod library;
-mod net;
 mod migrate;
+mod net;
 mod pdf;
 mod query;
 mod record;
@@ -46,7 +46,7 @@ struct Args {
     /// git's user.email without it
     #[arg(long, env = "PAPERSTACK_EMAIL", global = true)]
     email: Option<String>,
-    /// The TUI's colours: a reference manager's light page, or the terminal's own dark one
+    /// The TUI's colours: a light page, or the terminal's own dark one
     #[arg(
         long,
         env = "PAPERSTACK_THEME",
@@ -116,13 +116,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Move from a reference manager: its JSON export (Settings › Data and files ›
-    /// Export data › JSON), its folders, labels and stars, its keys kept;
-    /// and its PDFs, from "Download files as ZIP", unzipped, or its Google
-    /// Drive folder
+    /// Move a library from another reference manager: its JSON export, its
+    /// keys kept, with its folders, labels and stars; and its PDFs,
+    /// downloaded as a ZIP and unzipped, or the Google Drive folder it syncs
     Import {
         export: PathBuf,
-        /// Where a reference manager's PDFs are; else looked for beside the export,
+        /// Where the library's PDFs are; else looked for beside the export,
         /// in Downloads, and in Google Drive
         #[arg(long)]
         pdfs: Option<PathBuf>,
@@ -399,7 +398,7 @@ fn main() -> anyhow::Result<()> {
                 .as_ref()
                 .is_some_and(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")))
             {
-                anyhow::bail!("unzip a reference manager's ZIP first, and give the folder it makes");
+                anyhow::bail!("unzip the ZIP first, and give the folder it makes");
             }
             let (lib, mut index) = open(&args.library)?;
             let pdfs = pdfs.or_else(|| migrate::find_pdf_dir(&export));
