@@ -187,6 +187,51 @@ PLIST
 launchctl load ~/Library/LaunchAgents/com.github.ypark.paperstack.plist
 ```
 
+## For AI agents: MCP
+
+`paperstack mcp` serves the library to an AI agent over the Model Context
+Protocol, on stdin and stdout: the agent's program runs it, no server to
+keep up. Its tools:
+
+| Tool | | |
+|---|---|---|
+| `search_papers` | find papers, by the query language below | reads |
+| `get_paper` | a paper's metadata, abstract and BibTeX, by its key | reads |
+| `cite` | BibTeX, CSL JSON or `[@a; @b]` of keys given, or of a query | reads |
+| `read_paper` | the text of a paper's PDF, 20 pages at a time | reads |
+| `list_collections` | collections and labels, and how many papers each holds | reads |
+| `add_paper` | add by DOI, arXiv id, PMID, address, PDF or title | adds |
+| `attach_pdf` | give a paper the PDF at a path, if it is that paper's | adds |
+| `update_paper` | its collections, labels and star | changes |
+
+The first five are marked read-only, so a client may let an agent use them
+without asking. The library's `AGENTS.md` is a resource too.
+
+Cursor, in `~/.cursor/mcp.json`, or a project's `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "paperstack": {
+      "command": "paperstack",
+      "args": ["mcp"],
+      "env": { "PAPERSTACK_LIBRARY": "/Users/you/Dropbox/paperstack" }
+    }
+  }
+}
+```
+
+Claude Code:
+
+```sh
+claude mcp add paperstack --env PAPERSTACK_LIBRARY=$HOME/Dropbox/paperstack -- paperstack mcp
+```
+
+Claude Desktop takes the same as Cursor, in
+`~/Library/Application Support/Claude/claude_desktop_config.json`. A program
+that does not find `paperstack` on its `PATH` is given its whole path,
+`~/.cargo/bin/paperstack` after `cargo install`.
+
 ## Searching
 
 The TUI's `/` and `paperstack find` read the same query:

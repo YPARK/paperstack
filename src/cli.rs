@@ -99,7 +99,7 @@ pub fn print_added(
     Ok(())
 }
 
-fn json(lib: &Library, h: &Hit) -> Value {
+pub fn json(lib: &Library, h: &Hit) -> Value {
     let r = &h.record;
     let m = &r.paperstack;
     let record = lib.root.join(&h.path);

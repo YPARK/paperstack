@@ -908,3 +908,120 @@ fn moves_a_library_from_its_export() {
     let again = crate::migrate::import(&lib, &mut index, &export, Some(&pdfs), false).unwrap();
     assert_eq!((again.added, again.merged), (0, 4));
 }
+
+#[test]
+fn serves_the_library_over_mcp() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kedzierska2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf").unwrap();
+    let mut server = crate::mcp::Server {
+        lib,
+        index,
+        net: crate::net::Net::new(None),
+    };
+    let mut ask = |id: i64, method: &str, params: serde_json::Value| {
+        server
+            .answer(&serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .unwrap()
+    };
+    let init = ask(
+        1,
+        "initialize",
+        serde_json::json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+    );
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(init["result"]["serverInfo"]["name"], "paperstack");
+    let tools = ask(2, "tools/list", serde_json::json!({}));
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"search_papers") && names.contains(&"read_paper") && names.len() == 8);
+
+    let call = |server: &mut crate::mcp::Server, name: &str, args: serde_json::Value| {
+        server
+            .answer(
+                &serde_json::json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": { "name": name, "arguments": args } }),
+            )
+            .unwrap()["result"]
+            .clone()
+    };
+    let found = call(
+        &mut server,
+        "search_papers",
+        serde_json::json!({ "query": "linear baselines", "limit": 5 }),
+    );
+    assert_eq!(found["isError"], false);
+    assert_eq!(
+        found["structuredContent"]["papers"][0]["key"],
+        "Ahlmann-Eltze2025-pb"
+    );
+
+    let bib = call(
+        &mut server,
+        "get_paper",
+        serde_json::json!({ "key": "VanderWeele2017-ex", "format": "bibtex" }),
+    );
+    assert!(
+        bib["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("@article{VanderWeele2017-ex,")
+    );
+    let keys = call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "query": "collection:mediation", "format": "keys" }),
+    );
+    assert!(
+        keys["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("@Carter2021-mr")
+    );
+
+    let read = call(&mut server, "read_paper", serde_json::json!({ "key": key }));
+    let text = read["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("--- page 1 ---") && text.contains("of 1]"),
+        "{text}"
+    );
+    let past = call(
+        &mut server,
+        "read_paper",
+        serde_json::json!({ "key": key, "first_page": 5 }),
+    );
+    assert_eq!(past["isError"], false, "{past}");
+    let none = call(
+        &mut server,
+        "read_paper",
+        serde_json::json!({ "key": "VanderWeele2017-ex" }),
+    );
+    assert_eq!(none["isError"], true);
+
+    let updated = call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({
+        "key": "Naik2016-al", "add_collections": ["grant_NFRF"], "starred": true }),
+    );
+    assert_eq!(updated["structuredContent"]["starred"], true);
+    assert!(
+        updated["structuredContent"]["collections"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("grant_NFRF"))
+    );
+    let unknown = call(&mut server, "no_such_tool", serde_json::json!({}));
+    assert_eq!(unknown["isError"], true);
+    // A notification is answered with nothing.
+    assert!(
+        server
+            .answer(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .is_none()
+    );
+}

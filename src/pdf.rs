@@ -34,25 +34,31 @@ impl Reading {
 
 pub fn read(bytes: &[u8]) -> anyhow::Result<Reading> {
     let embedded = embedded_dois(bytes);
-    let pages = std::panic::catch_unwind(|| -> anyhow::Result<Vec<String>> {
+    let (pages, _) = pages(bytes, 1, PAGES)?;
+    Ok(Reading { pages, embedded })
+}
+
+/// The text of `count` pages from page `first`, counted from 1, and how
+/// many pages the PDF has. A page that cannot be read is left empty; a PDF
+/// that makes the reader panic gives none.
+pub fn pages(bytes: &[u8], first: u32, count: u32) -> anyhow::Result<(Vec<String>, u32)> {
+    std::panic::catch_unwind(|| -> anyhow::Result<(Vec<String>, u32)> {
         let mut doc =
             pdf_extract::Document::load_mem(bytes).context("not a PDF paperstack can read")?;
         if doc.is_encrypted() {
             let _ = doc.decrypt("");
         }
-        let count = doc.get_pages().len() as u32;
+        let total = doc.get_pages().len() as u32;
         let mut pages = Vec::new();
-        for page in 1..=count.min(PAGES) {
+        for page in first.max(1)..=total.min(first.max(1) + count.saturating_sub(1)) {
             let mut text = String::new();
             let mut out = pdf_extract::PlainTextOutput::new(&mut text);
-            if pdf_extract::output_doc_page(&doc, &mut out, page).is_ok() {
-                pages.push(text);
-            }
+            let _ = pdf_extract::output_doc_page(&doc, &mut out, page);
+            pages.push(text);
         }
-        Ok(pages)
+        Ok((pages, total))
     })
-    .unwrap_or_else(|_| Ok(Vec::new()))?;
-    Ok(Reading { pages, embedded })
+    .unwrap_or_else(|_| Ok((Vec::new(), 0)))
 }
 
 /// DOIs a PDF carries for itself: in its XMP metadata, which is mostly not

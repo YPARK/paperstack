@@ -56,4 +56,8 @@ paperstack get KEY --bib                      # one entry
 ```
 
 Cite only keys that `paperstack` gives; never make one up.
+
+An agent whose program speaks MCP, as Cursor or Claude Code, may instead be
+given `paperstack mcp`: the same, as tools, and `read_paper` for a paper's
+text.
 "#;

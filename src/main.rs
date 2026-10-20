@@ -14,6 +14,7 @@ mod demo;
 mod index;
 mod layout;
 mod library;
+mod mcp;
 mod migrate;
 mod net;
 mod pdf;
@@ -131,6 +132,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Serve the library to an AI agent over MCP, on stdin and stdout: its
+    /// program, as Cursor or Claude Code, runs `paperstack mcp`
+    Mcp,
     /// File the PDFs in the library's inbox/, and take out those filed
     Inbox {
         #[arg(long)]
@@ -387,6 +391,15 @@ fn main() -> anyhow::Result<()> {
                 }
             };
             cli::print_added(&lib, &[(key, done)], json)
+        }
+        Some(Command::Mcp) => {
+            let (lib, index) = open(&args.library)?;
+            mcp::Server {
+                lib,
+                index,
+                net: net(),
+            }
+            .run()
         }
         Some(Command::Import {
             export,
