@@ -225,12 +225,24 @@ fn authors(r: &Record, shown: usize) -> String {
     }
 }
 
+/// The papers, as many as the screen shows: only those are drawn, as a
+/// library may hold tens of thousands.
 fn papers(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
     let width = area.width.saturating_sub(4) as usize;
     let rule = Line::styled("─".repeat(area.width as usize), Style::new().fg(t.rule));
-    let (items, titles): (Vec<ListItem>, Vec<u16>) = app
-        .shown
+    // Each paper takes four lines; the first shown is kept, unless the
+    // paper picked would be off the screen.
+    let fits = (area.height.saturating_sub(1) / 4).max(1) as usize;
+    let picked = app.list.selected().unwrap_or(0);
+    let mut top = app.list.offset().min(app.shown.len().saturating_sub(1));
+    if picked < top {
+        top = picked;
+    } else if picked >= top + fits {
+        top = picked + 1 - fits;
+    }
+    let end = (top + fits + 1).min(app.shown.len());
+    let (items, titles): (Vec<ListItem>, Vec<u16>) = app.shown[top..end]
         .iter()
         .map(|h| {
             let r = &h.record;
@@ -307,13 +319,16 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
         .highlight_symbol(if focused { "▎" } else { " " })
         .highlight_style(Style::new().bg(t.row))
         .style(Style::new().bg(t.page));
-    f.render_stateful_widget(list, area, &mut app.list);
+    let mut state = ListState::default().with_selected(app.list.selected().map(|s| s - top));
+    f.render_stateful_widget(list, area, &mut state);
+    *app.list.offset_mut() = top;
     app.targets.push((area, Target::List));
     if app.total() == 0 {
         empty(f, &t, inner);
     }
     let heights = vec![4; titles.len()];
-    for (i, row) in rows(inner, app.list.offset(), &heights) {
+    for (at, row) in rows(inner, 0, &heights) {
+        let i = top + at;
         app.targets.push((row, Target::Paper(i)));
         // Past the highlight's column: the box, then the title, then the star.
         let line = |x: u16, width: u16| {
@@ -326,7 +341,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
             }
         };
         app.targets.push((line(1, 3), Target::Mark(i)));
-        app.targets.push((line(4 + titles[i], 2), Target::Star(i)));
+        app.targets.push((line(4 + titles[at], 2), Target::Star(i)));
         if !app.shown[i].has_pdf {
             let badge = GET_PDF.chars().count() as u16;
             let x = row.right().saturating_sub(badge + 1);

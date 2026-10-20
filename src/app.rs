@@ -160,14 +160,27 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
     app.theme = theme;
     let mut terminal = take();
     let result = (|| -> anyhow::Result<()> {
+        // Drawn again only for what may change it: not the mouse moving.
+        let mut stale = true;
         while !app.quit {
-            terminal.draw(|f| ui::draw(f, &mut app))?;
+            if stale {
+                terminal.draw(|f| ui::draw(f, &mut app))?;
+            }
             // Awaiting a PDF, the downloads folder is looked in between keys.
             if matches!(app.popup, Popup::Fetch(_)) && !event::poll(LOOK)? {
-                app.tick();
+                stale = app.tick();
                 continue;
             }
-            let action = match event::read()? {
+            let event = event::read()?;
+            stale = !matches!(
+                event,
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Moved | MouseEventKind::Drag(_),
+                    ..
+                }) | Event::FocusGained
+                    | Event::FocusLost
+            );
+            let action = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key),
                 Event::Mouse(m) => app.mouse(m),
                 _ => None,
@@ -693,17 +706,29 @@ impl App {
         let Some(key) = self.current().map(|h| h.record.key.clone()) else {
             return;
         };
-        let done = self.index.refresh(&self.lib).and_then(|_| {
-            let hit = self
-                .index
-                .get(&key)?
-                .ok_or_else(|| anyhow::anyhow!("{key} is no longer in the library"))?;
-            let mut record = crate::record::Record::clone(&hit.record);
+        let done = (|| -> anyhow::Result<()> {
+            // Its file, as it is now; the whole library looked at again
+            // only if it has moved.
+            let mut hit = self.index.get(&key)?;
+            let mut fresh = hit
+                .as_ref()
+                .and_then(|h| crate::library::read(&self.lib.root.join(&h.path)).ok());
+            if fresh.is_none() {
+                self.index.refresh(&self.lib)?;
+                hit = self.index.get(&key)?;
+                fresh = hit
+                    .as_ref()
+                    .map(|h| crate::record::Record::clone(&h.record));
+            }
+            let (Some(hit), Some(mut record)) = (hit, fresh) else {
+                anyhow::bail!("{key} is no longer in the library");
+            };
             record.paperstack.starred = !record.paperstack.starred;
-            self.lib.save(&record, Some(&hit.path))?;
-            self.index.refresh(&self.lib)?;
+            let path = self.lib.save(&record, Some(&hit.path))?;
+            self.index
+                .upsert(&self.lib, &path, record, Some(&hit.path))?;
             self.restock()
-        });
+        })();
         if let Err(e) = done {
             self.status = format!("cannot star: {e:#}");
         }
@@ -733,21 +758,28 @@ impl App {
         }));
     }
 
-    /// Look for the PDF awaited among what has been downloaded since.
-    pub fn tick(&mut self) {
+    /// Look for the PDF awaited among what has been downloaded since; say
+    /// whether anything came of it, to be shown.
+    pub fn tick(&mut self) -> bool {
         let Popup::Fetch(fetch) = &mut self.popup else {
-            return;
+            return false;
         };
+        let mut came = false;
         for path in fetch.arrivals.next() {
             let from = browser::tilde(&path);
             let done = std::fs::read(&path)
                 .map_err(anyhow::Error::from)
                 .and_then(|bytes| attach(&self.lib, &mut self.index, &fetch.key, &bytes, &from));
+            came = true;
             match done {
-                Ok(added) => return self.attached(&added),
+                Ok(added) => {
+                    self.attached(&added);
+                    return true;
+                }
                 Err(e) => fetch.note = one_line(&e),
             }
         }
+        came
     }
 
     /// Give the paper awaited the PDF at `line`, a path or an address.

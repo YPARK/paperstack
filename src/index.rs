@@ -191,8 +191,22 @@ pub struct Index {
     papers: Vec<Paper>,
     /// By key and alias, lowercase.
     by_key: HashMap<String, usize>,
+    /// By DOI and arXiv id, lowercase, and by the words of the title.
+    by_doi: HashMap<String, usize>,
+    by_arxiv: HashMap<String, usize>,
+    by_title: HashMap<String, Vec<usize>>,
     /// Each field's mean length in words, as BM25 weighs a field's length.
     mean: [f64; FIELDS],
+    /// Changed since the cache was written: written when the index is done
+    /// with, not on each change, as it holds every record.
+    dirty: bool,
+}
+
+impl Drop for Index {
+    fn drop(&mut self) {
+        // A cache not written is read again from the records next time.
+        let _ = self.flush();
+    }
 }
 
 /// Where the index of the library at `root` is kept: the user's cache, one
@@ -228,7 +242,11 @@ impl Index {
             path: path.to_path_buf(),
             papers: papers.into_iter().map(Paper::new).collect(),
             by_key: HashMap::new(),
+            by_doi: HashMap::new(),
+            by_arxiv: HashMap::new(),
+            by_title: HashMap::new(),
             mean: [0.0; FIELDS],
+            dirty: false,
         };
         index.reckon();
         Ok(index)
@@ -238,8 +256,22 @@ impl Index {
     /// that is another paper's key, which the key is kept for.
     fn reckon(&mut self) -> Vec<String> {
         self.by_key.clear();
+        self.by_doi.clear();
+        self.by_arxiv.clear();
+        self.by_title.clear();
         for (i, p) in self.papers.iter().enumerate() {
             self.by_key.insert(p.keys[0].clone(), i);
+            let r = p.record();
+            if let Some(doi) = r.doi() {
+                self.by_doi.entry(doi.to_lowercase()).or_insert(i);
+            }
+            if let Some(id) = &r.paperstack.arxiv {
+                self.by_arxiv.entry(id.to_lowercase()).or_insert(i);
+            }
+            self.by_title
+                .entry(p.words[TITLE].join(" "))
+                .or_default()
+                .push(i);
         }
         let mut clashes = Vec::new();
         for (i, p) in self.papers.iter().enumerate() {
@@ -318,10 +350,45 @@ impl Index {
         done.removed = old.len();
         changed |= done.removed > 0;
         done.errors.extend(self.reckon());
-        if changed {
-            self.save()?;
-        }
+        self.dirty |= changed;
         Ok(done)
+    }
+
+    /// Put in the record just written at `rel`, from the library's root,
+    /// in place of the one at `was`, if it moved: as `refresh` would, but
+    /// without looking at every other file. Says what `refresh` would of
+    /// its key's clashes.
+    pub fn upsert(
+        &mut self,
+        lib: &Library,
+        rel: &Path,
+        record: Record,
+        was: Option<&Path>,
+    ) -> anyhow::Result<Vec<String>> {
+        let meta = std::fs::metadata(lib.root.join(rel))?;
+        let (mtime, size) = library::stamp(&meta);
+        let rel_s = rel.to_string_lossy().into_owned();
+        let was_s = was.map(|w| w.to_string_lossy().into_owned());
+        self.papers
+            .retain(|p| p.kept.path != rel_s && Some(&p.kept.path) != was_s.as_ref());
+        self.papers.push(Paper::new(Kept {
+            path: rel_s,
+            mtime,
+            size,
+            has_pdf: lib.root.join(rel).with_extension("pdf").exists(),
+            record: Arc::new(record),
+        }));
+        self.dirty = true;
+        Ok(self.reckon())
+    }
+
+    /// Write the cache, if it changed.
+    pub fn flush(&mut self) -> anyhow::Result<()> {
+        if self.dirty {
+            self.save()?;
+            self.dirty = false;
+        }
+        Ok(())
     }
 
     fn save(&self) -> anyhow::Result<()> {
@@ -348,22 +415,42 @@ impl Index {
         let (wanted, unwanted): (Vec<&Text>, Vec<&Text>) = text.iter().partition(|t| !t.negated);
         let filters: Vec<&Term> = q.terms.iter().filter(|t| !t.field.is_text()).collect();
         let searched = !wanted.is_empty();
-        let idf: Vec<f64> = wanted.iter().map(|t| self.idf(t)).collect();
-        let mut found: Vec<(usize, f64)> = Vec::new();
-        'papers: for (i, p) in self.papers.iter().enumerate() {
-            if !filters.iter().all(|t| holds(t, p)) || unwanted.iter().any(|t| t.count(p) > 0) {
-                continue;
-            }
-            let mut score = 0.0;
-            for (t, idf) in wanted.iter().zip(&idf) {
-                let s = self.score(t, p, *idf);
-                if s == 0.0 {
-                    continue 'papers;
+        // One pass over every paper's words: how often each term is in each
+        // of its fields, from which both how rare the term is, over all
+        // papers, and each paper's score follow.
+        let mut df = vec![0usize; wanted.len()];
+        let mut matched: Vec<(usize, Vec<[usize; FIELDS]>)> = Vec::new();
+        for (i, p) in self.papers.iter().enumerate() {
+            let counts: Vec<[usize; FIELDS]> = wanted.iter().map(|t| t.counts(p)).collect();
+            let mut all = true;
+            for (d, c) in df.iter_mut().zip(&counts) {
+                if c.iter().any(|&n| n > 0) {
+                    *d += 1;
+                } else {
+                    all = false;
                 }
-                score += s;
             }
-            found.push((i, score));
+            if all && filters.iter().all(|t| holds(t, p)) && !unwanted.iter().any(|t| t.occurs(p)) {
+                matched.push((i, counts));
+            }
         }
+        let n = self.papers.len() as f64;
+        let idf: Vec<f64> = df
+            .iter()
+            .map(|&d| ((n - d as f64 + 0.5) / (d as f64 + 0.5) + 1.0).ln())
+            .collect();
+        let mut found: Vec<(usize, f64)> = matched
+            .into_iter()
+            .map(|(i, counts)| {
+                let p = &self.papers[i];
+                let score = counts
+                    .iter()
+                    .zip(&idf)
+                    .map(|(c, idf)| self.score(c, p, *idf))
+                    .sum();
+                (i, score)
+            })
+            .collect();
         let by = |a: &(usize, f64), b: &(usize, f64)| -> Ordering {
             let (pa, pb) = (&self.papers[a.0], &self.papers[b.0]);
             let added = || {
@@ -396,19 +483,11 @@ impl Index {
             .collect())
     }
 
-    /// How rare the papers `t` is in are, as BM25 weighs a word.
-    fn idf(&self, t: &Text) -> f64 {
-        let n = self.papers.len() as f64;
-        let df = self.papers.iter().filter(|p| t.count(p) > 0).count() as f64;
-        ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
-    }
-
-    /// BM25 of `t` in `p`, over the fields it is looked for in.
-    fn score(&self, t: &Text, p: &Paper, idf: f64) -> f64 {
-        t.fields()
-            .iter()
-            .map(|&f| {
-                let tf = t.count_in(&p.words[f]) as f64;
+    /// BM25 of a term in `p`, of the counts of it in each field.
+    fn score(&self, counts: &[usize; FIELDS], p: &Paper, idf: f64) -> f64 {
+        (0..FIELDS)
+            .map(|f| {
+                let tf = counts[f] as f64;
                 if tf == 0.0 {
                     return 0.0;
                 }
@@ -427,43 +506,37 @@ impl Index {
     }
 
     pub fn by_doi(&self, doi: &str) -> anyhow::Result<Option<Hit>> {
-        Ok(self.find(|r| r.doi().is_some_and(|d| d.eq_ignore_ascii_case(doi))))
+        Ok(self
+            .by_doi
+            .get(&doi.to_lowercase())
+            .map(|&i| self.papers[i].hit(0.0)))
     }
 
     pub fn by_arxiv(&self, id: &str) -> anyhow::Result<Option<Hit>> {
-        Ok(self.find(|r| {
-            r.paperstack
-                .arxiv
-                .as_deref()
-                .is_some_and(|a| a.eq_ignore_ascii_case(id))
-        }))
+        Ok(self
+            .by_arxiv
+            .get(&id.to_lowercase())
+            .map(|&i| self.papers[i].hit(0.0)))
     }
 
     /// The paper with the same title, in its words, published within a
     /// year of `year`, as a preprint and its paper may be.
     pub fn by_title(&self, title: &str, year: Option<i32>) -> anyhow::Result<Option<Hit>> {
-        let wanted = words(title);
-        if wanted.join(" ").len() < 12 {
+        let wanted = words(title).join(" ");
+        if wanted.len() < 12 {
             return Ok(None);
         }
         Ok(self
-            .papers
-            .iter()
-            .find(|p| {
-                let near = match (year, p.year) {
-                    (Some(y), Some(py)) => (py - y).abs() <= 1,
-                    _ => true,
-                };
-                near && p.words[TITLE] == wanted
+            .by_title
+            .get(&wanted)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.papers[i])
+            .find(|p| match (year, p.year) {
+                (Some(y), Some(py)) => (py - y).abs() <= 1,
+                _ => true,
             })
             .map(|p| p.hit(0.0)))
-    }
-
-    fn find(&self, holds: impl Fn(&Record) -> bool) -> Option<Hit> {
-        self.papers
-            .iter()
-            .find(|p| holds(p.record()))
-            .map(|p| p.hit(0.0))
     }
 
     pub fn shelves(&self) -> anyhow::Result<Shelves> {
@@ -525,32 +598,36 @@ impl Text {
         }
     }
 
-    fn count(&self, p: &Paper) -> usize {
-        self.fields()
-            .iter()
-            .map(|&f| self.count_in(&p.words[f]))
-            .sum()
+    /// How many times the words are in each field of `p` looked in.
+    fn counts(&self, p: &Paper) -> [usize; FIELDS] {
+        let mut c = [0; FIELDS];
+        for &f in self.fields() {
+            c[f] = self.places(&p.words[f]).count();
+        }
+        c
     }
 
-    /// How many times the words are in `text`.
-    fn count_in(&self, text: &[String]) -> usize {
+    /// Whether the words are in `p` at all: the first place enough.
+    fn occurs(&self, p: &Paper) -> bool {
+        self.fields()
+            .iter()
+            .any(|&f| self.places(&p.words[f]).next().is_some())
+    }
+
+    /// Where in `text` the words are.
+    fn places<'a>(&'a self, text: &'a [String]) -> impl Iterator<Item = usize> + 'a {
         let n = self.words.len();
-        if text.len() < n {
-            return 0;
-        }
         let last = n - 1;
-        (0..=text.len() - n)
-            .filter(|&i| {
-                self.words.iter().enumerate().all(|(j, w)| {
-                    let at = &text[i + j];
-                    if j == last && self.prefix {
-                        at.starts_with(w.as_str())
-                    } else {
-                        at == w
-                    }
-                })
+        (0..(text.len() + 1).saturating_sub(n)).filter(move |&i| {
+            self.words.iter().enumerate().all(|(j, w)| {
+                let at = &text[i + j];
+                if j == last && self.prefix {
+                    at.starts_with(w.as_str())
+                } else {
+                    at == w
+                }
             })
-            .count()
+        })
     }
 }
 

@@ -93,17 +93,25 @@ pub fn ids(r: &Reading) -> Vec<Source> {
 /// Words of `s`, in ASCII, lowercase. Split before they are made ASCII:
 /// deunicode drops some line breaks, and would run words together.
 pub fn words(s: &str) -> Vec<String> {
-    s.split(|c: char| !c.is_alphanumeric())
+    let mut out = Vec::new();
+    for w in s
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
-        .flat_map(|w| {
+    {
+        // Most words are ASCII already: lowercased, and nothing more.
+        if w.is_ascii() {
+            out.push(w.to_ascii_lowercase());
+            continue;
+        }
+        out.extend(
             deunicode::deunicode(w)
                 .to_lowercase()
                 .split(|c: char| !c.is_ascii_alphanumeric())
                 .filter(|w| !w.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .collect()
+                .map(str::to_string),
+        );
+    }
+    out
 }
 
 /// Whether one of the first authors' family names is in `text`, as on

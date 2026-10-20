@@ -123,8 +123,12 @@ impl Library {
                     continue;
                 }
                 let path = entry.path();
-                let Ok(meta) = entry.metadata() else { continue };
-                if meta.is_dir() {
+                // The kind of entry comes with the listing; only a record's
+                // time and size are asked for.
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
                     if !(dir == self.root && name == INBOX) {
                         dirs.push(path);
                     }
@@ -134,15 +138,12 @@ impl Library {
                 if name.contains("conflicted copy") {
                     walk.conflicts.push(rel);
                 } else if name.ends_with(".json") {
-                    let mtime = meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map_or(0, |d| d.as_nanos() as i64);
+                    let Ok(meta) = entry.metadata() else { continue };
+                    let (mtime, size) = stamp(&meta);
                     walk.records.push(Found {
                         path: rel,
                         mtime,
-                        size: meta.len() as i64,
+                        size,
                     });
                 } else if name.ends_with(".pdf") {
                     walk.pdfs.insert(rel.with_extension("json"));
@@ -151,6 +152,25 @@ impl Library {
         }
         Ok(walk)
     }
+}
+
+/// Copy `src` to `dest` whole, as `write` writes: beside it, then renamed.
+/// On APFS the copy is a clone, its data not copied until changed.
+pub fn copy(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    let name = dest.file_name().expect("a file").to_string_lossy();
+    let tmp = dest.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    fs::copy(src, &tmp).with_context(|| format!("cannot copy {}", src.display()))?;
+    fs::rename(&tmp, dest).with_context(|| format!("cannot write {}", dest.display()))
+}
+
+/// A file's time and size, as a refresh tells by them whether it changed.
+pub fn stamp(meta: &fs::Metadata) -> (i64, i64) {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as i64);
+    (mtime, meta.len() as i64)
 }
 
 pub fn read(path: &Path) -> anyhow::Result<Record> {

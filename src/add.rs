@@ -111,7 +111,7 @@ pub fn attach(
     record.paperstack.pdf_sha256 = Some(sha256(bytes));
     let path = lib.save(&record, Some(&hit.path))?;
     library::write(&lib.root.join(&path).with_extension("pdf"), bytes)?;
-    index.refresh(lib)?;
+    index.upsert(lib, &path, record.clone(), Some(&hit.path))?;
     let how = if unread {
         format!("{from}, with no text to check it by")
     } else {
@@ -170,9 +170,17 @@ impl Adder<'_> {
     /// papers reposted under other DOIs, so where several do, none is
     /// guessed at.
     fn by_words(&self, words: &str) -> anyhow::Result<Found> {
-        let mut candidates = resolve::search_openalex(self.net, words).unwrap_or_default();
-        candidates.extend(resolve::search_crossref(self.net, words).unwrap_or_default());
-        candidates.extend(resolve::search_arxiv(self.net, words).unwrap_or_default());
+        // The three asked at once: each takes a second or so to answer.
+        let net = self.net;
+        let candidates = std::thread::scope(|s| {
+            let openalex = s.spawn(|| resolve::search_openalex(net, words).unwrap_or_default());
+            let crossref = s.spawn(|| resolve::search_crossref(net, words).unwrap_or_default());
+            let arxiv = s.spawn(|| resolve::search_arxiv(net, words).unwrap_or_default());
+            let mut all = openalex.join().unwrap_or_default();
+            all.extend(crossref.join().unwrap_or_default());
+            all.extend(arxiv.join().unwrap_or_default());
+            all
+        });
         // A preprint on arXiv and what it was published as are one paper.
         let mut exact: Vec<resolve::Candidate> = Vec::new();
         for c in candidates
@@ -195,11 +203,7 @@ impl Adder<'_> {
             }
         }
         if let [one] = &exact[..] {
-            return match (&one.doi, &one.arxiv) {
-                (_, Some(id)) => resolve::by_arxiv(self.net, id),
-                (Some(doi), None) => resolve::by_doi(self.net, doi),
-                (None, None) => unreachable!("kept only with an id"),
-            };
+            return candidate(self.net, one);
         }
         let exact: Vec<&resolve::Candidate> = exact.iter().collect();
         let shown: Vec<&resolve::Candidate> = if exact.is_empty() {
@@ -299,32 +303,48 @@ impl Adder<'_> {
         let mut queries = pdf::queries(&reading);
         let mut seen = std::collections::HashSet::new();
         queries.retain(|q| seen.insert(q.clone()));
+        let net = self.net;
         let mut tried = std::collections::HashSet::new();
-        for query in queries {
-            let mut candidates = resolve::search_crossref(self.net, &query).unwrap_or_default();
-            if query.len() < 300 {
-                candidates.extend(resolve::search_openalex(self.net, &query).unwrap_or_default());
-                candidates.extend(resolve::search_arxiv(self.net, &query).unwrap_or_default());
-            }
+        let mut pick = |candidates: Vec<resolve::Candidate>| -> Option<Found> {
             for c in candidates
                 .iter()
                 .filter(|c| c.is_paper() && pdf::has_title(&c.title, &text))
             {
-                if !tried.insert((c.doi.clone(), c.arxiv.clone())) {
+                if (c.doi.is_none() && c.arxiv.is_none())
+                    || !tried.insert((c.doi.clone(), c.arxiv.clone()))
+                {
                     continue;
                 }
-                let found = match (&c.doi, &c.arxiv) {
-                    (Some(doi), _) => resolve::by_doi(self.net, doi),
-                    (None, Some(id)) => resolve::by_arxiv(self.net, id),
-                    (None, None) => continue,
-                };
-                if let Ok(found) = found
+                if let Ok(found) = candidate(net, c)
                     && pdf::has_title(found.title(), &text)
                     && pdf::has_author(&found.csl, &text)
                 {
-                    return self.file(found, Some(bytes), "its title, searched for");
+                    return Some(found);
                 }
             }
+            None
+        };
+        // Crossref and OpenAlex, at once, for each query; OpenAlex holds
+        // arXiv's papers too.
+        for query in &queries {
+            let candidates = std::thread::scope(|s| {
+                let openalex = (query.len() < 300)
+                    .then(|| s.spawn(|| resolve::search_openalex(net, query).unwrap_or_default()));
+                let mut all = resolve::search_crossref(net, query).unwrap_or_default();
+                if let Some(o) = openalex {
+                    all.extend(o.join().unwrap_or_default());
+                }
+                all
+            });
+            if let Some(found) = pick(candidates) {
+                return self.file(found, Some(bytes), "its title, searched for");
+            }
+        }
+        // arXiv last, and once: it asks for three seconds between requests.
+        if let Some(query) = queries.iter().find(|q| q.len() < 300)
+            && let Some(found) = pick(resolve::search_arxiv(net, query).unwrap_or_default())
+        {
+            return self.file(found, Some(bytes), "its title, searched for");
         }
         bail!("{name}: cannot tell which paper it is")
     }
@@ -364,7 +384,7 @@ impl Adder<'_> {
         if let Some(b) = &bytes {
             library::write(&self.lib.root.join(&path).with_extension("pdf"), b)?;
         }
-        self.index.refresh(self.lib)?;
+        self.index.upsert(self.lib, &path, record.clone(), None)?;
         Ok(Added {
             key: record.key,
             path,
@@ -451,7 +471,8 @@ impl Adder<'_> {
             library::write(&self.lib.root.join(&path).with_extension("pdf"), b)?;
         }
         if changed {
-            self.index.refresh(self.lib)?;
+            self.index
+                .upsert(self.lib, &path, record.clone(), Some(&hit.path))?;
         }
         Ok(Added {
             key: record.key,
@@ -463,10 +484,14 @@ impl Adder<'_> {
     }
 
     /// The PDF given, else, if asked for, an open copy downloaded.
-    fn pdf_bytes(&self, given: Option<&[u8]>, urls: &[String]) -> Option<Vec<u8>> {
+    fn pdf_bytes<'b>(
+        &self,
+        given: Option<&'b [u8]>,
+        urls: &[String],
+    ) -> Option<std::borrow::Cow<'b, [u8]>> {
         match given {
-            Some(b) => Some(b.to_vec()),
-            None if self.options.pdf => self.download(urls),
+            Some(b) => Some(std::borrow::Cow::Borrowed(b)),
+            None if self.options.pdf => self.download(urls).map(std::borrow::Cow::Owned),
             None => None,
         }
     }
@@ -501,6 +526,25 @@ impl Adder<'_> {
     }
 }
 
+/// The paper a search found: by its DOI where it has one, its arXiv id kept
+/// beside it, rather than asking arXiv again for what the DOI gives.
+fn candidate(net: &Net, c: &resolve::Candidate) -> anyhow::Result<Found> {
+    match (&c.doi, &c.arxiv) {
+        (Some(doi), arxiv) => {
+            let mut found = resolve::by_doi(net, doi)?;
+            if let Some(id) = arxiv
+                && found.arxiv.is_none()
+            {
+                found.arxiv = Some(id.clone());
+                found.pdfs.push(format!("https://arxiv.org/pdf/{id}"));
+            }
+            Ok(found)
+        }
+        (None, Some(id)) => resolve::by_arxiv(net, id),
+        (None, None) => bail!("{} has no id", c.title),
+    }
+}
+
 /// A preprint's record: arXiv's, or a preprint server's.
 fn is_preprint(csl: &Value) -> bool {
     let kind = csl.get("type").and_then(Value::as_str).unwrap_or("");
@@ -519,6 +563,26 @@ fn id_name(id: &Source) -> String {
         Source::Url(u) => format!("the page {u}"),
         _ => "it".to_string(),
     }
+}
+
+/// A file's SHA-256, read a piece at a time.
+pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut piece = vec![0; 1 << 20];
+    loop {
+        let n = file.read(&mut piece)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&piece[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 pub fn sha256(bytes: &[u8]) -> String {

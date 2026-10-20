@@ -14,12 +14,17 @@ chrome.action.onClicked.addListener(async (tab) => {
     let pdf = null;
     let pdfUrl = null;
     for (const url of page.pdfUrls) {
-      pdf = (await fetchPdf(url)) || (await fetchInPage(tab.id, url));
+      pdf = (await fetchHere(url)) || (await fetchInPage(tab.id, url));
       if (pdf) {
         pdfUrl = url;
         break;
       }
     }
+    // The page as a line of JSON, then the PDF as it is: no base64, a third
+    // smaller and copied fewer times than in a JSON string.
+    const head = JSON.stringify({ url: page.url, tags: page.tags, pdf_url: pdfUrl });
+    const body = pdf ? new Blob([head, "\n", pdf]) : head;
+    const kind = pdf ? "application/x-paperstack-page" : "application/json";
     // Chrome stops a worker whose fetch takes over 30 s, and telling a paper
     // by its PDF can take longer: asking Chrome something now and then
     // keeps it going.
@@ -28,8 +33,8 @@ chrome.action.onClicked.addListener(async (tab) => {
     try {
       res = await fetch(`${SERVER}/add`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: page.url, tags: page.tags, pdf_url: pdfUrl, pdf }),
+        headers: { "Content-Type": kind },
+        body,
       });
       out = await res.json();
     } finally {
@@ -86,32 +91,55 @@ function readPage() {
   return { url: location.href, tags, pdfUrls: urls };
 }
 
-// The PDF at `url`, fetched with the browser's cookies, as base64; none where
-// what comes is not a PDF, as a page asking to sign in. Self-contained: it
-// also runs in the page, where nothing outside it is in reach.
-async function fetchPdf(url) {
+// The PDF at `url`, fetched with the browser's cookies, as its bytes; none
+// where what comes is not a PDF, as a page asking to sign in.
+async function fetchHere(url) {
   try {
     const r = await fetch(url, { credentials: "include" });
     if (!r.ok) return null;
     const b = new Uint8Array(await r.arrayBuffer());
-    if (String.fromCharCode(...b.subarray(0, 4)) !== "%PDF") return null;
-    let s = "";
-    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
-    return btoa(s);
+    return isPdf(b) ? b : null;
   } catch (_) {
     return null;
   }
 }
 
 // The same, fetched by the page itself, for publishers that look at more
-// than cookies.
+// than cookies. What a page gives back must be text: a data: address, made
+// and read by the browser's own code, not a string built a letter at a time.
 async function fetchInPage(tabId, url) {
   try {
-    const [{ result }] = await chrome.scripting.executeScript({ target: { tabId }, args: [url], func: fetchPdf });
-    return result;
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [url],
+      func: async (u) => {
+        try {
+          const r = await fetch(u, { credentials: "include" });
+          if (!r.ok) return null;
+          const blob = await r.blob();
+          const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+          if (String.fromCharCode(...head) !== "%PDF") return null;
+          return await new Promise((done) => {
+            const reader = new FileReader();
+            reader.onload = () => done(reader.result);
+            reader.onerror = () => done(null);
+            reader.readAsDataURL(blob);
+          });
+        } catch (_) {
+          return null;
+        }
+      },
+    });
+    if (!result) return null;
+    const b = new Uint8Array(await (await fetch(result)).arrayBuffer());
+    return isPdf(b) ? b : null;
   } catch (_) {
     return null;
   }
+}
+
+function isPdf(b) {
+  return b.length > 4 && String.fromCharCode(...b.subarray(0, 4)) === "%PDF";
 }
 
 function badge(tabId, text, color) {

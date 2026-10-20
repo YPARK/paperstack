@@ -423,10 +423,13 @@ pub fn import(
             done.pdfs += usize::from(found.is_some());
             continue;
         }
-        let bytes = found.as_ref().and_then(|p| std::fs::read(p).ok());
-        if let Some(b) = &bytes {
-            record.paperstack.pdf_sha256 = Some(crate::add::sha256(b));
-        }
+        // Hashed as it is read, and copied, not held: a library's PDFs may
+        // be many gigabytes.
+        let found = found.filter(|p| {
+            crate::add::sha256_file(p)
+                .map(|h| record.paperstack.pdf_sha256 = Some(h))
+                .is_ok()
+        });
         let rel = match lib.save(&record, None) {
             Ok(rel) => rel,
             Err(e) => {
@@ -434,8 +437,8 @@ pub fn import(
                 continue;
             }
         };
-        if let Some(b) = bytes {
-            library::write(&lib.root.join(&rel).with_extension("pdf"), &b)?;
+        if let Some(src) = found {
+            library::copy(&src, &lib.root.join(&rel).with_extension("pdf"))?;
             done.pdfs += 1;
         }
     }

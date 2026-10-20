@@ -66,9 +66,15 @@ pub struct Daemon<'a> {
 struct Request {
     method: String,
     path: String,
+    /// Its `Content-Type`.
+    kind: String,
     body: Vec<u8>,
     stream: TcpStream,
 }
+
+/// What the extension sends: the page as a line of JSON, then the PDF as
+/// it is, not in base64, a third smaller and copied fewer times.
+const PAGE_THEN_PDF: &str = "application/x-paperstack-page";
 
 impl Daemon<'_> {
     fn adder(&mut self) -> Adder<'_> {
@@ -167,6 +173,7 @@ impl Daemon<'_> {
                 self.index.refresh(self.lib)?;
                 self.adder().add_pdf_with(&bytes, &name, search)
             });
+        let _ = self.index.flush();
         match done {
             Ok(added) => {
                 say(&tell(&added));
@@ -182,6 +189,7 @@ impl Daemon<'_> {
         let Request {
             method,
             path,
+            kind,
             body,
             mut stream,
         } = request;
@@ -192,7 +200,7 @@ impl Daemon<'_> {
                 &json!({ "paperstack": env!("CARGO_PKG_VERSION"), "library": self.lib.root }),
             ),
             ("POST", "/add") => {
-                let result = self.add(&body);
+                let result = self.add(body, &kind);
                 match result {
                     Ok((added, title)) => {
                         say(&tell(&added));
@@ -222,24 +230,38 @@ impl Daemon<'_> {
     }
 
     /// Add what the extension sent, and its title as filed.
-    fn add(&mut self, body: &[u8]) -> anyhow::Result<(Added, String)> {
-        /// The page, and its PDF in base64.
+    /// Add what the extension sent, and its title as filed. The request's
+    /// body is let go of once read: it may be a PDF of a hundred megabytes.
+    fn add(&mut self, mut body: Vec<u8>, kind: &str) -> anyhow::Result<(Added, String)> {
+        /// The page, and its PDF in base64, as sent in one JSON.
         #[derive(serde::Deserialize)]
-        struct Sent {
+        struct Sent<'a> {
             #[serde(flatten)]
             page: Page,
-            #[serde(default)]
-            pdf: Option<String>,
+            #[serde(default, borrow)]
+            pdf: Option<&'a str>,
         }
-        let Sent { mut page, pdf } = serde_json::from_slice(body).context("not a page")?;
-        if let Some(b64) = pdf {
-            let pdf = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .context("the PDF is not base64")?;
-            page.pdf = pdf.starts_with(b"%PDF").then_some(pdf);
-        }
+        let page = if kind == PAGE_THEN_PDF {
+            let line = body.iter().position(|&b| b == b'\n').unwrap_or(body.len());
+            let mut page: Page = serde_json::from_slice(&body[..line]).context("not a page")?;
+            body.drain(..(line + 1).min(body.len()));
+            page.pdf = body.starts_with(b"%PDF").then_some(body);
+            page
+        } else {
+            let Sent { mut page, pdf } = serde_json::from_slice(&body).context("not a page")?;
+            if let Some(b64) = pdf {
+                let pdf = base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .context("the PDF is not base64")?;
+                page.pdf = pdf.starts_with(b"%PDF").then_some(pdf);
+            }
+            drop(body);
+            page
+        };
         self.index.refresh(self.lib)?;
-        let added = self.adder().add_from_browser(&page)?;
+        let added = self.adder().add_from_browser(&page);
+        let _ = self.index.flush();
+        let added = added?;
         let title = self
             .index
             .get(&added.key)?
@@ -336,7 +358,8 @@ fn read(mut stream: TcpStream, port: u16, origins: &[String]) -> anyhow::Result<
         reply(&mut stream, code, &json!({ "error": why }))?;
         return Ok(None);
     }
-    let mut body = Vec::with_capacity(length.min(1 << 20));
+    // As long as it says, which is no longer than BODY_LIMIT.
+    let mut body = Vec::with_capacity(length);
     let mut chunk = vec![0; 64 << 10];
     while body.len() < length {
         let want = (length - body.len()).min(chunk.len());
@@ -346,9 +369,14 @@ fn read(mut stream: TcpStream, port: u16, origins: &[String]) -> anyhow::Result<
         }
         body.extend_from_slice(&chunk[..n]);
     }
+    let kind = headers
+        .get("content-type")
+        .map(|k| k.split(';').next().unwrap_or("").trim().to_lowercase())
+        .unwrap_or_default();
     Ok(Some(Request {
         method,
         path,
+        kind,
         body,
         stream,
     }))
