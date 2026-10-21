@@ -106,7 +106,7 @@ pub fn json(lib: &Library, h: &Hit) -> Value {
     json!({
         "key": r.key,
         "title": r.title(),
-        "authors": r.authors().iter().map(|n| format!("{} {}", n.family, n.given).trim().to_string()).collect::<Vec<_>>(),
+        "authors": r.authors().iter().map(|n| if n.given.is_empty() { n.family.clone() } else { format!("{}, {}", n.family, n.given) }).collect::<Vec<_>>(),
         "year": r.year(),
         "venue": r.venue(),
         "type": r.kind(),

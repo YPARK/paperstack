@@ -960,6 +960,10 @@ fn serves_the_library_over_mcp() {
         found["structuredContent"]["papers"][0]["key"],
         "Ahlmann-Eltze2025-pb"
     );
+    assert_eq!(
+        found["structuredContent"]["papers"][0]["authors"][0],
+        "Ahlmann-Eltze, C"
+    );
 
     let bib = call(
         &mut server,
