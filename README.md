@@ -116,6 +116,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `ctrl-e` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
+| `d` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
 | `p` | get the PDF of a paper without one, in the browser |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
@@ -124,6 +125,22 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 The mouse works too: click a shelf or a paper to pick it, its box to mark
 it, its star to star it, or a paper twice to open it; the wheel moves
 through the list under it.
+
+## Deleting
+
+```sh
+paperstack delete Ahlmann-Eltze2025-pb Naik2016-al     # papers, by key; or pst rm
+paperstack delete --collection "Single Cell Data"      # a collection; its papers stay
+paperstack delete --label to-read
+```
+
+A paper deleted is not erased: its record and PDF are moved into `.trash/`,
+at the library's root, filed there as they were, and are no longer found.
+Move them back to where they were to have the paper again, or empty
+`.trash/` to be rid of them; Dropbox keeps what is deleted from it besides.
+A collection deleted is taken off the papers in it, as are the collections
+within it, as `Research/ML/NLP` is within `Research/ML`; the papers stay in
+the library. In the browser, `d` asks first.
 
 ## From the browser
 
@@ -287,7 +304,7 @@ needs it: there is no server to keep running.
 4. **Restart the program, and see that it is connected.** In Claude Code,
    `claude mcp list` or `/mcp` in a session shows `paperstack` connected. In
    Cursor, Cursor Settings → Tools & MCP (MCP in older versions) shows it
-   with its eight tools; switch it on if it is off. In Claude Desktop, it is under the tools button in a chat.
+   with its ten tools; switch it on if it is off. In Claude Desktop, it is under the tools button in a chat.
 
 5. **Ask for papers**, as: "find the papers in my library on single-cell
    foundation models, and give me their BibTeX".
@@ -324,9 +341,12 @@ from the JSON.
 | `add_paper` | add by DOI, arXiv id, PMID, address, PDF or title | adds |
 | `attach_pdf` | give a paper the PDF at a path, if it is that paper's | adds |
 | `update_paper` | its collections, labels and star | changes |
+| `delete_papers` | move papers to the library's `.trash/` | deletes |
+| `delete_collection` | take a collection or label off its papers, which stay | deletes |
 
 The first five are marked read-only, so a program may let the agent use them
-without asking; it asks before the other three. The library's `AGENTS.md`,
+without asking; it asks before the other five, and the last two are marked
+destructive. The library's `AGENTS.md`,
 which tells an agent how the library is laid out, is a resource too.
 
 ## Searching

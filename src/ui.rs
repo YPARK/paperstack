@@ -3,7 +3,7 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Fetch, Focus, Popup, Shelf, Target};
+use crate::app::{App, Doomed, Fetch, Focus, Popup, Shelf, Target};
 use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
@@ -59,6 +59,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
         Popup::Help => Some(help(f, &t)),
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
+        Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
         Popup::None => None,
     };
     if let Some(area) = popup {
@@ -614,6 +615,65 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
     area
 }
 
+/// What is to be deleted, asked first.
+fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
+    let dim = Style::new().fg(t.dim);
+    let (title, mut lines) = match doomed {
+        Doomed::Papers(papers) => {
+            let mut lines: Vec<Line> = papers
+                .iter()
+                .take(10)
+                .map(|(key, title)| {
+                    Line::from(vec![
+                        Span::styled(format!("{key:<24} "), Style::new().fg(t.title).bold()),
+                        Span::raw(clip(title, 62)),
+                    ])
+                })
+                .collect();
+            if papers.len() > 10 {
+                lines.push(Line::styled(format!("and {} more", papers.len() - 10), dim));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Their records and PDFs are moved to the library's .trash/ folder.",
+                dim,
+            ));
+            let title = if papers.len() == 1 {
+                "Delete this paper?".to_string()
+            } else {
+                format!("Delete {} papers?", papers.len())
+            };
+            (title, lines)
+        }
+        Doomed::Shelf(kind, name, count) => {
+            let what = match kind {
+                crate::remove::Shelf::Collection => ", as are the collections within it",
+                crate::remove::Shelf::Label => "",
+            };
+            let lines = vec![
+                Line::styled(name.clone(), Style::new().fg(t.title).bold()),
+                Line::raw(""),
+                Line::raw(format!(
+                    "Its {count} papers stay in the library: it is taken off them{what}."
+                )),
+            ];
+            (format!("Delete this {}?", kind.name()), lines)
+        }
+    };
+    lines.insert(0, Line::raw(""));
+    let area = centered(f.area(), 92, lines.len() as u16 + 3);
+    f.render_widget(Clear, area);
+    let block =
+        dialog(t, &title).title_bottom(Line::styled(" y delete · any other key keeps it ", dim));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    area
+}
+
 fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     let area = centered(f.area(), 92, 26);
     f.render_widget(Clear, area);
@@ -663,6 +723,11 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
         ),
         ("y", "copy [@key; @key] to the clipboard"),
         ("s", "star, written to the paper's record"),
+        (
+            "d",
+            "delete the papers marked, or the one picked, to .trash/; asked first",
+        ),
+        ("", "on the left, a collection or label: its papers stay"),
         ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
         (
             "r",

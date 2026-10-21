@@ -382,6 +382,18 @@ impl Index {
         Ok(self.reckon())
     }
 
+    /// Take out the record that was at `rel`, from the library's root, as
+    /// `refresh` would once it is gone.
+    pub fn remove(&mut self, rel: &Path) {
+        let rel = rel.to_string_lossy();
+        let before = self.papers.len();
+        self.papers.retain(|p| p.kept.path != rel);
+        if self.papers.len() != before {
+            self.dirty = true;
+            self.reckon();
+        }
+    }
+
     /// Write the cache, if it changed.
     pub fn flush(&mut self) -> anyhow::Result<()> {
         if self.dirty {

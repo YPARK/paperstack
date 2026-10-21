@@ -1,5 +1,5 @@
 //! paperstack as an MCP server, for an AI agent to search the library,
-//! read its papers, cite them, and add to it: `paperstack mcp`, run by the
+//! read its papers, cite them, add to it and delete from it: `paperstack mcp`, run by the
 //! agent's program, as Cursor or Claude Code, which speaks to it in
 //! JSON-RPC, a message a line, on its stdin and stdout. Nothing else is
 //! written to stdout; what goes wrong is said on stderr.
@@ -311,6 +311,27 @@ impl Server {
                 let hit = self.hit(&hit.record.key)?;
                 Ok(self.paper(&hit, false))
             }
+            "delete_papers" => {
+                let keys = list("keys");
+                if keys.is_empty() {
+                    bail!("give the keys of the papers to delete");
+                }
+                let mut deleted = Vec::new();
+                for key in &keys {
+                    let trash = crate::remove::paper(&self.lib, &mut self.index, key)?;
+                    deleted.push(json!({ "key": key, "trash": self.lib.root.join(trash) }));
+                }
+                Ok(json!({ "deleted": deleted }))
+            }
+            "delete_collection" => {
+                let name = text("name").context("give the collection's name")?;
+                let shelf = match text("kind").as_deref() {
+                    Some("label") => crate::remove::Shelf::Label,
+                    _ => crate::remove::Shelf::Collection,
+                };
+                let n = crate::remove::shelf(&self.lib, &mut self.index, shelf, &name)?;
+                Ok(json!({ "deleted": name, "kind": shelf.name(), "papers": n }))
+            }
             _ => bail!("no tool {name}"),
         }
     }
@@ -453,6 +474,25 @@ fn tools() -> Value {
                 "starred": { "type": "boolean" }
             } },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "delete_papers",
+            "title": "Delete papers",
+            "description": "Delete papers from the library by their keys: each record and PDF moved into the library's .trash/ folder, whence the person may move it back. Delete only papers the person asked to have deleted.",
+            "inputSchema": { "type": "object", "required": ["keys"], "properties": {
+                "keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            } },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false }
+        },
+        {
+            "name": "delete_collection",
+            "title": "Delete a collection or label",
+            "description": "Take a collection, and the collections within it, as name/sub, off every paper in it; or a label, with kind label. Its papers stay in the library.",
+            "inputSchema": { "type": "object", "required": ["name"], "properties": {
+                "name": { "type": "string" },
+                "kind": { "type": "string", "enum": ["collection", "label"], "default": "collection" }
+            } },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false }
         }
     ])
 }

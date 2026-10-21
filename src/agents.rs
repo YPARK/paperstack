@@ -46,6 +46,16 @@ A paper already here is not added again. Given only a title that several
 papers have, `add` lists them with their ids and adds none: add the one meant
 by its id. Never add a paper you have not checked is the one meant.
 
+## Deleting
+
+```sh
+paperstack delete KEY                         # a paper, moved to .trash/
+paperstack delete --collection NAME           # a collection; its papers stay
+paperstack delete --label NAME
+```
+
+Delete only what the person asked to have deleted.
+
 ## Making a bibliography
 
 ```sh

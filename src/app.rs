@@ -1,6 +1,7 @@
 //! The TUI: what is shown, and what keys do. The sidebar's shelves and the
 //! search line are one query, searched in the index; a star is written to
-//! the paper's record, and read back into the index.
+//! the paper's record, and read back into the index. A paper deleted goes
+//! to the library's trash, asked first.
 
 use crate::add::{Adder, Options, attach, one_line};
 use crate::bibtex;
@@ -126,6 +127,16 @@ pub enum Popup {
     Help,
     /// A PDF awaited from the browser.
     Fetch(Box<Fetch>),
+    /// What `y` deletes, asked first.
+    Delete(Doomed),
+}
+
+/// What is to be deleted, if `y` is pressed.
+pub enum Doomed {
+    /// Papers, by key, with their titles.
+    Papers(Vec<(String, String)>),
+    /// A collection or label, and how many papers have it.
+    Shelf(crate::remove::Shelf, String, usize),
 }
 
 pub struct App {
@@ -399,6 +410,15 @@ impl App {
                 }
                 return None;
             }
+            Popup::Delete(_) => {
+                if key.code == KeyCode::Char('y') {
+                    self.delete();
+                } else {
+                    self.popup = Popup::None;
+                    self.status = "nothing deleted".to_string();
+                }
+                return None;
+            }
             Popup::None => {}
         }
         if ctrl && key.code == KeyCode::Char('e') {
@@ -487,6 +507,7 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.star(),
+            KeyCode::Char('d') | KeyCode::Delete => self.ask_delete(),
             KeyCode::Char('p') => self.get_pdf(),
             KeyCode::Char('r') => {
                 let before = self.total();
@@ -731,6 +752,79 @@ impl App {
         })();
         if let Err(e) = done {
             self.status = format!("cannot star: {e:#}");
+        }
+        self.narrow();
+    }
+
+    /// Ask whether to delete what `d` was pressed on: on the left, the
+    /// collection or label picked; else the papers marked, or the one picked.
+    pub fn ask_delete(&mut self) {
+        use crate::remove::Shelf as Kind;
+        let doomed = match (&self.focus, &self.shelves[self.shelf]) {
+            (Focus::Side, (Shelf::Folder(n), count)) => {
+                Doomed::Shelf(Kind::Collection, n.clone(), *count)
+            }
+            (Focus::Side, (Shelf::Label(n), count)) => {
+                Doomed::Shelf(Kind::Label, n.clone(), *count)
+            }
+            (Focus::Side, _) => {
+                self.status = "only a collection or a label is deleted from here".to_string();
+                return;
+            }
+            (Focus::List, _) => {
+                let picked = self.picked();
+                if picked.is_empty() {
+                    return;
+                }
+                Doomed::Papers(
+                    picked
+                        .iter()
+                        .map(|h| (h.record.key.clone(), h.record.title().to_string()))
+                        .collect(),
+                )
+            }
+        };
+        self.popup = Popup::Delete(doomed);
+    }
+
+    /// Delete what was asked about, and say what came of it.
+    fn delete(&mut self) {
+        let Popup::Delete(doomed) = std::mem::replace(&mut self.popup, Popup::None) else {
+            return;
+        };
+        // What another program changed meanwhile is read first.
+        if let Err(e) = self.index.refresh(&self.lib) {
+            self.status = one_line(&e);
+            return;
+        }
+        self.status = match doomed {
+            Doomed::Papers(papers) => {
+                let mut deleted = 0;
+                let mut why = None;
+                for (key, _) in &papers {
+                    match crate::remove::paper(&self.lib, &mut self.index, key) {
+                        Ok(_) => {
+                            deleted += 1;
+                            self.marked.remove(key);
+                        }
+                        Err(e) => why = Some(one_line(&e)),
+                    }
+                }
+                match why {
+                    None if deleted == 1 => format!("{} deleted, to .trash/", papers[0].0),
+                    None => format!("{deleted} papers deleted, to .trash/"),
+                    Some(why) => format!("{deleted} of {} deleted: {why}", papers.len()),
+                }
+            }
+            Doomed::Shelf(kind, name, _) => {
+                match crate::remove::shelf(&self.lib, &mut self.index, kind, &name) {
+                    Ok(n) => format!("{} {name} deleted; its {n} papers kept", kind.name()),
+                    Err(e) => one_line(&e),
+                }
+            }
+        };
+        if let Err(e) = self.restock() {
+            self.status = one_line(&e);
         }
         self.narrow();
     }

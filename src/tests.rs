@@ -203,6 +203,113 @@ fn stars_in_the_record() {
 }
 
 #[test]
+fn deletes_papers_to_the_trash() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kedzierska2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
+    let was = index.get(key).unwrap().unwrap().path.clone();
+    let to = crate::remove::paper(&lib, &mut index, key).unwrap();
+    assert!(index.get(key).unwrap().is_none());
+    assert!(!lib.root.join(&was).exists());
+    assert!(!lib.root.join(&was).with_extension("pdf").exists());
+    // Its folders, emptied, are taken away too.
+    assert!(!lib.root.join(&was).parent().unwrap().exists());
+    assert!(lib.root.join(&to).is_file());
+    assert!(lib.root.join(&to).with_extension("pdf").is_file());
+    // The trash is not read as the library's.
+    let done = index.refresh(&lib).unwrap();
+    assert!(index.get(key).unwrap().is_none() && done.errors.is_empty());
+    assert!(crate::remove::paper(&lib, &mut index, key).is_err());
+    // Moved back, it is found again.
+    std::fs::create_dir_all(lib.root.join(&was).parent().unwrap()).unwrap();
+    std::fs::rename(lib.root.join(&to), lib.root.join(&was)).unwrap();
+    index.refresh(&lib).unwrap();
+    assert!(index.get(key).unwrap().is_some());
+}
+
+#[test]
+fn deletes_a_collection_keeping_its_papers() {
+    use crate::remove::Shelf;
+    let (_dir, lib, mut index) = library();
+    let mut r = record_of(&lib, &index, "Naik2016-al");
+    r.paperstack
+        .folders
+        .push("CRISPR_Active_Learning/screens".to_string());
+    let path = index.get("Naik2016-al").unwrap().unwrap().path.clone();
+    lib.save(&r, Some(&path)).unwrap();
+    index.refresh(&lib).unwrap();
+    let all = index.shelves().unwrap().all;
+
+    let n = crate::remove::shelf(
+        &lib,
+        &mut index,
+        Shelf::Collection,
+        "crispr_active_learning",
+    )
+    .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(index.shelves().unwrap().all, all);
+    assert!(keys(&index, "folder:CRISPR_Active_Learning", Sort::Relevance).is_empty());
+    assert!(
+        keys(
+            &index,
+            "folder:CRISPR_Active_Learning/screens",
+            Sort::Relevance
+        )
+        .is_empty()
+    );
+    let naik = record_of(&lib, &index, "Naik2016-al");
+    assert!(naik.paperstack.folders.is_empty());
+    assert_eq!(naik.paperstack.labels, ["method"]);
+    // Others' collections are left as they were.
+    let adduri = record_of(&lib, &index, "Adduri2026-st");
+    assert_eq!(adduri.paperstack.folders, ["Single Cell Data"]);
+
+    crate::remove::shelf(&lib, &mut index, Shelf::Label, "to-read").unwrap();
+    assert!(keys(&index, "label:to-read", Sort::Relevance).is_empty());
+    assert!(crate::remove::shelf(&lib, &mut index, Shelf::Label, "to-read").is_err());
+}
+
+/// The record of the paper `key`, as its file has it.
+fn record_of(lib: &Library, index: &Index, key: &str) -> crate::record::Record {
+    let hit = index.get(key).unwrap().unwrap();
+    crate::library::read(&lib.root.join(&hit.path)).unwrap()
+}
+
+#[test]
+fn deletes_from_the_tui_when_asked() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, c: char| {
+        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    };
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let all = app.total();
+    let key = app.current().unwrap().record.key.clone();
+    press(&mut app, 'd');
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("Delete this paper?") && s.contains(&key), "{s}");
+    press(&mut app, 'n');
+    assert_eq!(app.total(), all);
+    press(&mut app, 'd');
+    press(&mut app, 'y');
+    assert_eq!(app.total(), all - 1);
+    assert!(app.index.get(&key).unwrap().is_none());
+
+    // On the left, the collection picked; its papers stay.
+    press(&mut app, 'h');
+    while app.shelves[app.shelf].0.name() != "mediation" {
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    press(&mut app, 'd');
+    assert!(screen(&mut app, 160, 44).contains("Delete this collection?"));
+    press(&mut app, 'y');
+    assert!(app.shelves.iter().all(|(s, _)| s.name() != "mediation"));
+    assert_eq!(app.total(), all - 1);
+}
+
+#[test]
 fn draws_the_library() {
     let (_dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
@@ -1014,7 +1121,7 @@ fn serves_the_library_over_mcp() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"search_papers") && names.contains(&"read_paper") && names.len() == 8);
+    assert!(names.contains(&"search_papers") && names.contains(&"read_paper") && names.len() == 10);
 
     let call = |server: &mut crate::mcp::Server, name: &str, args: serde_json::Value| {
         server
@@ -1095,6 +1202,24 @@ fn serves_the_library_over_mcp() {
             .unwrap()
             .contains(&serde_json::json!("grant_NFRF"))
     );
+    let gone = call(
+        &mut server,
+        "delete_collection",
+        serde_json::json!({ "name": "grant_NFRF" }),
+    );
+    assert_eq!(gone["structuredContent"]["papers"], 1, "{gone}");
+    let deleted = call(
+        &mut server,
+        "delete_papers",
+        serde_json::json!({ "keys": ["Naik2016-al"] }),
+    );
+    assert_eq!(deleted["isError"], false, "{deleted}");
+    let again = call(
+        &mut server,
+        "get_paper",
+        serde_json::json!({ "key": "Naik2016-al" }),
+    );
+    assert_eq!(again["isError"], true);
     let unknown = call(&mut server, "no_such_tool", serde_json::json!({}));
     assert_eq!(unknown["isError"], true);
     // A notification is answered with nothing.

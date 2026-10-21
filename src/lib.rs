@@ -20,6 +20,7 @@ mod net;
 mod pdf;
 mod query;
 mod record;
+mod remove;
 mod resolve;
 mod source;
 mod theme;
@@ -131,6 +132,19 @@ enum Command {
         dry_run: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Delete papers, by their keys, into the library's .trash/; or take a
+    /// collection or label off its papers, which stay
+    #[command(visible_alias = "rm")]
+    Delete {
+        #[arg(required_unless_present_any = ["collection", "label"])]
+        keys: Vec<String>,
+        /// Delete this collection, and those within it, as name/sub
+        #[arg(long, visible_alias = "folder")]
+        collection: Vec<String>,
+        /// Delete this label
+        #[arg(long)]
+        label: Vec<String>,
     },
     /// Serve the library to an AI agent over MCP, on stdin and stdout: its
     /// program, as Cursor or Claude Code, runs `paperstack mcp`
@@ -437,6 +451,40 @@ pub fn main() -> anyhow::Result<()> {
                 }
             };
             cli::print_added(&lib, &[(key, done)], json)
+        }
+        Some(Command::Delete {
+            keys,
+            collection,
+            label,
+        }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let mut failed = 0;
+            for key in &keys {
+                match remove::paper(&lib, &mut index, key) {
+                    Ok(to) => println!("{key:<24} deleted: {}", to.display()),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("paperstack: {key}: {e:#}");
+                    }
+                }
+            }
+            let shelves = collection
+                .iter()
+                .map(|n| (remove::Shelf::Collection, n))
+                .chain(label.iter().map(|n| (remove::Shelf::Label, n)));
+            for (shelf, name) in shelves {
+                match remove::shelf(&lib, &mut index, shelf, name) {
+                    Ok(n) => println!("{} {name} deleted: taken off {n} papers", shelf.name()),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("paperstack: {e:#}");
+                    }
+                }
+            }
+            if failed > 0 {
+                anyhow::bail!("{failed} not deleted");
+            }
+            Ok(())
         }
         Some(Command::Mcp) => {
             let (lib, index) = open(&args.library)?;
