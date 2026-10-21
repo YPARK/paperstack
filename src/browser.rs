@@ -65,16 +65,25 @@ pub fn downloads() -> PathBuf {
 /// big as it was when last looked at, as a browser's finished download is.
 pub struct Arrivals {
     pub dir: PathBuf,
-    since: SystemTime,
+    /// The PDFs there before, as they were then: a file's time, on some
+    /// systems, is of a coarser clock than the one now is told by, and a
+    /// download just begun may seem older than the watching.
+    before: HashMap<PathBuf, Option<SystemTime>>,
     sizes: HashMap<PathBuf, u64>,
     given: HashSet<PathBuf>,
 }
 
 impl Arrivals {
     pub fn new(dir: PathBuf) -> Self {
+        let before = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| (e.path(), e.metadata().and_then(|m| m.modified()).ok()))
+            .collect();
         Arrivals {
             dir,
-            since: SystemTime::now(),
+            before,
             sizes: HashMap::new(),
             given: HashSet::new(),
         }
@@ -93,7 +102,7 @@ impl Arrivals {
                 continue;
             }
             let Ok(meta) = e.metadata() else { continue };
-            if meta.modified().is_ok_and(|m| m < self.since) {
+            if self.before.get(&path) == Some(&meta.modified().ok()) {
                 continue;
             }
             if self.sizes.insert(path.clone(), meta.len()) == Some(meta.len()) && meta.len() > 0 {
