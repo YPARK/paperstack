@@ -20,7 +20,9 @@ Rust 1.92 or later, and `ohp` on the `PATH` to open PDFs:
 cargo install paperstack ohp
 ```
 
-or `cargo install --path .` in a clone of this repository.
+or `cargo install --path .` in a clone of this repository. Either installs
+`paperstack` and `pst`, its short name: `pst find Huber` is `paperstack find
+Huber`.
 
 Pure Rust: nothing in C is compiled, as for ohp. HTTPS is rustls with
 RustCrypto's algorithms, which are not yet audited.
