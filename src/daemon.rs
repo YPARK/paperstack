@@ -101,16 +101,23 @@ impl Daemon<'_> {
             say(&format!(
                 "listening at http://127.0.0.1:{p} for the browser extension"
             ));
-            let origins: Arc<[String]> = std::iter::once(origin(EXTENSION))
-                .chain(self.origins.iter().cloned())
-                .collect();
+            let allowed = Arc::new(Allowed {
+                origins: std::iter::once(origin(EXTENSION))
+                    .chain(self.origins.iter().cloned())
+                    .collect(),
+                token: token()?,
+            });
+            say(&format!(
+                "the extension's token, for its options, is in {}",
+                token_path().display()
+            ));
             // A few readers, each taking the next request as it comes.
             for _ in 0..READERS {
-                let (listener, tx, origins) = (listener.try_clone()?, tx.clone(), origins.clone());
+                let (listener, tx, allowed) = (listener.try_clone()?, tx.clone(), allowed.clone());
                 std::thread::spawn(move || {
                     loop {
                         match listener.accept() {
-                            Ok((stream, _)) => match read(stream, p, &origins) {
+                            Ok((stream, _)) => match read(stream, p, &allowed) {
                                 Ok(Some(request)) => {
                                     let _ = tx.send(request);
                                 }
@@ -299,11 +306,79 @@ pub fn origin(id: &str) -> String {
     }
 }
 
-/// Why a request with these headers is refused, if it is.
+/// Who may ask: the extensions of these origins, with the token.
+pub struct Allowed {
+    pub origins: Vec<String>,
+    pub token: String,
+}
+
+/// The header the token is sent in.
+pub const TOKEN_HEADER: &str = "x-paperstack-token";
+
+/// Where the token is kept, readable by this user only: any program may
+/// reach a port on this machine, as another user's, but not the token.
+pub fn token_path() -> PathBuf {
+    let home = || PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let config = if cfg!(target_os = "macos") {
+        home().join("Library/Application Support")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home().join(".config"), PathBuf::from)
+    };
+    config.join("paperstack").join("token")
+}
+
+/// The token the extension is to send, made the first time it is asked for.
+pub fn token() -> anyhow::Result<String> {
+    token_at(&token_path())
+}
+
+/// The token kept at `path`, made and kept there where there is none.
+pub fn token_at(path: &Path) -> anyhow::Result<String> {
+    if let Ok(kept) = std::fs::read_to_string(path)
+        && kept.trim().len() >= 32
+    {
+        keep_private(path)?;
+        return Ok(kept.trim().to_string());
+    }
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no randomness for a token: {e}"))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    file.open(path)
+        .and_then(|mut f| writeln!(f, "{token}"))
+        .with_context(|| format!("cannot keep the token in {}", path.display()))?;
+    keep_private(path)?;
+    Ok(token)
+}
+
+fn keep_private(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let _ = path;
+    Ok(())
+}
+
+/// Whether `a` is `b`, in a time that does not tell how much of it is.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// Why a request with these headers is refused, if it is. Only a browser's
+/// preflight, `OPTIONS`, is answered without the token.
 pub fn refusal(
+    method: &str,
     headers: &HashMap<String, String>,
     port: u16,
-    origins: &[String],
+    allowed: &Allowed,
     length: usize,
 ) -> Option<(u16, &'static str)> {
     // A page renamed to this machine, as by DNS rebinding, names its own
@@ -313,9 +388,18 @@ pub fn refusal(
     if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
         Some((403, "not this machine's"))
     } else if let Some(origin) = headers.get("origin")
-        && !origins.contains(origin)
+        && !allowed.origins.contains(origin)
     {
         Some((403, "only paperstack's extension may ask"))
+    } else if method != "OPTIONS"
+        && !headers
+            .get(TOKEN_HEADER)
+            .is_some_and(|t| same(t, &allowed.token))
+    {
+        Some((
+            401,
+            "no token, or another: give the extension the token `paperstack serve --print-token` prints",
+        ))
     } else if length > BODY_LIMIT {
         Some((413, "too large"))
     } else {
@@ -325,7 +409,7 @@ pub fn refusal(
 
 /// The request on `stream`, read whole, if it may be answered; one that may
 /// not is answered here. It is given a while to come, all of it.
-fn read(mut stream: TcpStream, port: u16, origins: &[String]) -> anyhow::Result<Option<Request>> {
+fn read(mut stream: TcpStream, port: u16, allowed: &Allowed) -> anyhow::Result<Option<Request>> {
     stream.set_read_timeout(Some(PAUSE))?;
     stream.set_write_timeout(Some(PAUSE))?;
     let mut reader = BufReader::new(Timed {
@@ -351,7 +435,7 @@ fn read(mut stream: TcpStream, port: u16, origins: &[String]) -> anyhow::Result<
         .get("content-length")
         .and_then(|l| l.parse().ok())
         .unwrap_or(0);
-    if let Some((code, why)) = refusal(&headers, port, origins, length) {
+    if let Some((code, why)) = refusal(&method, &headers, port, allowed, length) {
         // What was sent is read first, while there is time: a connection
         // closed with some unread is cut, not answered.
         let _ = std::io::copy(&mut (&mut reader).take(length as u64), &mut std::io::sink());
@@ -418,6 +502,7 @@ fn reply(stream: &mut TcpStream, code: u16, body: &Value) -> anyhow::Result<()> 
     let reason = match code {
         200 => "OK",
         204 => "No Content",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         413 => "Payload Too Large",

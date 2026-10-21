@@ -7,6 +7,11 @@ const SERVER = "http://127.0.0.1:8765";
 chrome.action.onClicked.addListener(async (tab) => {
   badge(tab.id, "…", "#777");
   try {
+    const { token } = await chrome.storage.local.get("token");
+    if (!token) {
+      chrome.runtime.openOptionsPage();
+      throw new Error(NO_TOKEN);
+    }
     const [{ result: page }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: readPage,
@@ -14,7 +19,9 @@ chrome.action.onClicked.addListener(async (tab) => {
     let pdf = null;
     let pdfUrl = null;
     for (const url of page.pdfUrls) {
-      pdf = (await fetchHere(url)) || (await fetchInPage(tab.id, url));
+      const how = credentials(url, page.url);
+      if (!how) continue;
+      pdf = (await fetchHere(url, how, page.url)) || (how === "include" && (await fetchInPage(tab.id, url)));
       if (pdf) {
         pdfUrl = url;
         break;
@@ -33,12 +40,16 @@ chrome.action.onClicked.addListener(async (tab) => {
     try {
       res = await fetch(`${SERVER}/add`, {
         method: "POST",
-        headers: { "Content-Type": kind },
+        headers: { "Content-Type": kind, "X-Paperstack-Token": token },
         body,
       });
       out = await res.json();
     } finally {
       clearInterval(alive);
+    }
+    if (res.status === 401) {
+      chrome.runtime.openOptionsPage();
+      throw new Error(NO_TOKEN);
     }
     if (!res.ok) throw new Error(out.error || res.statusText);
     badge(tab.id, out.has_pdf ? "✓" : "✓·", "#2a7d2a");
@@ -54,6 +65,41 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
+const NO_TOKEN = "Give the extension paperstack's token: `paperstack serve --print-token` prints it.";
+
+// How the PDF at `url` may be fetched for the page at `from`: with this
+// browser's sign-ins on the page's own site only; not at all on this machine
+// or its network, but for a page there; elsewhere as anyone would, without
+// them. A page is not to fetch, as the person, what only they may see.
+function credentials(url, from) {
+  const u = new URL(url);
+  const f = new URL(from);
+  if (u.hostname === f.hostname) return "include";
+  if (local(u.hostname)) return null;
+  return site(u.hostname) === site(f.hostname) ? "include" : "omit";
+}
+
+// A host on this machine or its network, as far as its name tells.
+function local(host) {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!h.includes(".") || /\.(localhost|local|internal|lan|home|corp|intranet)$/.test(h)) return true;
+  const v4 = h.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!v4) return false;
+  const [a, b] = [+v4[1], +v4[2]];
+  return (
+    a === 0 || a === 10 || a === 127 ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+// A host's site, as `nature.com` of `www.nature.com`, or `ox.ac.uk`.
+function site(host) {
+  const p = host.split(".");
+  const second = p.length >= 3 && p[p.length - 1].length === 2 && /^(ac|co|com|edu|gov|net|org)$/.test(p[p.length - 2]);
+  return p.slice(second ? -3 : -2).join(".");
+}
+
 // Runs in the page: its meta tags, which name the paper, and where its PDF
 // may be, best first.
 function readPage() {
@@ -66,8 +112,8 @@ function readPage() {
   const urls = [];
   const add = (u) => {
     try {
-      const a = new URL(u, location.href).href;
-      if (!urls.includes(a)) urls.push(a);
+      const a = new URL(u, location.href);
+      if (/^https?:$/.test(a.protocol) && !urls.includes(a.href)) urls.push(a.href);
     } catch (_) {}
   };
   if (document.contentType === "application/pdf") add(location.href);
@@ -91,12 +137,15 @@ function readPage() {
   return { url: location.href, tags, pdfUrls: urls };
 }
 
-// The PDF at `url`, fetched with the browser's cookies, as its bytes; none
-// where what comes is not a PDF, as a page asking to sign in.
-async function fetchHere(url) {
+// The PDF at `url`, fetched with the browser's cookies or without, as its
+// bytes; none where what comes is not a PDF, as a page asking to sign in,
+// or comes from this machine or its network, sent there on the way.
+async function fetchHere(url, how, from) {
   try {
-    const r = await fetch(url, { credentials: "include" });
+    const r = await fetch(url, { credentials: how });
     if (!r.ok) return null;
+    const at = new URL(r.url).hostname;
+    if (at !== new URL(from).hostname && local(at)) return null;
     const b = new Uint8Array(await r.arrayBuffer());
     return isPdf(b) ? b : null;
   } catch (_) {

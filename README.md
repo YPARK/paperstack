@@ -135,7 +135,9 @@ its page opens in the browser, by its DOI. Download the PDF there, as you
 would, and it is filed beside the paper as soon as it lands in
 `~/Downloads`, if its first page has the paper's title; anything else
 downloaded meanwhile is left alone. Or paste the PDF's path, or its address,
-into the dialog. From the shell, the same:
+into the dialog. A scan, with too little text to show its title, is taken
+from Downloads only with the paper's DOI in it; given by its path, it is
+taken as you say. From the shell, the same:
 
 ```sh
 paperstack attach Ahlmann-Eltze2025-pk                 # open its page, await the download
@@ -161,18 +163,41 @@ with `--take`.
 
 `serve` listens at `127.0.0.1:8765` for the extension in `extension/`,
 which is loaded into Chrome from this checkout, not the Web Store:
-`chrome://extensions`, turn on Developer mode, Load unpacked, pick the
-`extension` folder. Its button, on a paper's page, reads the page's DOI and
-`citation_*` tags, fetches the PDF there, with your institution's access,
-and sends both to `serve`, which files the paper if the PDF is the page's
-paper, or says it is not, as a supplement would be. The badge says how it
-went: `✓`, `✓·` without a PDF, `!` and a notification of why not. The
-server answers only this machine, and of browsers only paperstack's
-extension, whose id the `key` in its manifest fixes as
-`kckhjncnkhapnmnjlpjefjamffaecmcf` wherever it is loaded from; others are
-let in with `--extension ID`, or with their origin whole, as
-`--extension moz-extension://ID`. No page can add papers. Requests are read
-by a few threads, so a slow one keeps no other waiting.
+
+1. `chrome://extensions`, turn on Developer mode, Load unpacked, pick the
+   `extension` folder.
+2. `paperstack serve --print-token`, and paste what it prints into the
+   extension's options (its Details, Extension options). Its button opens
+   them by itself while it has none.
+
+Its button, on a paper's page, reads the page's DOI and `citation_*` tags,
+fetches the PDF there, with your institution's access, and sends both to
+`serve`, which files the paper if the PDF is the page's paper, or says it is
+not, as a supplement would be. A scan, without the text or the DOI to tell
+it by, is not kept: the paper is filed without it, to be given it by its
+path. The badge says how it went: `✓`, `✓·` without a PDF, `!` and a
+notification of why not.
+
+Who may add papers:
+
+- Only a program with the token. It is made the first time `serve` runs,
+  and kept where only you can read it, in
+  `~/Library/Application Support/paperstack/token` on macOS,
+  `~/.config/paperstack/token` elsewhere: another account on this machine,
+  which can reach its port, cannot read the token. Delete the file to have a
+  new one made, and paste that into the extension.
+- Only this machine: a page whose address is made to point here, as by DNS
+  rebinding, is refused.
+- Of browsers, only paperstack's extension, whose id the `key` in its
+  manifest fixes as `kckhjncnkhapnmnjlpjefjamffaecmcf` wherever it is
+  loaded from; others are let in with `--extension ID`, or with their origin
+  whole, as `--extension moz-extension://ID`. No page can add papers.
+
+The extension sends your sign-ins, its cookies, only to the page's own site,
+as `nature.com` of `www.nature.com`; a PDF elsewhere is fetched without them,
+and one on this machine or its network not at all, unless the page is there
+too. A page cannot have the extension fetch what only you may see. Requests
+are read by a few threads, so a slow one keeps no other waiting.
 
 To have `serve` run from login on macOS, a LaunchAgent:
 

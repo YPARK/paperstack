@@ -769,7 +769,9 @@ impl App {
             let from = browser::tilde(&path);
             let done = std::fs::read(&path)
                 .map_err(anyhow::Error::from)
-                .and_then(|bytes| attach(&self.lib, &mut self.index, &fetch.key, &bytes, &from));
+                .and_then(|bytes| {
+                    attach(&self.lib, &mut self.index, &fetch.key, &bytes, &from, false)
+                });
             came = true;
             match done {
                 Ok(added) => {
@@ -796,7 +798,8 @@ impl App {
             let path = browser::dropped(line);
             std::fs::read(&path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))
         };
-        let done = bytes.and_then(|b| attach(&self.lib, &mut self.index, &fetch.key, &b, line));
+        let done =
+            bytes.and_then(|b| attach(&self.lib, &mut self.index, &fetch.key, &b, line, true));
         match done {
             Ok(added) => self.attached(&added),
             Err(e) => fetch.note = one_line(&e),

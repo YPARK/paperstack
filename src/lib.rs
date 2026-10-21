@@ -167,6 +167,9 @@ enum Command {
         /// extension's id, or an origin whole, as moz-extension://ID
         #[arg(long)]
         extension: Vec<String>,
+        /// Print the token the extension is to send, for its options, and stop
+        #[arg(long)]
+        print_token: bool,
     },
     /// The TUI's screen after the keys given, as text: `/perturb <enter>`
     #[command(hide = true)]
@@ -318,11 +321,18 @@ pub fn main() -> anyhow::Result<()> {
             run_daemon(&args.library, &net(), None, &dirs, take, folder, Vec::new())
         }
         Some(Command::Serve {
+            print_token: true, ..
+        }) => {
+            println!("{}", daemon::token()?);
+            Ok(())
+        }
+        Some(Command::Serve {
             port,
             watch,
             take,
             folder,
             extension,
+            ..
         }) => run_daemon(
             &args.library,
             &net(),
@@ -387,7 +397,7 @@ pub fn main() -> anyhow::Result<()> {
                     } else {
                         std::fs::read(&given)?
                     };
-                    add::attach(&lib, &mut index, &key, &bytes, &given)
+                    add::attach(&lib, &mut index, &key, &bytes, &given, true)
                 }
                 None => {
                     let hit = index
@@ -407,8 +417,14 @@ pub fn main() -> anyhow::Result<()> {
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         for path in arrivals.next() {
                             let from = browser::tilde(&path);
-                            match add::attach(&lib, &mut index, &key, &std::fs::read(&path)?, &from)
-                            {
+                            match add::attach(
+                                &lib,
+                                &mut index,
+                                &key,
+                                &std::fs::read(&path)?,
+                                &from,
+                                false,
+                            ) {
                                 Ok(added) => {
                                     done = Ok(added);
                                     break 'waiting;

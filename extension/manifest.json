@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "paperstack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Add the paper on this page, with its PDF fetched here, to paperstack (paperstack serve, on this machine).",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArNTOOBN2KBelYLYStQGeC4LvIgIeV4iBHk2w4YKKCS+LuoO/EfPhePDgwO8QedMwIvfIVcnTCwRXqM9NKS4gV94jhRJ639MxfBts/7Qdeh1ygE2pVs0kyaL8Hqgbd3IH2T05+tksYg1lNd1VyEhJqiJEA+93MzA6Z38s9Xwbu2+Suy1e6OgiiNkgIAsBPGAPPs33qtjiiZtjx8vrrpqKpdy3Wzrb4h2hMyz46mm/kfcCHsnb87KMrKkfaKgcHetKQvN8zg1+om/ZGnag7LOa7tA+zDWuOM5yFsuhI9L5ePtZa2nFxgldDbtUauymRAFaEfjgalt1ooHotMxS7KMOUQIDAQAB",
   "action": {
@@ -17,9 +17,14 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
-  ]
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
 }

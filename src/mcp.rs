@@ -279,6 +279,7 @@ impl Server {
                     &key,
                     &bytes,
                     &path.display().to_string(),
+                    false,
                 )?;
                 Ok(json!({ "outcome": added.summary(), "key": added.key }))
             }
@@ -432,7 +433,7 @@ fn tools() -> Value {
         {
             "name": "attach_pdf",
             "title": "Give a paper its PDF",
-            "description": "Give a paper without one the PDF at a path on this machine, as one downloaded in a browser: only if its first page has the paper's title.",
+            "description": "Give a paper without one the PDF at a path on this machine, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
             "inputSchema": { "type": "object", "required": ["key", "path"], "properties": {
                 "key": { "type": "string" },
                 "path": { "type": "string" }

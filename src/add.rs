@@ -82,16 +82,42 @@ impl Added {
     }
 }
 
+/// Whether the PDF read is the paper titled `title`, with this DOI and
+/// arXiv id: its title on its first pages, or, with too little text to show
+/// it, as a scan, the paper's DOI or arXiv id in it. `None` where it cannot
+/// be told either way.
+pub fn shows(
+    reading: &pdf::Reading,
+    title: &str,
+    doi: Option<&str>,
+    arxiv: Option<&str>,
+) -> Option<bool> {
+    let text = reading.text();
+    if text.split_whitespace().count() >= 20 {
+        return Some(pdf::has_title(title, &text));
+    }
+    let named = pdf::ids(reading).iter().any(|id| match id {
+        Source::Doi(d) => doi.is_some_and(|ours| ours.eq_ignore_ascii_case(d)),
+        Source::Arxiv(a) => arxiv.is_some_and(|ours| {
+            crate::source::unversioned(ours).eq_ignore_ascii_case(crate::source::unversioned(a))
+        }),
+        _ => false,
+    });
+    named.then_some(true)
+}
+
 /// Give the paper `key` the PDF `bytes`, from `from`, as one got in the
-/// browser: only if it is that paper's, its title on its first pages, and
-/// only if it has none yet. A PDF with no text to tell by, as a scan, is
-/// taken on trust, and said to be.
+/// browser: only if it is that paper's, by [`shows`], and only if it has
+/// none yet. A PDF that cannot be told by, as a scan with no DOI in it, is
+/// taken only where `named`, the person having named that file, as by its
+/// path; not one found, as the next download, or given by an agent.
 pub fn attach(
     lib: &Library,
     index: &mut Index,
     key: &str,
     bytes: &[u8],
     from: &str,
+    named: bool,
 ) -> anyhow::Result<Added> {
     let hit = index
         .get(key)?
@@ -102,21 +128,26 @@ pub fn attach(
     if !bytes.starts_with(b"%PDF") {
         bail!("{from} is not a PDF");
     }
-    let text = pdf::read(bytes)?.text();
-    let unread = text.split_whitespace().count() < 20;
-    if !unread && !pdf::has_title(hit.record.title(), &text) {
-        bail!("{from} is not \"{}\"", hit.record.title());
-    }
+    let r = &hit.record;
+    let how = match shows(
+        &pdf::read(bytes)?,
+        r.title(),
+        r.doi(),
+        r.paperstack.arxiv.as_deref(),
+    ) {
+        Some(true) => from.to_string(),
+        Some(false) => bail!("{from} is not \"{}\"", r.title()),
+        None if named => format!("{from}, with no text to check it by"),
+        None => bail!(
+            "{from} has no text to tell it by, nor {key}'s DOI: if it is {key}'s, \
+             attach it by its path, as `paperstack attach {key} <file>`"
+        ),
+    };
     let mut record = Record::clone(&hit.record);
     record.paperstack.pdf_sha256 = Some(sha256(bytes));
     let path = lib.save(&record, Some(&hit.path))?;
     library::write(&lib.root.join(&path).with_extension("pdf"), bytes)?;
     index.upsert(lib, &path, record.clone(), Some(&hit.path))?;
-    let how = if unread {
-        format!("{from}, with no text to check it by")
-    } else {
-        from.to_string()
-    };
     Ok(Added {
         key: record.key,
         path,
@@ -250,21 +281,32 @@ impl Adder<'_> {
                 None => bail!("{} names no paper paperstack can tell", page.url),
             };
         };
-        if let Some(pdf) = &page.pdf {
-            let reading = pdf::read(pdf)?;
-            let text = reading.text();
-            if text.split_whitespace().count() >= 20 && !pdf::has_title(found.title(), &text) {
-                bail!(
+        let mut how = format!("the page {}", page.url);
+        let mut pdf = page.pdf.as_deref();
+        if let Some(bytes) = pdf {
+            match shows(
+                &pdf::read(bytes)?,
+                found.title(),
+                found.doi(),
+                found.arxiv.as_deref(),
+            ) {
+                Some(true) => {}
+                Some(false) => bail!(
                     "the PDF is not \"{}\": a supplement, or another paper's; nothing added",
                     found.title()
-                );
+                ),
+                // The page says which paper, and the PDF it gave is not shown
+                // to be it: the paper is filed, and its PDF left for the person.
+                None => {
+                    pdf = None;
+                    how.push_str("; its PDF, with no text to tell it by, not kept");
+                }
             }
         }
-        if let Some(url) = &page.pdf_url {
+        if let Some(url) = page.pdf_url.as_ref().filter(|_| pdf.is_some()) {
             found.pdfs.insert(0, url.clone());
         }
-        let how = format!("the page {}", page.url);
-        self.file(found, page.pdf.as_deref(), &how)
+        self.file(found, pdf, &how)
     }
 
     /// The paper a PDF is, with the PDF.

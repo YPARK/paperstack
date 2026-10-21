@@ -623,40 +623,78 @@ fn extension_id_is_its_manifest_keys() {
 }
 
 #[test]
-fn serves_only_the_extensions_named() {
-    use crate::daemon::{EXTENSION, origin, refusal};
-    let origins = [origin(EXTENSION), origin("moz-extension://ID1")];
-    let ask = |host: &str, from: Option<&str>, length: usize| {
+fn serves_only_the_extensions_named_with_the_token() {
+    use crate::daemon::{Allowed, EXTENSION, TOKEN_HEADER, origin, refusal};
+    let allowed = Allowed {
+        origins: vec![origin(EXTENSION), origin("moz-extension://ID1")],
+        token: "a".repeat(64),
+    };
+    let token = allowed.token.clone();
+    let ask = |method: &str, host: &str, from: Option<&str>, token: Option<&str>, length: usize| {
         let mut headers = std::collections::HashMap::new();
         headers.insert("host".to_string(), host.to_string());
         if let Some(o) = from {
             headers.insert("origin".to_string(), o.to_string());
         }
-        refusal(&headers, 8765, &origins, length).map(|(code, _)| code)
+        if let Some(t) = token {
+            headers.insert(TOKEN_HEADER.to_string(), t.to_string());
+        }
+        refusal(method, &headers, 8765, &allowed, length).map(|(code, _)| code)
     };
     let ours = format!("chrome-extension://{EXTENSION}");
-    assert_eq!(ask("127.0.0.1:8765", Some(&ours), 10), None);
-    assert_eq!(ask("localhost:8765", None, 10), None, "a program here");
-    assert_eq!(ask("127.0.0.1:8765", Some("moz-extension://ID1"), 10), None);
+    let t = Some(token.as_str());
+    let post = |host: &str, from: Option<&str>, length: usize| ask("POST", host, from, t, length);
+    assert_eq!(post("127.0.0.1:8765", Some(&ours), 10), None);
     assert_eq!(
-        ask("127.0.0.1:8765", Some("chrome-extension://ID2"), 10),
-        Some(403)
+        post("127.0.0.1:8765", Some("moz-extension://ID1"), 10),
+        None
     );
+    for other in [
+        "chrome-extension://ID2",
+        "moz-extension://ID2",
+        "https://example.org",
+    ] {
+        assert_eq!(
+            post("127.0.0.1:8765", Some(other), 10),
+            Some(403),
+            "{other}"
+        );
+    }
     assert_eq!(
-        ask("127.0.0.1:8765", Some("moz-extension://ID2"), 10),
-        Some(403)
-    );
-    assert_eq!(
-        ask("127.0.0.1:8765", Some("https://example.org"), 10),
-        Some(403)
-    );
-    assert_eq!(
-        ask("example.org:8765", Some(&ours), 10),
+        post("example.org:8765", Some(&ours), 10),
         Some(403),
         "rebound"
     );
-    assert_eq!(ask("127.0.0.1:9999", None, 10), Some(403));
-    assert_eq!(ask("127.0.0.1:8765", Some(&ours), usize::MAX), Some(413));
+    assert_eq!(post("127.0.0.1:9999", None, 10), Some(403));
+    assert_eq!(post("127.0.0.1:8765", Some(&ours), usize::MAX), Some(413));
+
+    // Without the token, as another user's program: refused, but for a
+    // browser's preflight.
+    let here = "localhost:8765";
+    assert_eq!(
+        ask("POST", here, None, None, 10),
+        Some(401),
+        "a program here"
+    );
+    assert_eq!(ask("POST", here, Some(&ours), Some("guess"), 10), Some(401));
+    assert_eq!(ask("GET", here, None, Some(&"a".repeat(63)), 0), Some(401));
+    assert_eq!(ask("POST", here, None, t, 10), None, "a program with it");
+    assert_eq!(ask("OPTIONS", here, Some(&ours), None, 0), None);
+}
+
+#[test]
+fn keeps_one_token_private() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paperstack/token");
+    let first = crate::daemon::token_at(&path).unwrap();
+    assert_eq!(first.len(), 64);
+    assert_eq!(crate::daemon::token_at(&path).unwrap(), first, "kept");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }
 
 /// A PDF of one page, its lines set in Helvetica, as `pdf-extract` reads
@@ -723,15 +761,52 @@ fn attaches_only_the_papers_own_pdf() {
         key,
         &first_page("Another paper altogether, on other things"),
         "x.pdf",
+        true,
     );
     assert!(other.unwrap_err().to_string().contains("is not"));
-    let added = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf").unwrap();
+    let added =
+        crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
     assert_eq!(added.outcome, crate::add::Outcome::PdfAttached);
     let hit = index.get(key).unwrap().unwrap();
     assert!(hit.has_pdf && hit.record.paperstack.pdf_sha256.is_some());
     assert!(lib.root.join(&hit.path).with_extension("pdf").exists());
-    let again = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf");
+    let again = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false);
     assert!(again.unwrap_err().to_string().contains("already"));
+}
+
+#[test]
+fn takes_a_scan_only_named_or_by_its_doi() {
+    let (_dir, lib, mut index) = library();
+    let key = "Naik2016-al";
+    let doi = index
+        .get(key)
+        .unwrap()
+        .unwrap()
+        .record
+        .doi()
+        .unwrap()
+        .to_string();
+    let scan = tiny_pdf(&["Scanned"]);
+    // Found, as the next download, or given by an agent: not taken.
+    let found = crate::add::attach(&lib, &mut index, key, &scan, "x.pdf", false);
+    assert!(
+        found
+            .unwrap_err()
+            .to_string()
+            .contains("no text to tell it by")
+    );
+    // Another paper's DOI on it is not this paper's.
+    let other = tiny_pdf(&["Scanned", "doi:10.1000/another.paper"]);
+    assert!(crate::add::attach(&lib, &mut index, key, &other, "x.pdf", false).is_err());
+    // Its own DOI on it is.
+    let ours = tiny_pdf(&["Scanned", &format!("doi:{doi}")]);
+    let added = crate::add::attach(&lib, &mut index, key, &ours, "x.pdf", false).unwrap();
+    assert_eq!(added.how, "x.pdf");
+
+    // Named by the person: taken, and said to be unchecked.
+    let key = "VanderWeele2017-ex";
+    let added = crate::add::attach(&lib, &mut index, key, &scan, "x.pdf", true).unwrap();
+    assert!(added.how.contains("no text to check it by"));
 }
 
 #[test]
@@ -914,7 +989,7 @@ fn serves_the_library_over_mcp() {
     let (_dir, lib, mut index) = library();
     let key = "Kedzierska2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
-    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf").unwrap();
+    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
     let mut server = crate::mcp::Server {
         lib,
         index,
