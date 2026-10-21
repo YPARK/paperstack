@@ -1,7 +1,7 @@
 //! Getting a PDF that only the browser can: one behind a paywall, or a
 //! publisher's bot check. The paper's page is opened in the browser, as
 //! you, signed in, through your library's proxy if `PAPERSTACK_PROXY`
-//! names one, as `https://ezproxy.library.ubc.ca/login?url=`; the PDF you download there is noticed as it lands in the
+//! names one, as `https://ezproxy.example.edu/login?url=`; the PDF you download there is noticed as it lands in the
 //! downloads folder, `PAPERSTACK_DOWNLOADS` or `~/Downloads`.
 
 use crate::record::Record;
