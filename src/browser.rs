@@ -5,6 +5,7 @@
 //! downloads folder, `PAPERSTACK_DOWNLOADS` or `~/Downloads`.
 
 use crate::record::Record;
+use anyhow::{Context, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -122,6 +123,110 @@ pub fn dropped(line: &str) -> PathBuf {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
         None => PathBuf::from(path),
     }
+}
+
+/// A PDF the person picks in the system's file dialog, opened at the
+/// downloads folder; none, where they cancel. The dialog is the system's,
+/// so the terminal is given back before this is asked.
+pub fn choose_pdf(prompt: &str) -> anyhow::Result<Option<PathBuf>> {
+    let out = if cfg!(target_os = "macos") {
+        choose_macos(prompt)?
+    } else if cfg!(windows) {
+        choose_windows(prompt)?
+    } else {
+        choose_unix(prompt)?
+    };
+    let path = out.trim();
+    Ok((!path.is_empty()).then(|| PathBuf::from(path)))
+}
+
+/// `choose file`, cancelled as error −128, which is no file.
+fn choose_macos(prompt: &str) -> anyhow::Result<String> {
+    let prompt = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        r#"try
+POSIX path of (choose file of type {{"pdf", "com.adobe.pdf"}} with prompt "{prompt}" default location (path to downloads folder))
+on error number -128
+""
+end try"#
+    );
+    let out = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .context("cannot open the file dialog")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        bail!("the file dialog could not be opened: {}", err.trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn choose_windows(prompt: &str) -> anyhow::Result<String> {
+    let prompt = prompt.replace('\'', "''");
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $d = New-Object System.Windows.Forms.OpenFileDialog; \
+         $d.Filter = 'PDF (*.pdf)|*.pdf'; $d.Title = '{prompt}'; \
+         if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}"
+    );
+    dialog(
+        std::process::Command::new("powershell").args(["-NoProfile", "-STA", "-Command", &script]),
+        "powershell",
+    )
+}
+
+/// zenity, or kdialog where that is what the desktop has.
+fn choose_unix(prompt: &str) -> anyhow::Result<String> {
+    if have("zenity") {
+        return dialog(
+            std::process::Command::new("zenity").args([
+                "--file-selection",
+                "--title",
+                prompt,
+                "--filename",
+                &downloads().display().to_string(),
+                "--file-filter",
+                "PDF | *.pdf *.PDF",
+            ]),
+            "zenity",
+        );
+    }
+    if have("kdialog") {
+        let start = downloads().display().to_string();
+        return dialog(
+            std::process::Command::new("kdialog").args([
+                "--getopenfilename",
+                &start,
+                "application/pdf",
+                "--title",
+                prompt,
+            ]),
+            "kdialog",
+        );
+    }
+    bail!("no file dialog: install zenity, or give the PDF's path")
+}
+
+fn have(cmd: &str) -> bool {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// What `command` printed; an empty string where the person cancelled,
+/// which these dialogs signal by exiting with 1.
+fn dialog(command: &mut std::process::Command, name: &str) -> anyhow::Result<String> {
+    let out = command
+        .output()
+        .with_context(|| format!("cannot open the file dialog ({name})"))?;
+    if out.status.success() || out.status.code() == Some(1) {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    bail!("the file dialog could not be opened: {}", err.trim())
 }
 
 /// `path` with the home folder as `~`, as it is shown.

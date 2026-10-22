@@ -2,8 +2,8 @@
 //! papers. A paper deleted is moved, its record and its PDF, into `.trash/`
 //! at the library's root, filed there as it was: hidden, so no longer
 //! found, but kept, and synced, until the trash is emptied by hand. Moved
-//! back, it is found again. A collection deleted is taken off its papers,
-//! which stay.
+//! back, it is found again. A PDF deleted alone goes there too, and the
+//! paper stays. A collection deleted is taken off its papers, which stay.
 
 use crate::index::{Hit, Index, Sort};
 use crate::library::Library;
@@ -65,6 +65,46 @@ pub fn paper(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<Path
         }
         dir = d.parent();
     }
+    Ok(to)
+}
+
+/// Move the PDF of the paper `key` names to the trash; the paper stays.
+/// The PDF's path in the trash, from the library's root. The record's
+/// hash of it is cleared, as the file is no longer beside the paper.
+pub fn pdf(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<PathBuf> {
+    let hit = index
+        .get(key)?
+        .with_context(|| format!("no paper with the key {key}"))?;
+    let pdf = lib.root.join(&hit.path).with_extension("pdf");
+    if !pdf.is_file() {
+        bail!("{key} has no PDF");
+    }
+    let mut record = crate::library::read(&lib.root.join(&hit.path))?;
+    let to = Path::new(TRASH).join(&hit.path).with_extension("pdf");
+    let dest = lib.root.join(&to);
+    fs::create_dir_all(dest.parent().expect("filed in a folder"))?;
+    // Where a PDF dropped earlier is in the way, it is replaced: the one
+    // beside the paper is the one kept. A rename that fails for another
+    // reason leaves the PDF where it is.
+    if let Err(e) = fs::rename(&pdf, &dest) {
+        if !dest.exists() {
+            return Err(e).with_context(|| format!("cannot move {} to the trash", pdf.display()));
+        }
+        fs::remove_file(&dest)
+            .with_context(|| format!("cannot replace {} in the trash", dest.display()))?;
+        fs::rename(&pdf, &dest)
+            .with_context(|| format!("cannot move {} to the trash", pdf.display()))?;
+    }
+    record.paperstack.pdf_sha256 = None;
+    let saved = lib.save(&record, Some(&hit.path));
+    let path = match saved {
+        Ok(path) => path,
+        Err(e) => {
+            let _ = fs::rename(&dest, &pdf);
+            return Err(e);
+        }
+    };
+    index.upsert(lib, &path, record, Some(&hit.path))?;
     Ok(to)
 }
 

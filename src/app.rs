@@ -1,7 +1,8 @@
 //! The TUI: what is shown, and what keys do. The sidebar's shelves and the
 //! search line are one query, searched in the index; a star is written to
 //! the paper's record, and read back into the index. A paper deleted goes
-//! to the library's trash, asked first.
+//! to the library's trash, asked first; its PDF alone too, the paper kept.
+//! A PDF located on disk is filed beside the paper picked.
 
 use crate::add::{Adder, Options, attach, one_line};
 use crate::bibtex;
@@ -24,7 +25,7 @@ use ratatui::style::Modifier;
 use ratatui::widgets::ListState;
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -84,6 +85,9 @@ pub enum Action {
     /// Add what is named, the screen drawn first, saying so, as it takes a
     /// while.
     Add(String),
+    /// Ask for a PDF on disk, in the system's file dialog, which takes the
+    /// terminal.
+    Locate,
 }
 
 /// What a click lands on, as the screen was last drawn.
@@ -100,7 +104,7 @@ pub enum Target {
     Paper(usize),
     Mark(usize),
     Star(usize),
-    /// The badge of a paper with no PDF, to get it in the browser.
+    /// The PDF's badge: get one in the browser, or drop the one the paper has.
     GetPdf(usize),
     Popup,
 }
@@ -135,6 +139,8 @@ pub enum Popup {
 pub enum Doomed {
     /// Papers, by key, with their titles.
     Papers(Vec<(String, String)>),
+    /// PDFs of papers that stay, by key, with their titles.
+    Pdfs(Vec<(String, String)>),
     /// A collection or label, and how many papers have it.
     Shelf(crate::remove::Shelf, String, usize),
 }
@@ -202,6 +208,7 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
                     app.add(&line);
                 }
                 Some(Action::Open) => app.open(&mut terminal),
+                Some(Action::Locate) => app.locate(&mut terminal),
                 None => {}
             }
         }
@@ -403,6 +410,7 @@ impl App {
                             fetch.note = one_line(&e);
                         }
                     }
+                    KeyCode::Char('l') if ctrl => return Some(Action::Locate),
                     KeyCode::Char('u') if ctrl => fetch.line.clear(),
                     KeyCode::Char('v') if ctrl => fetch.line.push_str(paste().trim()),
                     KeyCode::Char(c) => fetch.line.push(c),
@@ -508,7 +516,9 @@ impl App {
             }
             KeyCode::Char('s') => self.star(),
             KeyCode::Char('d') | KeyCode::Delete => self.ask_delete(),
+            KeyCode::Char('x') => self.ask_drop_pdf(),
             KeyCode::Char('p') => self.get_pdf(),
+            KeyCode::Char('f') => return Some(Action::Locate),
             KeyCode::Char('r') => {
                 let before = self.total();
                 match self.index.refresh(&self.lib).and_then(|_| self.restock()) {
@@ -562,7 +572,13 @@ impl App {
             }
             (
                 Popup::None,
-                Some(Target::List | Target::Paper(_) | Target::Mark(_) | Target::Star(_)),
+                Some(
+                    Target::List
+                    | Target::Paper(_)
+                    | Target::Mark(_)
+                    | Target::Star(_)
+                    | Target::GetPdf(_),
+                ),
             ) => {
                 self.focus = Focus::List;
                 self.step(by);
@@ -623,7 +639,15 @@ impl App {
             Target::GetPdf(i) => {
                 self.focus = Focus::List;
                 self.list.select(Some(i));
-                self.get_pdf();
+                if self.shown.get(i).is_some_and(|h| h.has_pdf) {
+                    let h = &self.shown[i];
+                    self.popup = Popup::Delete(Doomed::Pdfs(vec![(
+                        h.record.key.clone(),
+                        h.record.title().to_string(),
+                    )]));
+                } else {
+                    self.get_pdf();
+                }
             }
         }
         None
@@ -787,6 +811,26 @@ impl App {
         self.popup = Popup::Delete(doomed);
     }
 
+    /// Ask whether to delete the PDFs of the papers marked, or of the one
+    /// picked. The papers stay.
+    pub fn ask_drop_pdf(&mut self) {
+        if self.focus != Focus::List {
+            self.status = "a paper's PDF is deleted from the list".to_string();
+            return;
+        }
+        let papers: Vec<(String, String)> = self
+            .picked()
+            .iter()
+            .filter(|h| h.has_pdf)
+            .map(|h| (h.record.key.clone(), h.record.title().to_string()))
+            .collect();
+        if papers.is_empty() {
+            self.status = "no PDF to delete".to_string();
+            return;
+        }
+        self.popup = Popup::Delete(Doomed::Pdfs(papers));
+    }
+
     /// Delete what was asked about, and say what came of it.
     fn delete(&mut self) {
         let Popup::Delete(doomed) = std::mem::replace(&mut self.popup, Popup::None) else {
@@ -813,6 +857,21 @@ impl App {
                 match why {
                     None if deleted == 1 => format!("{} deleted, to .trash/", papers[0].0),
                     None => format!("{deleted} papers deleted, to .trash/"),
+                    Some(why) => format!("{deleted} of {} deleted: {why}", papers.len()),
+                }
+            }
+            Doomed::Pdfs(papers) => {
+                let mut deleted = 0;
+                let mut why = None;
+                for (key, _) in &papers {
+                    match crate::remove::pdf(&self.lib, &mut self.index, key) {
+                        Ok(_) => deleted += 1,
+                        Err(e) => why = Some(one_line(&e)),
+                    }
+                }
+                match why {
+                    None if deleted == 1 => format!("{}'s PDF deleted, to .trash/", papers[0].0),
+                    None => format!("{deleted} PDFs deleted, to .trash/"),
                     Some(why) => format!("{deleted} of {} deleted: {why}", papers.len()),
                 }
             }
@@ -907,6 +966,62 @@ impl App {
             self.status = one_line(&e);
         }
         self.narrow();
+    }
+
+    /// The paper to give a PDF from disk: the one whose PDF is awaited, or
+    /// the one picked, where it has none yet.
+    fn paper_to_file(&mut self) -> Option<String> {
+        if let Popup::Fetch(fetch) = &self.popup {
+            return Some(fetch.key.clone());
+        }
+        let h = self.current()?;
+        if h.has_pdf {
+            self.status = format!("{} has its PDF: x deletes it", h.record.key);
+            return None;
+        }
+        Some(h.record.key.clone())
+    }
+
+    /// Give that paper the PDF at `path`, as one the person named.
+    pub fn give_pdf(&mut self, path: &Path) {
+        let Some(key) = self.paper_to_file() else {
+            return;
+        };
+        let line = browser::tilde(path);
+        let done = std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))
+            .and_then(|b| attach(&self.lib, &mut self.index, &key, &b, &line, true));
+        match done {
+            Ok(added) => self.attached(&added),
+            Err(e) => self.note(one_line(&e)),
+        }
+    }
+
+    /// Ask for a PDF on disk and file it beside the paper picked, or the
+    /// one whose PDF is awaited.
+    fn locate(&mut self, terminal: &mut DefaultTerminal) {
+        let Some(key) = self.paper_to_file() else {
+            return;
+        };
+        give_back();
+        let chosen = browser::choose_pdf(&format!("PDF for {key}"));
+        *terminal = take();
+        let note = match chosen {
+            Ok(Some(path)) => return self.give_pdf(&path),
+            Ok(None) => "no file chosen".to_string(),
+            Err(e) => one_line(&e),
+        };
+        self.note(note);
+    }
+
+    /// Where a PDF is awaited, say `note` in that dialog; else on the
+    /// status line.
+    fn note(&mut self, note: String) {
+        if let Popup::Fetch(fetch) = &mut self.popup {
+            fetch.note = note;
+        } else {
+            self.status = note;
+        }
     }
 
     /// Present the paper's PDF with ohp, which takes the terminal until it
