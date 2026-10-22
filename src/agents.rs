@@ -50,6 +50,7 @@ by its id. Never add a paper you have not checked is the one meant.
 
 ```sh
 paperstack delete KEY                         # a paper, moved to .trash/
+paperstack delete --pdf KEY                   # only its PDF; the paper stays
 paperstack delete --collection NAME           # a collection; its papers stay
 paperstack delete --label NAME
 ```

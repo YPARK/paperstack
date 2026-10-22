@@ -118,18 +118,21 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `s` | star, written to the paper's record |
 | `d` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
 | `p` | get the PDF of a paper without one, in the browser |
+| `f` | locate a PDF on disk for the paper picked, where it has none |
+| `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `q` | quit |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
-it, its star to star it, or a paper twice to open it; the wheel moves
-through the list under it.
+it, its star to star it, its PDF badge to get a PDF or to delete the one it
+has, or a paper twice to open it; the wheel moves through the list under it.
 
 ## Deleting
 
 ```sh
 paperstack delete Ahlmann-Eltze2025-pb Naik2016-al     # papers, by key; or pst rm
+paperstack delete --pdf Ahlmann-Eltze2025-pb            # only its PDF; the paper stays
 paperstack delete --collection "Single Cell Data"      # a collection; its papers stay
 paperstack delete --label to-read
 ```
@@ -138,9 +141,11 @@ A paper deleted is not erased: its record and PDF are moved into `.trash/`,
 at the library's root, filed there as they were, and are no longer found.
 Move them back to where they were to have the paper again, or empty
 `.trash/` to be rid of them; Dropbox keeps what is deleted from it besides.
-A collection deleted is taken off the papers in it, as are the collections
-within it, as `Research/ML/NLP` is within `Research/ML`; the papers stay in
-the library. In the browser, `d` asks first.
+A PDF deleted alone is moved there the same way, and the paper stays, so
+another file can be located for it. A collection deleted is taken off the
+papers in it, as are the collections within it, as `Research/ML/NLP` is
+within `Research/ML`; the papers stay in the library. In the browser, `d`
+asks first, and `x` before a PDF is deleted.
 
 ## From the browser
 
@@ -152,9 +157,11 @@ its page opens in the browser, by its DOI. Download the PDF there, as you
 would, and it is filed beside the paper as soon as it lands in
 `~/Downloads`, if its first page has the paper's title; anything else
 downloaded meanwhile is left alone. Or paste the PDF's path, or its address,
-into the dialog. A scan, with too little text to show its title, is taken
-from Downloads only with the paper's DOI in it; given by its path, it is
-taken as you say. From the shell, the same:
+into the dialog, or press `ctrl-l` to locate a file on disk. From the list,
+`f` opens the same file dialog for the paper picked. A scan, with too little
+text to show its title, is taken from Downloads only with the paper's DOI in
+it; given by its path, or located on disk, it is taken as you say. From the
+shell, the same:
 
 ```sh
 paperstack attach Ahlmann-Eltze2025-pk                 # open its page, await the download

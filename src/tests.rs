@@ -229,6 +229,85 @@ fn deletes_papers_to_the_trash() {
 }
 
 #[test]
+fn drops_a_pdf_keeping_the_paper() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kedzierska2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    let bytes = first_page(&title);
+    crate::add::attach(&lib, &mut index, key, &bytes, "x.pdf", false).unwrap();
+    let was = index.get(key).unwrap().unwrap().path.clone();
+    let to = crate::remove::pdf(&lib, &mut index, key).unwrap();
+    let hit = index.get(key).unwrap().unwrap();
+    assert_eq!(hit.record.key, key);
+    assert!(!hit.has_pdf && hit.record.paperstack.pdf_sha256.is_none());
+    assert!(lib.root.join(&was).is_file());
+    assert!(!lib.root.join(&was).with_extension("pdf").exists());
+    assert_eq!(std::fs::read(lib.root.join(&to)).unwrap(), bytes);
+    let file = record_of(&lib, &index, key);
+    assert!(file.paperstack.pdf_sha256.is_none());
+    assert!(crate::remove::pdf(&lib, &mut index, key).is_err());
+    // Filed again, and dropped, the paper is still the one it was.
+    crate::add::attach(&lib, &mut index, key, &bytes, "y.pdf", true).unwrap();
+    crate::remove::pdf(&lib, &mut index, key).unwrap();
+    assert!(index.get(key).unwrap().is_some());
+    assert!(lib.root.join(&to).is_file());
+}
+
+#[test]
+fn deletes_a_pdf_from_the_tui_when_asked() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let press = |app: &mut App, c: char| {
+        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    };
+    let (_dir, lib, mut index) = library();
+    let key = "Kedzierska2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
+    let mut app = App::new(lib, index).unwrap();
+    let at = app.shown.iter().position(|h| h.record.key == key).unwrap();
+    app.list.select(Some(at));
+    press(&mut app, 'x');
+    let s = screen(&mut app, 160, 44);
+    assert!(
+        s.contains("Delete this PDF?") && s.contains("The paper stays") && s.contains(&key),
+        "{s}"
+    );
+    press(&mut app, 'n');
+    assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
+    press(&mut app, 'x');
+    press(&mut app, 'y');
+    let hit = app.index.get(&key).unwrap().unwrap();
+    assert!(!hit.has_pdf);
+    assert!(app.lib.root.join(&hit.path).is_file());
+    assert!(!app.lib.root.join(&hit.path).with_extension("pdf").exists());
+    assert!(app.status.contains(".trash/"));
+}
+
+#[test]
+fn locates_a_pdf_on_disk_for_the_paper_picked() {
+    use crate::app::Action;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let key = "Kedzierska2025-zs";
+    let at = app.shown.iter().position(|h| h.record.key == key).unwrap();
+    app.list.select(Some(at));
+    let title = app.current().unwrap().record.title().to_string();
+    let action = app.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    assert!(matches!(action, Some(Action::Locate)));
+    let path = dir.path().join("paper.pdf");
+    std::fs::write(&path, first_page(&title)).unwrap();
+    app.give_pdf(&path);
+    let hit = app.index.get(&key).unwrap().unwrap();
+    assert!(hit.has_pdf);
+    assert!(app.lib.root.join(&hit.path).with_extension("pdf").is_file());
+    // A paper that has its PDF is not given another until that one is deleted.
+    app.give_pdf(&path);
+    assert!(app.status.contains("has its PDF"));
+    assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
+}
+
+#[test]
 fn deletes_a_collection_keeping_its_papers() {
     use crate::remove::Shelf;
     let (_dir, lib, mut index) = library();

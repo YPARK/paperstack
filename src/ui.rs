@@ -18,6 +18,8 @@ use ratatui::widgets::{
 
 /// The badge of a paper without its PDF, to get it in the browser.
 const GET_PDF: &str = " get PDF ";
+/// The badge of a paper that has its PDF. The click target is this wide.
+const HAS_PDF: &str = " PDF ";
 /// Authors listed before `… n more`.
 const AUTHORS_SHOWN: usize = 5;
 const SIDEBAR: u16 = 30;
@@ -264,7 +266,7 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
             let rest = format!(" · {year} · {}", r.kind());
             // The PDF's badge at the right; the key before
             // it, where there is room.
-            let pdf = if h.has_pdf { " PDF " } else { GET_PDF };
+            let pdf = if h.has_pdf { HAS_PDF } else { GET_PDF };
             let room = (width + 2)
                 .saturating_sub(3 + venue.chars().count() + rest.chars().count() + pdf.len());
             let key = if room > r.key.len() + 4 {
@@ -343,19 +345,22 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
         };
         app.targets.push((line(1, 3), Target::Mark(i)));
         app.targets.push((line(4 + titles[at], 2), Target::Star(i)));
-        if !app.shown[i].has_pdf {
-            let badge = GET_PDF.chars().count() as u16;
-            let x = row.right().saturating_sub(badge + 1);
-            app.targets.push((
-                Rect {
-                    x,
-                    y: row.y + 2,
-                    width: badge,
-                    height: 1,
-                },
-                Target::GetPdf(i),
-            ));
-        }
+        let badge = if app.shown[i].has_pdf {
+            HAS_PDF
+        } else {
+            GET_PDF
+        };
+        let badge = badge.chars().count() as u16;
+        let x = row.right().saturating_sub(badge + 1);
+        app.targets.push((
+            Rect {
+                x,
+                y: row.y + 2,
+                width: badge,
+                height: 1,
+            },
+            Target::GetPdf(i),
+        ));
     }
 }
 
@@ -451,10 +456,18 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled(format!("{:<9}", "PDF"), dim),
             if h.has_pdf {
-                Span::styled(" PDF ", Style::new().fg(t.on_badge).bg(t.badge))
+                Span::styled(HAS_PDF, Style::new().fg(t.on_badge).bg(t.badge))
             } else {
-                Span::styled("none · p gets it in your browser", dim)
+                Span::styled("none", dim)
             },
+            Span::styled(
+                if h.has_pdf {
+                    "  ⏎ opens it · x deletes it"
+                } else {
+                    "  p gets it · f locates a file"
+                },
+                dim,
+            ),
         ]),
         field("record", file),
         field("in", join(&m.folders)),
@@ -586,7 +599,7 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
             Span::raw(", if it is this paper's."),
         ]),
         Line::styled(
-            "Or paste its path or its address; or press paperstack's button in Chrome.",
+            "Or paste a path or address, press ctrl-l to locate a file, or the button in Chrome.",
             dim,
         ),
         Line::raw(""),
@@ -603,7 +616,7 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
         lines.push(Line::styled(fetch.note.clone(), Style::new().fg(t.star)));
     }
     let block = dialog(t, "Get the PDF").title_bottom(Line::styled(
-        " ⏎ take what is pasted · ctrl-v paste · ctrl-o open the page again · esc stop ",
+        " ⏎ take it · ctrl-v paste · ctrl-l a file on disk · ctrl-o the page · esc stop ",
         dim,
     ));
     f.render_widget(
@@ -618,8 +631,9 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
 /// What is to be deleted, asked first.
 fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
     let dim = Style::new().fg(t.dim);
+    let pdfs = matches!(doomed, Doomed::Pdfs(_));
     let (title, mut lines) = match doomed {
-        Doomed::Papers(papers) => {
+        Doomed::Papers(papers) | Doomed::Pdfs(papers) => {
             let mut lines: Vec<Line> = papers
                 .iter()
                 .take(10)
@@ -634,15 +648,30 @@ fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
                 lines.push(Line::styled(format!("and {} more", papers.len() - 10), dim));
             }
             lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                "Their records and PDFs are moved to the library's .trash/ folder.",
-                dim,
-            ));
-            let title = if papers.len() == 1 {
-                "Delete this paper?".to_string()
+            let (title, note) = if pdfs {
+                if papers.len() == 1 {
+                    (
+                        "Delete this PDF?".to_string(),
+                        "The paper stays. Its PDF is moved to the library's .trash/ folder.",
+                    )
+                } else {
+                    (
+                        format!("Delete {} PDFs?", papers.len()),
+                        "The papers stay. Their PDFs are moved to the library's .trash/ folder.",
+                    )
+                }
+            } else if papers.len() == 1 {
+                (
+                    "Delete this paper?".to_string(),
+                    "Its record and PDF are moved to the library's .trash/ folder.",
+                )
             } else {
-                format!("Delete {} papers?", papers.len())
+                (
+                    format!("Delete {} papers?", papers.len()),
+                    "Their records and PDFs are moved to the library's .trash/ folder.",
+                )
             };
+            lines.push(Line::styled(note, dim));
             (title, lines)
         }
         Doomed::Shelf(kind, name, count) => {
@@ -713,13 +742,25 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
             "get the PDF in your browser, signed in: download it there, as you would",
         ),
         (
+            "f",
+            "locate a PDF on disk for the paper picked, where it has none",
+        ),
+        (
+            "ctrl-l",
+            "the same, from the get-PDF dialog, instead of a download",
+        ),
+        (
+            "x",
+            "delete the PDF picked, or those marked, to .trash/; papers stay",
+        ),
+        (
             "space",
             "mark a paper; * marks all shown, again unmarks; esc unmarks all",
         ),
         ("ctrl-e", "BibTeX of the papers marked, or the one picked"),
         (
             "click",
-            "pick; on a box, mark; on a star, star; twice, open",
+            "pick; on a box, mark; on a star, star; on PDF, get or delete; twice, open",
         ),
         ("y", "copy [@key; @key] to the clipboard"),
         ("s", "star, written to the paper's record"),

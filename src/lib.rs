@@ -133,8 +133,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Delete papers, by their keys, into the library's .trash/; or take a
-    /// collection or label off its papers, which stay
+    /// Delete papers, by their keys, into the library's .trash/; or only
+    /// their PDFs, with --pdf, the papers staying; or take a collection or
+    /// label off its papers, which stay
     #[command(visible_alias = "rm")]
     Delete {
         #[arg(required_unless_present_any = ["collection", "label"])]
@@ -145,6 +146,9 @@ enum Command {
         /// Delete this label
         #[arg(long)]
         label: Vec<String>,
+        /// Delete only these papers' PDFs, into .trash/; the papers stay
+        #[arg(long, conflicts_with_all = ["collection", "label"])]
+        pdf: bool,
     },
     /// Serve the library to an AI agent over MCP, on stdin and stdout: its
     /// program, as Cursor or Claude Code, runs `paperstack mcp`
@@ -456,12 +460,21 @@ pub fn main() -> anyhow::Result<()> {
             keys,
             collection,
             label,
+            pdf,
         }) => {
             let (lib, mut index) = open(&args.library)?;
             let mut failed = 0;
             for key in &keys {
-                match remove::paper(&lib, &mut index, key) {
-                    Ok(to) => println!("{key:<24} deleted: {}", to.display()),
+                let done = if pdf {
+                    remove::pdf(&lib, &mut index, key)
+                } else {
+                    remove::paper(&lib, &mut index, key)
+                };
+                match done {
+                    Ok(to) => {
+                        let what = if pdf { "PDF deleted" } else { "deleted" };
+                        println!("{key:<24} {what}: {}", to.display());
+                    }
                     Err(e) => {
                         failed += 1;
                         eprintln!("paperstack: {key}: {e:#}");
