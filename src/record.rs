@@ -97,28 +97,7 @@ impl Record {
     }
 
     pub fn authors(&self) -> Vec<Name> {
-        let Some(names) = self.csl.get("author").and_then(Value::as_array) else {
-            return Vec::new();
-        };
-        names
-            .iter()
-            .filter_map(|n| {
-                let part = |k| n.get(k).and_then(Value::as_str).map(str::trim);
-                if let Some(literal) = part("literal") {
-                    return Some(Name {
-                        family: literal.to_string(),
-                        given: String::new(),
-                    });
-                }
-                let family = [part("non-dropping-particle"), part("family")]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let given = part("given").unwrap_or("").to_string();
-                (!family.is_empty() || !given.is_empty()).then_some(Name { family, given })
-            })
-            .collect()
+        authors(&self.csl)
     }
 
     /// The year issued, from any of CSL's forms of a date.
@@ -134,6 +113,32 @@ impl Record {
         }
         item
     }
+}
+
+/// The authors of a CSL record, a particle with the family name.
+pub fn authors(csl: &Value) -> Vec<Name> {
+    let Some(names) = csl.get("author").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter_map(|n| {
+            let part = |k| n.get(k).and_then(Value::as_str).map(str::trim);
+            if let Some(literal) = part("literal") {
+                return Some(Name {
+                    family: literal.to_string(),
+                    given: String::new(),
+                });
+            }
+            let family = [part("non-dropping-particle"), part("family")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let given = part("given").unwrap_or("").to_string();
+            (!family.is_empty() || !given.is_empty()).then_some(Name { family, given })
+        })
+        .collect()
 }
 
 /// The year a CSL item was issued, from any of CSL's forms of a date.

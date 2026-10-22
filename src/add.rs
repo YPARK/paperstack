@@ -27,18 +27,16 @@ pub struct Options {
     pub pdf: bool,
     pub folders: Vec<String>,
     pub labels: Vec<String>,
-    /// Ask on the terminal which paper is meant, where a PDF holds more
-    /// than one; else none is added, and they are listed.
-    pub ask: bool,
 }
 
 /// A PDF whose first page holds more than one paper, as a journal's page
-/// of letters: none is guessed at.
-#[derive(Debug)]
+/// of letters: none is guessed at. The one chosen is filed with the PDF
+/// by [`Adder::file_chosen`].
 pub struct Ambiguous {
     /// The PDF, as it was named.
     pub name: String,
     pub papers: Vec<Found>,
+    pub pdf: Vec<u8>,
 }
 
 impl std::fmt::Display for Ambiguous {
@@ -55,25 +53,45 @@ impl std::fmt::Display for Ambiguous {
     }
 }
 
+impl std::fmt::Debug for Ambiguous {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 impl std::error::Error for Ambiguous {}
 
 /// A paper found, on a line of a list: its id, year, first author, title.
 pub fn listed(found: &Found) -> String {
-    let id = match (found.doi(), &found.arxiv) {
+    let author = crate::record::authors(&found.csl)
+        .into_iter()
+        .next()
+        .map(|n| n.family)
+        .unwrap_or_default();
+    id_line(
+        found.doi(),
+        found.arxiv.as_deref(),
+        crate::record::year(&found.csl),
+        &author,
+        found.title(),
+    )
+}
+
+/// A paper on a line of a list, as one is added by its id.
+fn id_line(
+    doi: Option<&str>,
+    arxiv: Option<&str>,
+    year: Option<i32>,
+    middle: &str,
+    title: &str,
+) -> String {
+    let id = match (doi, arxiv) {
         (Some(d), _) => d.to_string(),
         (None, Some(a)) => format!("arXiv:{a}"),
         (None, None) => "-".to_string(),
     };
-    let year =
-        crate::record::year(&found.csl).map_or_else(|| "    ".to_string(), |y| y.to_string());
-    let author = found
-        .csl
-        .get("author")
-        .and_then(|a| a.get(0))
-        .and_then(|a| a.get("family").or_else(|| a.get("literal")))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    format!("{id:<40} {year} {author:<16} {}", found.title())
+    let year = year.map_or_else(|| "    ".to_string(), |y| y.to_string());
+    format!("{id:<40} {year} {middle:<16} {title}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
@@ -226,7 +244,9 @@ impl Adder<'_> {
                 bail!("{path}: a whole library is moved with paperstack import")
             }
             Source::Pdf(path) => {
-                let (path, bytes) = read_pdf(path)?;
+                let path = tilde(path);
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("cannot read {}", path.display()))?;
                 self.add_pdf(&bytes, &path.display().to_string())
             }
             Source::Words(words) => {
@@ -249,11 +269,8 @@ impl Adder<'_> {
         // The three asked at once: each takes a second or so to answer.
         let net = self.net;
         let candidates = std::thread::scope(|s| {
-            let openalex = s.spawn(|| resolve::search_openalex(net, words).unwrap_or_default());
-            let crossref = s.spawn(|| resolve::search_crossref(net, words).unwrap_or_default());
             let arxiv = s.spawn(|| resolve::search_arxiv(net, words).unwrap_or_default());
-            let mut all = openalex.join().unwrap_or_default();
-            all.extend(crossref.join().unwrap_or_default());
+            let mut all = search_both(net, words);
             all.extend(arxiv.join().unwrap_or_default());
             all
         });
@@ -294,13 +311,14 @@ impl Adder<'_> {
         let list = shown
             .iter()
             .map(|c| {
-                let id = match (&c.doi, &c.arxiv) {
-                    (Some(d), _) => d.clone(),
-                    (None, Some(a)) => format!("arXiv:{a}"),
-                    (None, None) => "-".to_string(),
-                };
-                let year = c.year.map_or_else(|| "    ".to_string(), |y| y.to_string());
-                format!("  {id:<40} {year} {:<16} {}", c.kind, c.title)
+                let line = id_line(
+                    c.doi.as_deref(),
+                    c.arxiv.as_deref(),
+                    c.year,
+                    &c.kind,
+                    &c.title,
+                );
+                format!("  {line}")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -376,12 +394,22 @@ impl Adder<'_> {
         // A page naming its own article, as a letter does: the papers on it
         // are what is filed from, not the DOIs it cites.
         let mut papers = self.papers_in(&reading, &text);
-        if papers.len() > 1 {
-            let found = self.choose(name, papers.into_iter().map(|(f, _)| f).collect())?;
-            return self.file(found, Some(bytes), "the paper chosen of those in it");
-        }
-        if let Some((found, how)) = papers.pop() {
-            return self.file(found, Some(bytes), &how);
+        match papers.len() {
+            0 => {}
+            1 => {
+                let found = papers.remove(0);
+                let doi = Source::Doi(found.doi().unwrap_or_default().to_string());
+                let how = format!("the {} in it", id_name(&doi));
+                return self.file(found, Some(bytes), &how);
+            }
+            _ => {
+                return Err(Ambiguous {
+                    name: name.to_string(),
+                    papers,
+                    pdf: bytes.to_vec(),
+                }
+                .into());
+            }
         }
         for id in pdf::ids(&reading).into_iter().take(ID_TRIES) {
             if let Ok(found) = resolve::by_source(self.net, &id)
@@ -403,37 +431,16 @@ impl Adder<'_> {
         let net = self.net;
         let mut tried = std::collections::HashSet::new();
         let mut pick = |candidates: Vec<resolve::Candidate>| -> Option<Found> {
-            for c in candidates
+            candidates
                 .iter()
-                .filter(|c| c.is_paper() && pdf::has_title(&c.title, &text))
-            {
-                if (c.doi.is_none() && c.arxiv.is_none())
-                    || !tried.insert((c.doi.clone(), c.arxiv.clone()))
-                {
-                    continue;
-                }
-                if let Ok(found) = candidate(net, c)
-                    && pdf::has_title(found.title(), &text)
-                    && pdf::has_author(&found.csl, &text)
-                {
-                    return Some(found);
-                }
-            }
-            None
+                .filter(|c| tried.insert((c.doi.clone(), c.arxiv.clone())))
+                .filter_map(|c| confirmed(net, c, &text))
+                .find(|found| pdf::has_author(&found.csl, &text))
         };
-        // Crossref and OpenAlex, at once, for each query; OpenAlex holds
-        // arXiv's papers too.
+        // Crossref and OpenAlex, for each query; OpenAlex holds arXiv's
+        // papers too.
         for query in &queries {
-            let candidates = std::thread::scope(|s| {
-                let openalex = (query.len() < 300)
-                    .then(|| s.spawn(|| resolve::search_openalex(net, query).unwrap_or_default()));
-                let mut all = resolve::search_crossref(net, query).unwrap_or_default();
-                if let Some(o) = openalex {
-                    all.extend(o.join().unwrap_or_default());
-                }
-                all
-            });
-            if let Some(found) = pick(candidates) {
+            if let Some(found) = pick(search_both(net, query)) {
                 return self.file(found, Some(bytes), "its title, searched for");
             }
         }
@@ -446,129 +453,48 @@ impl Adder<'_> {
         bail!("{name}: cannot tell which paper it is")
     }
 
-    /// The papers a first page holds, each with how it was told, where it
-    /// names its own article's DOI, as a letter's article information does:
-    /// that article, where its title or an author is on the page, and those
-    /// whose headings are on the page too, searched for. None where it names
-    /// no article of its own, and the PDF is told as any other.
+    /// The papers a first page holds, where it names its own article's DOI,
+    /// as a letter's article information does: that article, where its
+    /// title or an author is on the page, and those whose headings are on
+    /// the page too, searched for. None where it names no article of its
+    /// own, and the PDF is told as any other.
     ///
     /// The headings are searched for even of a PDF from a watched folder:
     /// a page with its article information is a journal's, not a letter.
-    fn papers_in(&self, reading: &pdf::Reading, text: &str) -> Vec<(Found, String)> {
+    /// They are asked one after another, as Crossref asks of its callers.
+    fn papers_in(&self, reading: &pdf::Reading, text: &str) -> Vec<Found> {
         let net = self.net;
-        let dois = pdf::article_info_dois(reading);
-        let mut papers: Vec<(Found, String)> = std::thread::scope(|s| {
-            let asked: Vec<_> = dois
-                .iter()
-                .map(|d| s.spawn(move || (resolve::by_doi(net, d), d)))
-                .collect();
-            asked
-                .into_iter()
-                .filter_map(|a| a.join().ok())
-                .filter_map(|(found, d)| Some((found.ok()?, format!("the DOI {d} in it"))))
-                .filter(|(f, _)| pdf::has_title(f.title(), text) || pdf::has_author(&f.csl, text))
-                .collect()
-        });
+        let mut papers: Vec<Found> = pdf::article_info_dois(reading)
+            .iter()
+            .filter_map(|d| resolve::by_doi(net, d).ok())
+            .filter(|f| pdf::has_title(f.title(), text) || pdf::has_author(&f.csl, text))
+            .collect();
         if papers.is_empty() {
             return papers;
         }
         let page = reading.pages.first().map(String::as_str).unwrap_or("");
-        let headings: Vec<String> = pdf::title_lines(page)
-            .into_iter()
-            .filter(|h| !papers.iter().any(|(f, _)| agrees(f.title(), h)))
-            .collect();
-        // Crossref and OpenAlex, at once, for each heading at once.
-        let searched: Vec<(String, Vec<resolve::Candidate>)> = std::thread::scope(|s| {
-            let asked: Vec<_> = headings
-                .iter()
-                .map(|h| {
-                    let openalex =
-                        s.spawn(move || resolve::search_openalex(net, h).unwrap_or_default());
-                    let crossref =
-                        s.spawn(move || resolve::search_crossref(net, h).unwrap_or_default());
-                    (h, openalex, crossref)
-                })
-                .collect();
-            asked
-                .into_iter()
-                .map(|(h, openalex, crossref)| {
-                    let mut all = crossref.join().unwrap_or_default();
-                    all.extend(openalex.join().unwrap_or_default());
-                    (h.clone(), all)
-                })
-                .collect()
-        });
-        // Its authors may be on a later page: its title, as the heading, is
-        // enough.
-        for (heading, candidates) in searched {
-            let found = candidates
-                .iter()
-                .filter(|c| {
-                    c.is_paper()
-                        && (c.doi.is_some() || c.arxiv.is_some())
-                        && agrees(&c.title, &heading)
-                        && pdf::has_title(&c.title, text)
-                })
-                .find_map(|c| {
-                    candidate(net, c)
-                        .ok()
-                        .filter(|f| pdf::has_title(f.title(), text))
-                });
-            if let Some(found) = found {
-                papers.push((found, format!("its heading \"{heading}\", searched for")));
+        for heading in pdf::title_lines(page) {
+            if papers.iter().any(|f| agrees(f.title(), &heading)) {
+                continue;
             }
+            // Its authors may be on a later page: its title, as the
+            // heading, is enough.
+            let found = search_both(net, &heading)
+                .iter()
+                .filter(|c| agrees(&c.title, &heading))
+                .find_map(|c| confirmed(net, c, text));
+            papers.extend(found);
         }
         let mut seen = std::collections::HashSet::new();
-        papers.retain(|(f, _)| {
-            let id = f
-                .doi()
-                .map(str::to_lowercase)
-                .or_else(|| f.arxiv.clone().map(|a| a.to_lowercase()));
+        papers.retain(|f| {
+            let id = f.doi().map(str::to_lowercase).or_else(|| {
+                f.arxiv
+                    .as_deref()
+                    .map(|a| crate::source::unversioned(a).to_lowercase())
+            });
             id.is_none_or(|id| seen.insert(id))
         });
         papers
-    }
-
-    /// Which of `papers` is meant: asked on the terminal, if asking is
-    /// allowed, by its number or a DOI; else none, and they are listed.
-    fn choose(&self, name: &str, papers: Vec<Found>) -> anyhow::Result<Found> {
-        if !self.options.ask {
-            return Err(Ambiguous {
-                name: name.to_string(),
-                papers,
-            }
-            .into());
-        }
-        eprintln!("{name} holds more than one paper:");
-        for (n, p) in papers.iter().enumerate() {
-            eprintln!("  {}. {}", n + 1, listed(p));
-        }
-        eprint!(
-            "add which? 1-{}, or a DOI; nothing adds none: ",
-            papers.len()
-        );
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim();
-        if answer.is_empty() || answer.eq_ignore_ascii_case("q") {
-            bail!("{name}: nothing added");
-        }
-        if let Ok(n) = answer.parse::<usize>() {
-            return match papers.into_iter().nth(n.wrapping_sub(1)) {
-                Some(p) => Ok(p),
-                None => bail!("{name}: no paper {n}; nothing added"),
-            };
-        }
-        let Source::Doi(doi) = Source::of(answer) else {
-            bail!("{name}: {answer} is neither a number nor a DOI; nothing added");
-        };
-        match papers
-            .into_iter()
-            .find(|p| p.doi().is_some_and(|d| d.eq_ignore_ascii_case(&doi)))
-        {
-            Some(p) => Ok(p),
-            None => resolve::by_doi(self.net, &doi),
-        }
     }
 
     /// File `found`, chosen of the papers the PDF `bytes` holds, with it.
@@ -753,6 +679,31 @@ impl Adder<'_> {
     }
 }
 
+/// Crossref's and OpenAlex's candidates for `query`, both asked at once;
+/// OpenAlex not for a query as long as a page's start.
+fn search_both(net: &Net, query: &str) -> Vec<resolve::Candidate> {
+    std::thread::scope(|s| {
+        let openalex = (query.len() < 300)
+            .then(|| s.spawn(|| resolve::search_openalex(net, query).unwrap_or_default()));
+        let mut all = resolve::search_crossref(net, query).unwrap_or_default();
+        if let Some(o) = openalex {
+            all.extend(o.join().unwrap_or_default());
+        }
+        all
+    })
+}
+
+/// The paper candidate `c` is, if it is a paper, with an id, whose title,
+/// as the search gave it and as its record has it, is in `text`.
+fn confirmed(net: &Net, c: &resolve::Candidate, text: &str) -> Option<Found> {
+    if !c.is_paper() || (c.doi.is_none() && c.arxiv.is_none()) || !pdf::has_title(&c.title, text) {
+        return None;
+    }
+    candidate(net, c)
+        .ok()
+        .filter(|f| pdf::has_title(f.title(), text))
+}
+
 /// The paper a search found: by its DOI where it has one, its arXiv id kept
 /// beside it, rather than asking arXiv again for what the DOI gives.
 fn candidate(net: &Net, c: &resolve::Candidate) -> anyhow::Result<Found> {
@@ -829,13 +780,6 @@ fn agrees(title: &str, heading: &str) -> bool {
         && (pdf::same_title(title, heading)
             || pdf::has_title(title, heading)
             || pdf::has_title(heading, title))
-}
-
-/// A PDF named by its path, `~/` as home, and what it holds.
-pub fn read_pdf(path: &str) -> anyhow::Result<(PathBuf, Vec<u8>)> {
-    let path = tilde(path);
-    let bytes = std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
-    Ok((path, bytes))
 }
 
 fn tilde(path: &str) -> PathBuf {

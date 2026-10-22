@@ -334,13 +334,16 @@ pub fn main() -> anyhow::Result<()> {
                     pdf: !no_pdf,
                     folders: folder,
                     labels: label,
-                    ask: asks(json),
                 },
             };
+            let ask = asks(json);
             let done: Vec<(String, anyhow::Result<add::Added>)> = lines
                 .iter()
                 .filter(|l| !l.trim().is_empty())
-                .map(|l| (l.clone(), adder.add(l)))
+                .map(|l| {
+                    let done = adder.add(l);
+                    (l.clone(), cli::settle(&mut adder, done, ask))
+                })
                 .collect();
             cli::print_added(&lib, &done, json)
         }
@@ -557,14 +560,21 @@ pub fn main() -> anyhow::Result<()> {
                 net: &net,
                 options: add::Options {
                     pdf: false,
-                    ask: asks(json),
                     ..add::Options::default()
                 },
             };
+            let ask = asks(json);
             let done: Vec<(String, anyhow::Result<add::Added>)> = adder
                 .inbox()?
                 .into_iter()
-                .map(|(p, r)| (p.display().to_string(), r))
+                .map(|(p, r)| {
+                    // One chosen of those a PDF holds is filed, and out of the inbox.
+                    let r = cli::settle(&mut adder, r, ask);
+                    if r.is_ok() {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                    (p.display().to_string(), r)
+                })
                 .collect();
             cli::print_added(&lib, &done, json)
         }

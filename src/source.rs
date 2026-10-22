@@ -71,7 +71,7 @@ pub fn clean_doi(s: &str) -> String {
                 d.truncate(at);
             }
         }
-        // bioRxiv's version: `10.1101/2023.09.11.557287v1`.
+        // bioRxiv's version: `10.1101/2023.09.11.999901v1`.
         if d.starts_with("10.1101/")
             && let Some(at) = d.rfind('v')
             && d[at + 1..].chars().all(|c| c.is_ascii_digit())

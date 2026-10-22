@@ -137,12 +137,11 @@ pub fn title_lines(page: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut run: Vec<&str> = Vec::new();
     for line in page.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if is_heading(line) && run.len() < 3 {
-            run.push(line);
-            continue;
+        let is = is_heading(line);
+        if !is || run.len() == 3 {
+            heading(&mut out, &mut run);
         }
-        heading(&mut out, &mut run);
-        if is_heading(line) {
+        if is {
             run.push(line);
         }
     }
@@ -214,7 +213,9 @@ fn is_heading(line: &str) -> bool {
         let Some(first) = bare.chars().next() else {
             continue;
         };
-        if DEGREES.contains(&bare.to_lowercase().as_str()) && bare.chars().any(char::is_uppercase) {
+        if DEGREES.iter().any(|d| d.eq_ignore_ascii_case(bare))
+            && bare.chars().any(char::is_uppercase)
+        {
             return false;
         }
         // An initial, as an author's: `Cara L. Cedar`.

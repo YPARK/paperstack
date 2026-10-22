@@ -464,7 +464,7 @@ fn draws_choose() {
     let (_dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
     app.popup = Popup::Choose(Box::new(crate::app::Choose {
-        path: "~/Downloads/letters.pdf".to_string(),
+        name: "~/Downloads/letters.pdf".to_string(),
         papers: vec![
             found(
                 "10.1000/letters.2025.101",
@@ -477,6 +477,7 @@ fn draws_choose() {
                 "Inherited Variants in Kidney Stone Disease",
             ),
         ],
+        pdf: Vec::new(),
         at: 0,
     }));
     let s = screen(&mut app, 160, 44);
@@ -513,6 +514,7 @@ fn lists_the_papers_in_a_pdf() {
                 "Inherited Variants in Kidney Stone Disease",
             ),
         ],
+        pdf: Vec::new(),
     }
     .into();
     let s = e.to_string();

@@ -585,7 +585,7 @@ fn chooser(f: &mut Frame, t: &Theme, choose: &Choose) -> Rect {
     let dim = Style::new().fg(t.dim);
     let mut lines = vec![
         Line::raw(""),
-        Line::styled(clip(&choose.path, 84), dim),
+        Line::styled(clip(&choose.name, 84), dim),
         Line::raw("Its first page holds more than one paper. Which is it to be filed as?"),
         Line::raw(""),
     ];

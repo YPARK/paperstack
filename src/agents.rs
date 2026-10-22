@@ -32,13 +32,13 @@ any of them leaves out what it matches. `--sort relevance|year|added|author|titl
 ## Adding papers
 
 ```sh
-paperstack add 10.1038/s41586-020-2649-2 --json              # by DOI
-paperstack add arXiv:2412.08821 'PMID: 28693043' PMC5629050  # by arXiv id, PMID, PMCID
-paperstack add https://www.sciencedirect.com/science/article/pii/S0092867423013442
-paperstack add ~/Downloads/paper.pdf --folder grant_demo  # a PDF, read to tell which paper
-paperstack add 'Array programming with NumPy'                # a title: added only if one paper has it
+paperstack add 10.5555/demo.2026.01 --json                   # by DOI
+paperstack add arXiv:2412.99901 'PMID: 99999901' PMC9999901  # by arXiv id, PMID, PMCID
+paperstack add https://www.sciencedirect.com/science/article/pii/S0000000023999991
+paperstack add ~/Downloads/paper.pdf --folder grant_demo     # a PDF, read to tell which paper
+paperstack add 'A paper title, in full'                      # a title: added only if one paper has it
 paperstack inbox                                             # file the PDFs saved to inbox/
-paperstack import library-export.json --dry-run            # another library, its keys kept
+paperstack import library-export.json --dry-run              # another library, its keys kept
 paperstack attach KEY ~/Downloads/paper.pdf                  # give a paper the PDF it lacks
 ```
 

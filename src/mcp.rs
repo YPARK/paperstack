@@ -262,7 +262,6 @@ impl Server {
                         pdf: args.get("pdf").and_then(Value::as_bool).unwrap_or(true),
                         folders: list("collections"),
                         labels: list("labels"),
-                        ask: false,
                     },
                 };
                 let added = adder.add(&what)?;
@@ -445,7 +444,7 @@ fn tools() -> Value {
             "title": "Add a paper",
             "description": "Add a paper by its DOI, arXiv id, PMID, a publisher's address, a PDF's path, or its exact title, its record read from Crossref, arXiv or PubMed and an open copy of its PDF downloaded. A paper already here is not added again. A title several papers have adds none, and lists them, to add by id.",
             "inputSchema": { "type": "object", "required": ["what"], "properties": {
-                "what": { "type": "string", "description": "e.g. 10.1038/s41586-020-2649-2, arXiv:2412.08821, PMID: 28693043" },
+                "what": { "type": "string", "description": "e.g. 10.5555/demo.2026.01, arXiv:2412.99901, PMID: 99999901" },
                 "collections": { "type": "array", "items": { "type": "string" } },
                 "labels": { "type": "array", "items": { "type": "string" } },
                 "pdf": { "type": "boolean", "default": true, "description": "download an open copy of the PDF" }

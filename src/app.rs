@@ -142,9 +142,10 @@ pub enum Popup {
 /// A PDF that holds more than one paper, as a page of letters, and the
 /// one picked of them.
 pub struct Choose {
-    /// The PDF's path, as added.
-    pub path: String,
+    /// The PDF, as it was named.
+    pub name: String,
     pub papers: Vec<crate::resolve::Found>,
+    pub pdf: Vec<u8>,
     pub at: usize,
 }
 
@@ -743,15 +744,49 @@ impl App {
             }
             return;
         }
-        let Some(net) = &self.net else {
-            self.status = "cannot add here: nothing is fetched".to_string();
+        match self.adding(|adder| adder.add(line)) {
+            Err(e) => match e.downcast::<Ambiguous>() {
+                Ok(a) => {
+                    self.popup = Popup::Choose(Box::new(Choose {
+                        name: a.name,
+                        papers: a.papers,
+                        pdf: a.pdf,
+                        at: 0,
+                    }));
+                    self.status.clear();
+                }
+                Err(e) => self.added(Err(e)),
+            },
+            done => self.added(done),
+        }
+    }
+
+    /// File the PDF asked about as the paper picked of those it holds,
+    /// and show it.
+    pub fn choose(&mut self) {
+        let Popup::Choose(choose) = std::mem::replace(&mut self.popup, Popup::None) else {
             return;
         };
-        // What another program added meanwhile is a paper already here.
-        if let Err(e) = self.index.refresh(&self.lib) {
-            self.status = one_line(&e);
+        let Choose {
+            papers, pdf, at, ..
+        } = *choose;
+        let Some(found) = papers.into_iter().nth(at) else {
             return;
-        }
+        };
+        let done = self.adding(|adder| adder.file_chosen(found, &pdf));
+        self.added(done);
+    }
+
+    /// Add with `then`, into the folder or label picked on the left, the
+    /// index first brought up to what another program added meanwhile.
+    fn adding(
+        &mut self,
+        then: impl FnOnce(&mut Adder) -> anyhow::Result<crate::add::Added>,
+    ) -> anyhow::Result<crate::add::Added> {
+        let Some(net) = &self.net else {
+            anyhow::bail!("cannot add here: nothing is fetched");
+        };
+        self.index.refresh(&self.lib)?;
         let mut options = Options {
             pdf: true,
             ..Options::default()
@@ -761,60 +796,12 @@ impl App {
             Shelf::Label(l) => options.labels.push(l.clone()),
             _ => {}
         }
-        let done = Adder {
+        then(&mut Adder {
             lib: &self.lib,
             index: &mut self.index,
             net,
             options,
-        }
-        .add(line);
-        if let Err(e) = &done
-            && let Some(a) = e.downcast_ref::<Ambiguous>()
-            && let Source::Pdf(path) = Source::of(line)
-        {
-            self.popup = Popup::Choose(Box::new(Choose {
-                path,
-                papers: a.papers.clone(),
-                at: 0,
-            }));
-            self.status.clear();
-            return;
-        }
-        self.added(done);
-    }
-
-    /// File the PDF asked about as the paper picked of those it holds,
-    /// and show it.
-    pub fn choose(&mut self) {
-        let Popup::Choose(choose) = std::mem::replace(&mut self.popup, Popup::None) else {
-            return;
-        };
-        let Some(net) = &self.net else {
-            self.status = "cannot add here: nothing is fetched".to_string();
-            return;
-        };
-        let found = choose.papers[choose.at].clone();
-        let done = (|| {
-            let (_, bytes) = crate::add::read_pdf(&choose.path)?;
-            self.index.refresh(&self.lib)?;
-            let mut options = Options {
-                pdf: true,
-                ..Options::default()
-            };
-            match &self.shelves[self.shelf].0 {
-                Shelf::Folder(f) => options.folders.push(f.clone()),
-                Shelf::Label(l) => options.labels.push(l.clone()),
-                _ => {}
-            }
-            Adder {
-                lib: &self.lib,
-                index: &mut self.index,
-                net,
-                options,
-            }
-            .file_chosen(found, &bytes)
-        })();
-        self.added(done);
+        })
     }
 
     /// Say what came of adding, and show the paper added.

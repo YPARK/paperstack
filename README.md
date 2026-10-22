@@ -71,13 +71,13 @@ alias, so either key finds it; importing again adds nothing twice.
 ## Adding papers
 
 ```sh
-paperstack add 10.1038/s41586-020-2649-2            # a DOI
-paperstack add arXiv:2412.08821 'PMID: 28693043'    # an arXiv id, a PMID, a PMCID
-paperstack add https://onlinelibrary.wiley.com/doi/full/10.1002/sim.7400
+paperstack add 10.5555/demo.2026.01                 # a DOI
+paperstack add arXiv:2412.99901 'PMID: 99999901'    # an arXiv id, a PMID, a PMCID
+paperstack add https://onlinelibrary.wiley.com/doi/full/10.1002/fict.0001
 paperstack add ~/Downloads/paper.pdf --collection mediation
-paperstack add 'Array programming with NumPy'       # a title, if just one paper has it
+paperstack add 'A paper title, in full'             # a title, if just one paper has it
 paperstack inbox                                    # file what was saved to inbox/
-echo 10.7554/eLife.10047 | paperstack add -         # one a line, as an agent would
+echo 10.5555/demo.2016.03 | paperstack add -        # one a line, as an agent would
 ```
 
 `a` in the browser does the same, into the folder or label picked on the

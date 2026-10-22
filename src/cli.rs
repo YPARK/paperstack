@@ -1,7 +1,7 @@
 //! What `paperstack find` and `get` print: for a person, a line a paper;
 //! for an agent, JSON; for a document, BibTeX, CSL JSON or citation keys.
 
-use crate::add::Added;
+use crate::add::{Added, Adder, Ambiguous};
 use crate::bibtex;
 use crate::index::Hit;
 use crate::library::Library;
@@ -63,6 +63,56 @@ pub fn print(lib: &Library, hits: &[Hit], format: &Format) -> anyhow::Result<()>
 
 /// What `add` and `inbox` did with each thing given; an error if any
 /// could not be added, after saying what was.
+/// What came of adding: where a PDF held more than one paper, and `ask`,
+/// the one meant asked for on the terminal, and filed with it.
+pub fn settle(adder: &mut Adder, done: anyhow::Result<Added>, ask: bool) -> anyhow::Result<Added> {
+    match done {
+        Err(e) if ask && e.is::<Ambiguous>() => {
+            let a = e.downcast::<Ambiguous>()?;
+            let found = choose(adder.net, &a)?;
+            adder.file_chosen(found, &a.pdf)
+        }
+        done => done,
+    }
+}
+
+/// Which of the papers a PDF holds is meant, asked on stderr and read from
+/// stdin: by its number or a DOI; nothing, or `q`, is none.
+fn choose(net: &crate::net::Net, a: &Ambiguous) -> anyhow::Result<crate::resolve::Found> {
+    let name = &a.name;
+    eprintln!("{name} holds more than one paper:");
+    for (n, p) in a.papers.iter().enumerate() {
+        eprintln!("  {}. {}", n + 1, crate::add::listed(p));
+    }
+    eprint!(
+        "add which? 1-{}, or a DOI; nothing or q adds none: ",
+        a.papers.len()
+    );
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    if answer.is_empty() || answer.eq_ignore_ascii_case("q") {
+        anyhow::bail!("{name}: nothing added");
+    }
+    if let Ok(n) = answer.parse::<usize>() {
+        return match a.papers.get(n.wrapping_sub(1)) {
+            Some(p) => Ok(p.clone()),
+            None => anyhow::bail!("{name}: no paper {n}; nothing added"),
+        };
+    }
+    let crate::source::Source::Doi(doi) = crate::source::Source::of(answer) else {
+        anyhow::bail!("{name}: {answer} is neither a number nor a DOI; nothing added");
+    };
+    match a
+        .papers
+        .iter()
+        .find(|p| p.doi().is_some_and(|d| d.eq_ignore_ascii_case(&doi)))
+    {
+        Some(p) => Ok(p.clone()),
+        None => crate::resolve::by_doi(net, &doi),
+    }
+}
+
 pub fn print_added(
     lib: &Library,
     done: &[(String, anyhow::Result<Added>)],
