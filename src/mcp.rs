@@ -262,6 +262,7 @@ impl Server {
                         pdf: args.get("pdf").and_then(Value::as_bool).unwrap_or(true),
                         folders: list("collections"),
                         labels: list("labels"),
+                        ask: false,
                     },
                 };
                 let added = adder.add(&what)?;
@@ -394,7 +395,7 @@ fn tools() -> Value {
             "title": "Search the library",
             "description": "Find papers in the library. Words and \"phrases\" are looked for in titles, abstracts, authors, venues and keys, a word matching the words it starts. Fields: title: abstract: author: venue: year:2020..2026 collection:\"name\" label: key: doi: has:pdf has:abstract is:starred; - before any leaves out what it matches. Empty, it lists every paper.",
             "inputSchema": { "type": "object", "properties": {
-                "query": { "type": "string", "description": "e.g. perturbation \"linear baseline\" author:Huber year:2020.." },
+                "query": { "type": "string", "description": "e.g. perturbation \"linear baseline\" author:Halvorsen year:2020.." },
                 "sort": { "type": "string", "enum": ["relevance", "year", "added", "author", "title"] },
                 "limit": { "type": "integer", "minimum": 1, "default": 20 }
             } },

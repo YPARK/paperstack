@@ -96,6 +96,142 @@ pub fn ids(r: &Reading) -> Vec<Source> {
     out
 }
 
+/// DOIs the first page gives as its own articles', not as references': a
+/// line that is only `Published Online: May 1, 2025. doi:10.…`, as
+/// a journal's letters each end their article information with. Such a
+/// line in a reference, its authors and title before it, or under a
+/// numbered reference's first line, is not one.
+pub fn article_info_dois(r: &Reading) -> Vec<String> {
+    static LINE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^published online:?\s*(?:[a-z]+\.?\s+\d{1,2},\s+\d{4}\.?)?\s*doi:\s*(10\.\S+)$",
+        )
+        .unwrap()
+    });
+    static REFERENCE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\d+\.\s").unwrap());
+    let page = r.pages.first().map(String::as_str).unwrap_or("");
+    let mut out: Vec<String> = Vec::new();
+    let mut previous = "";
+    for line in page.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(c) = LINE.captures(line)
+            && !REFERENCE.is_match(previous)
+        {
+            for d in source::dois(&c[1]) {
+                if !out.iter().any(|o| o.eq_ignore_ascii_case(&d)) {
+                    out.push(d);
+                }
+            }
+        }
+        previous = line;
+    }
+    out
+}
+
+/// Headings on a page that may be papers' titles: lines in title case, a
+/// title broken over lines joined, and not authors with their degrees,
+/// affiliations, a section's first line, a reference or a running foot.
+/// As on a page of letters, which holds the end of one and the start of
+/// the next.
+pub fn title_lines(page: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut run: Vec<&str> = Vec::new();
+    for line in page.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if is_heading(line) && run.len() < 3 {
+            run.push(line);
+            continue;
+        }
+        heading(&mut out, &mut run);
+        if is_heading(line) {
+            run.push(line);
+        }
+    }
+    heading(&mut out, &mut run);
+    out.truncate(4);
+    out
+}
+
+/// Words a title leaves in lower case.
+const SMALL: &[&str] = &[
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to",
+    "vs", "via", "with", "without",
+];
+
+/// The heading `run` is, if it is long enough to be a title, kept.
+fn heading(out: &mut Vec<String>, run: &mut Vec<&str>) {
+    let joined = run.join(" ");
+    run.clear();
+    // A sentence broken off, as `… and the Other Foundation for Stones and`.
+    let last = joined.rsplit(' ').next().unwrap_or("").to_lowercase();
+    if (3..=30).contains(&joined.split_whitespace().count())
+        && !SMALL.contains(&last.as_str())
+        && !out.contains(&joined)
+    {
+        out.push(joined);
+    }
+}
+
+/// Whether a line is in title case, and nothing else a page's lines in
+/// title case often are.
+fn is_heading(line: &str) -> bool {
+    const DEGREES: &[&str] = &[
+        "phd", "md", "mph", "mpp", "ms", "msc", "mba", "ma", "mbbs", "rn", "do", "drph", "scd",
+        "pharmd", "bs", "bsc", "ba", "jd", "dphil", "frcp", "facp",
+    ];
+    // A date, as `Received: 1 May 2025` or `May 1, 2025`.
+    static DATE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        let month = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?";
+        regex::Regex::new(&format!(
+            r"(?i)\b{month}\s+\d{{1,2}},?\s+\d{{4}}|\b\d{{1,2}}\s+{month}\s+\d{{4}}"
+        ))
+        .unwrap()
+    });
+    let lower = line.to_lowercase();
+    if !line.starts_with(|c: char| c.is_uppercase())
+        || line.ends_with(['.', ',', ';', ':'])
+        || line.contains(['|', '@', '*'])
+        || DATE.is_match(line)
+        || [
+            "doi",
+            "et al",
+            "affiliation",
+            "university",
+            "department",
+            "http",
+        ]
+        .iter()
+        .any(|w| lower.contains(w))
+    {
+        return false;
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() > 20 {
+        return false;
+    }
+    let mut lettered = 0;
+    for w in &words {
+        let bare = w.trim_matches(|c: char| !c.is_alphanumeric());
+        let Some(first) = bare.chars().next() else {
+            continue;
+        };
+        if DEGREES.contains(&bare.to_lowercase().as_str()) && bare.chars().any(char::is_uppercase) {
+            return false;
+        }
+        // An initial, as an author's: `Cara L. Cedar`.
+        if bare.chars().count() == 1 && w.ends_with('.') {
+            return false;
+        }
+        if !first.is_alphabetic() {
+            continue;
+        }
+        lettered += 1;
+        if !first.is_uppercase() && !SMALL.contains(&bare) {
+            return false;
+        }
+    }
+    lettered > 0
+}
+
 /// Words of `s`, in ASCII, lowercase. Split before they are made ASCII:
 /// deunicode drops some line breaks, and would run words together.
 pub fn words(s: &str) -> Vec<String> {

@@ -119,8 +119,8 @@ pub fn dois(text: &str) -> Vec<String> {
     out
 }
 
-/// An arXiv id without its version: `2412.08821` of `2412.08821v2`, and
-/// `solv-int/9901001` of `solv-int/9901001v1`.
+/// An arXiv id without its version: `2412.99901` of `2412.99901v2`, and
+/// `solv-int/9912999` of `solv-int/9912999v1`.
 pub fn unversioned(id: &str) -> &str {
     match id.rfind('v') {
         Some(at) if at + 1 < id.len() && id[at + 1..].bytes().all(|b| b.is_ascii_digit()) => {
@@ -131,7 +131,7 @@ pub fn unversioned(id: &str) -> &str {
 }
 
 /// arXiv ids in `text`, as its stamp down a PDF's margin gives them,
-/// `arXiv:2412.08821v1 [cs.CL]`, without the version.
+/// `arXiv:2412.99901v1 [cs.CL]`, without the version.
 pub fn arxiv_ids(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     // Found in the line itself: lowercase, some letters are longer or
@@ -304,8 +304,8 @@ fn from_address(url: &str) -> Option<Source> {
     if let Some(d) = dois(path).into_iter().next() {
         return Some(Source::Doi(d));
     }
-    // ScienceDirect's `/pii/S0092867423013442`, Cell's
-    // `/fulltext/S0092-8674(23)01344-2`, `/pdf/….pdf` and `showPdf?pii=…`.
+    // ScienceDirect's `/pii/S0000000023999991`, Cell's
+    // `/fulltext/S0000-0000(23)99999-1`, `/pdf/….pdf` and `showPdf?pii=…`.
     for mark in [
         "/pii/",
         "/fulltext/",

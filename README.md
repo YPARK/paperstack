@@ -21,8 +21,8 @@ cargo install paperstack ohp
 ```
 
 or `cargo install --path .` in a clone of this repository. Either installs
-`paperstack` and `pst`, its short name: `pst find Huber` is `paperstack find
-Huber`.
+`paperstack` and `pst`, its short name: `pst find Halvorsen` is `paperstack find
+Halvorsen`.
 
 Pure Rust: nothing in C is compiled, as for ohp. HTTPS is rustls with
 RustCrypto's algorithms, which are not yet audited.
@@ -32,9 +32,9 @@ RustCrypto's algorithms, which are not yet audited.
 ```sh
 paperstack init --demo                 # a library, with papers to try
 paperstack                             # browse it
-paperstack find perturbation 'author:Huber'
+paperstack find perturbation 'author:Halvorsen'
 paperstack find 'collection:"Single Cell Data" -label:benchmark' --sort year --bib > refs.bib
-paperstack get Ahlmann-Eltze2025-pb --json
+paperstack get Brandt-Okafor2025-pb --json
 ```
 
 The library is `--library`, else `$PAPERSTACK_LIBRARY`, else one made
@@ -97,10 +97,13 @@ A PDF is told by the DOI in its metadata or on its first page, or arXiv's
 stamp down its margin, taken only where the title it leads to is on the
 page, with one of its authors: first pages name other papers' DOIs too.
 Without one, the first lines are searched for in Crossref, OpenAlex and
-arXiv, and the same check made. Given a title alone, paperstack adds the
-paper only if one paper has just that title: registries hold copies of
-famous papers reposted under other DOIs, so where several do it lists them,
-and adds the one then given by its id.
+arXiv, and the same check made. A first page that holds more than one
+paper, as a journal's page of letters, is not guessed at: in a terminal
+paperstack asks which, and the TUI shows them to pick from; otherwise it
+lists them and adds none, until one is added by its id. Given a title
+alone, paperstack adds the paper only if one paper has just that title:
+registries hold copies of famous papers reposted under other DOIs, so where
+several do it lists them, and adds the one then given by its id.
 
 Registries are asked as paperstack, with an address to write to, as they
 ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
@@ -131,8 +134,8 @@ has, or a paper twice to open it; the wheel moves through the list under it.
 ## Deleting
 
 ```sh
-paperstack delete Ahlmann-Eltze2025-pb Naik2016-al     # papers, by key; or pst rm
-paperstack delete --pdf Ahlmann-Eltze2025-pb            # only its PDF; the paper stays
+paperstack delete Brandt-Okafor2025-pb Nakamura2016-al     # papers, by key; or pst rm
+paperstack delete --pdf Brandt-Okafor2025-pb            # only its PDF; the paper stays
 paperstack delete --collection "Single Cell Data"      # a collection; its papers stay
 paperstack delete --label to-read
 ```
@@ -164,8 +167,8 @@ it; given by its path, or located on disk, it is taken as you say. From the
 shell, the same:
 
 ```sh
-paperstack attach Ahlmann-Eltze2025-pk                 # open its page, await the download
-paperstack attach Ahlmann-Eltze2025-pk ~/Downloads/s41592-025-02772-6.pdf
+paperstack attach Brandt-Okafor2025-pb                 # open its page, await the download
+paperstack attach Brandt-Okafor2025-pb ~/Downloads/paper.pdf
 ```
 
 | | |
@@ -361,7 +364,7 @@ which tells an agent how the library is laid out, is a resource too.
 The TUI's `/` and `paperstack find` read the same query:
 
 ```
-perturbation "linear baseline" author:Huber year:2020..2026 collection:"Single Cell Data" -label:benchmark has:pdf
+perturbation "linear baseline" author:Halvorsen year:2020..2026 collection:"Single Cell Data" -label:benchmark has:pdf
 ```
 
 Words, and phrases in quotes, are looked for in the title, abstract,
@@ -389,9 +392,9 @@ Each paper is filed by year and first author, its PDF and its record side
 by side:
 
 ```
-2025/Ahlmann-Eltze/C/
-  Ahlmann-Eltze2025-pb_deep-learning-based-gene-perturbation-effect.pdf
-  Ahlmann-Eltze2025-pb_deep-learning-based-gene-perturbation-effect.json
+2025/Brandt-Okafor/C/
+  Brandt-Okafor2025-pb_neural-gene-perturbation-effect-models-are.pdf
+  Brandt-Okafor2025-pb_neural-gene-perturbation-effect-models-are.json
 ```
 
 The first author's given name names the third folder, or the initials where

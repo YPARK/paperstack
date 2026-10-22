@@ -286,6 +286,14 @@ fn run_daemon(
     .run(port, &watched)
 }
 
+/// Whether to ask on the terminal which paper a PDF is, where it holds
+/// more than one: not where what is written is read by a program, nor
+/// where stdin is not a person's, as with `add -`.
+fn asks(json: bool) -> bool {
+    use std::io::IsTerminal;
+    !json && std::io::stdin().is_terminal()
+}
+
 /// The address given to registries: `--email`, else git's.
 fn email(given: Option<String>) -> Option<String> {
     given.or_else(|| {
@@ -326,6 +334,7 @@ pub fn main() -> anyhow::Result<()> {
                     pdf: !no_pdf,
                     folders: folder,
                     labels: label,
+                    ask: asks(json),
                 },
             };
             let done: Vec<(String, anyhow::Result<add::Added>)> = lines
@@ -386,6 +395,11 @@ pub fn main() -> anyhow::Result<()> {
             }
             println!("embedded: {:?}", reading.embedded);
             println!("ids: {:?}", pdf::ids(&reading));
+            println!("article ids: {:?}", pdf::article_info_dois(&reading));
+            let first = reading.pages.first().map(String::as_str).unwrap_or("");
+            for t in pdf::title_lines(first) {
+                println!("heading: {t}");
+            }
             for q in pdf::queries(&reading) {
                 println!("query: {q}");
             }
@@ -543,6 +557,7 @@ pub fn main() -> anyhow::Result<()> {
                 net: &net,
                 options: add::Options {
                     pdf: false,
+                    ask: asks(json),
                     ..add::Options::default()
                 },
             };

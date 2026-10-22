@@ -61,7 +61,7 @@ fn part(name: &str) -> String {
     if s.is_empty() { "_".to_string() } else { s }
 }
 
-/// `deep-learning-based-gene-perturbation-effect`: the title's first words,
+/// `neural-gene-perturbation-effect-models-are`: the title's first words,
 /// lowercase, in ASCII letters and digits.
 pub fn slug(title: &str) -> String {
     let ascii = deunicode::deunicode(title).to_lowercase();

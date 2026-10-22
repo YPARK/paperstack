@@ -38,12 +38,12 @@ fn files_papers_by_year_and_first_author() {
     let records = demo::records();
     let find = |key| records.iter().find(|r| r.key == key).unwrap();
     assert_eq!(
-        layout::pdf(find("Ahlmann-Eltze2025-pb")),
+        layout::pdf(find("Brandt-Okafor2025-pb")),
         PathBuf::from(
-            "2025/Ahlmann-Eltze/C/Ahlmann-Eltze2025-pb_deep-learning-based-gene-perturbation-effect.pdf"
+            "2025/Brandt-Okafor/C/Brandt-Okafor2025-pb_neural-gene-perturbation-effect-models-are.pdf"
         )
     );
-    assert!(layout::record(find("LCM-team2024-lc")).starts_with("2024/LCM team/_/"));
+    assert!(layout::record(find("SCM-team2024-lc")).starts_with("2024/SCM team/_/"));
     assert_eq!(layout::slug("Lévy flights: A/B? c"), "levy-flights-a-b-c");
 }
 
@@ -54,21 +54,21 @@ fn reads_only_what_changed() {
     let again = index.refresh(&lib).unwrap();
     assert_eq!((again.read, again.removed), (0, 0));
 
-    let hit = index.get("Naik2016-al").unwrap().unwrap();
+    let hit = index.get("Nakamura2016-al").unwrap().unwrap();
     std::fs::remove_file(lib.root.join(&hit.path)).unwrap();
     let gone = index.refresh(&lib).unwrap();
     assert_eq!((gone.read, gone.removed), (0, 1));
-    assert!(index.get("Naik2016-al").unwrap().is_none());
+    assert!(index.get("Nakamura2016-al").unwrap().is_none());
 }
 
 #[test]
 fn sees_a_pdf_put_beside_its_record() {
     let (_dir, lib, mut index) = library();
     assert!(keys(&index, "has:pdf", Sort::Added).is_empty());
-    let hit = index.get("Kedzierska2025-zs").unwrap().unwrap();
+    let hit = index.get("Kowalczyk2025-zs").unwrap().unwrap();
     std::fs::write(lib.root.join(&hit.path).with_extension("pdf"), b"%PDF-1.4").unwrap();
     index.refresh(&lib).unwrap();
-    assert_eq!(keys(&index, "has:pdf", Sort::Added), ["Kedzierska2025-zs"]);
+    assert_eq!(keys(&index, "has:pdf", Sort::Added), ["Kowalczyk2025-zs"]);
 }
 
 #[test]
@@ -76,24 +76,24 @@ fn searches_words_fields_and_abstracts() {
     let (_dir, _lib, index) = library();
     assert_eq!(
         keys(&index, "linear", Sort::Relevance),
-        ["Ahlmann-Eltze2025-pb"]
+        ["Brandt-Okafor2025-pb"]
     );
     assert_eq!(
-        keys(&index, "author:Huber", Sort::Relevance),
-        ["Ahlmann-Eltze2025-pb"]
+        keys(&index, "author:Halvorsen", Sort::Relevance),
+        ["Brandt-Okafor2025-pb"]
     );
     // Only in its abstract.
-    assert_eq!(keys(&index, "tokens", Sort::Relevance), ["LCM-team2024-lc"]);
+    assert_eq!(keys(&index, "tokens", Sort::Relevance), ["SCM-team2024-lc"]);
     // A word matches the words it starts, without accents.
     assert_eq!(keys(&index, "perturb", Sort::Relevance).len(), 2);
-    assert_eq!(keys(&index, "levy", Sort::Relevance), ["Levine2024-cs"]);
+    assert_eq!(keys(&index, "leves", Sort::Relevance), ["Lindqvist2024-cs"]);
     assert_eq!(
-        keys(&index, "\"Cell2Sentence\"", Sort::Relevance),
-        ["Levine2024-cs"]
+        keys(&index, "\"Gene2Prose\"", Sort::Relevance),
+        ["Lindqvist2024-cs"]
     );
     assert_eq!(
-        keys(&index, "10.7554/eLife.10047", Sort::Relevance),
-        ["Naik2016-al"]
+        keys(&index, "10.5555/demo.2016.03", Sort::Relevance),
+        ["Nakamura2016-al"]
     );
     assert_eq!(keys(&index, "year:2025..2026", Sort::Relevance).len(), 4);
     assert_eq!(
@@ -103,15 +103,15 @@ fn searches_words_fields_and_abstracts() {
     assert_eq!(keys(&index, "-label:benchmark", Sort::Relevance).len(), 7);
     assert_eq!(
         keys(&index, "is:starred", Sort::Relevance),
-        ["VanderWeele2017-ex"]
+        ["Whitlock2017-ex"]
     );
     assert_eq!(
-        keys(&index, "cell -author:Rosen year:2026", Sort::Relevance),
-        ["Adduri2026-st"]
+        keys(&index, "cell -author:Rourke year:2026", Sort::Relevance),
+        ["Abbas2026-st"]
     );
     assert_eq!(
-        keys(&index, "doi:10.7326/M16-2607", Sort::Relevance),
-        ["VanderWeele2017-ex"]
+        keys(&index, "doi:10.5555/demo.2017.01", Sort::Relevance),
+        ["Whitlock2017-ex"]
     );
     assert!(keys(&index, "-", Sort::Relevance).len() == 9);
 }
@@ -120,18 +120,18 @@ fn searches_words_fields_and_abstracts() {
 fn sorts() {
     let (_dir, _lib, index) = library();
     let by_year = keys(&index, "", Sort::Year);
-    assert!(by_year[0].contains("2026") && by_year[8] == "Naik2016-al");
-    assert_eq!(keys(&index, "", Sort::Added)[0], "VanderWeele2017-ex");
-    assert_eq!(keys(&index, "", Sort::Author)[0], "Adduri2026-st");
+    assert!(by_year[0].contains("2026") && by_year[8] == "Nakamura2016-al");
+    assert_eq!(keys(&index, "", Sort::Added)[0], "Whitlock2017-ex");
+    assert_eq!(keys(&index, "", Sort::Author)[0], "Abbas2026-st");
     let oldest = index
         .search(&Query::default(), Sort::Year, true, Some(1))
         .unwrap();
-    assert_eq!(oldest[0].record.key, "Naik2016-al");
+    assert_eq!(oldest[0].record.key, "Nakamura2016-al");
 }
 
 #[test]
 fn parses_queries() {
-    let q = Query::parse(r#"-folder:"Single Cell Data" au:Huber "a b" -x"#);
+    let q = Query::parse(r#"-folder:"Single Cell Data" au:Halvorsen "a b" -x"#);
     assert_eq!(q.terms.len(), 4);
     assert!(q.terms[0].negated && q.terms[0].field == Field::Folder);
     assert_eq!(q.terms[0].value, "Single Cell Data");
@@ -139,27 +139,27 @@ fn parses_queries() {
     assert!(q.terms[2].phrase && q.terms[2].field == Field::Any);
     assert!(q.terms[3].negated && q.terms[3].value == "x");
     // Not a field: a word with a colon in it.
-    assert_eq!(Query::parse("arXiv:2412.08821").terms[0].field, Field::Any);
+    assert_eq!(Query::parse("arXiv:2412.99901").terms[0].field, Field::Any);
 }
 
 #[test]
 fn writes_plain_bibtex() {
     let records = demo::records();
     let find = |key| records.iter().find(|r| r.key == key).unwrap();
-    let bib = bibtex::entry(find("VanderWeele2017-ex"));
-    assert!(bib.starts_with("@article{VanderWeele2017-ex,\n"), "{bib}");
+    let bib = bibtex::entry(find("Whitlock2017-ex"));
+    assert!(bib.starts_with("@article{Whitlock2017-ex,\n"), "{bib}");
     for field in [
-        "author = {VanderWeele, TJ and Ding, P}",
-        "journal = {Ann Intern Med}",
+        "author = {Whitlock, TJ and Dunmore, P}",
+        "journal = {Ann Fict Med}",
         "year = {2017}",
-        "doi = {10.7326/M16-2607}",
+        "doi = {10.5555/demo.2017.01}",
     ] {
         assert!(bib.contains(field), "{field} not in\n{bib}");
     }
-    let bib = bibtex::entry(find("Rosen2026-uc"));
-    assert!(bib.contains("{Tabula Sapiens Consortium}"), "{bib}");
-    let bib = bibtex::entry(find("LCM-team2024-lc"));
-    assert!(bib.contains("eprint = {2412.08821}"), "{bib}");
+    let bib = bibtex::entry(find("Rourke2026-uc"));
+    assert!(bib.contains("{Imagined Atlas Consortium}"), "{bib}");
+    let bib = bibtex::entry(find("SCM-team2024-lc"));
+    assert!(bib.contains("eprint = {2412.99901}"), "{bib}");
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn reads_crossrefs_types_as_csls() {
     assert_eq!(r.kind(), "Journal article");
     let bib = bibtex::entry(&r);
     assert!(
-        bib.starts_with("@article{") && bib.contains("journal = {Ann Intern Med}"),
+        bib.starts_with("@article{") && bib.contains("journal = {Ann Fict Med}"),
         "{bib}"
     );
     r.csl["type"] = serde_json::json!("posted-content");
@@ -182,10 +182,10 @@ fn reads_crossrefs_types_as_csls() {
 fn makes_keys_as_surname_year() {
     let mut r = demo::records().remove(6);
     r.key.clear();
-    let a = new_key(&r, "10.1038/s41592-025-02772-6", |_| false);
-    assert!(a.starts_with("Ahlmann-Eltze2025-") && a.len() == "Ahlmann-Eltze2025-xy".len());
-    assert_eq!(a, new_key(&r, "10.1038/S41592-025-02772-6", |_| false));
-    let b = new_key(&r, "10.1038/s41592-025-02772-6", |k| k == a);
+    let a = new_key(&r, "10.5555/demo.2025.07", |_| false);
+    assert!(a.starts_with("Brandt-Okafor2025-") && a.len() == "Brandt-Okafor2025-xy".len());
+    assert_eq!(a, new_key(&r, "10.5555/DEMO.2025.07", |_| false));
+    let b = new_key(&r, "10.5555/demo.2025.07", |k| k == a);
     assert_ne!(a, b);
 }
 
@@ -205,7 +205,7 @@ fn stars_in_the_record() {
 #[test]
 fn deletes_papers_to_the_trash() {
     let (_dir, lib, mut index) = library();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
     crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
     let was = index.get(key).unwrap().unwrap().path.clone();
@@ -231,7 +231,7 @@ fn deletes_papers_to_the_trash() {
 #[test]
 fn drops_a_pdf_keeping_the_paper() {
     let (_dir, lib, mut index) = library();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
     let bytes = first_page(&title);
     crate::add::attach(&lib, &mut index, key, &bytes, "x.pdf", false).unwrap();
@@ -260,7 +260,7 @@ fn deletes_a_pdf_from_the_tui_when_asked() {
         app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     };
     let (_dir, lib, mut index) = library();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
     crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
     let mut app = App::new(lib, index).unwrap();
@@ -289,7 +289,7 @@ fn locates_a_pdf_on_disk_for_the_paper_picked() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let (dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let at = app.shown.iter().position(|h| h.record.key == key).unwrap();
     app.list.select(Some(at));
     let title = app.current().unwrap().record.title().to_string();
@@ -311,39 +311,26 @@ fn locates_a_pdf_on_disk_for_the_paper_picked() {
 fn deletes_a_collection_keeping_its_papers() {
     use crate::remove::Shelf;
     let (_dir, lib, mut index) = library();
-    let mut r = record_of(&lib, &index, "Naik2016-al");
+    let mut r = record_of(&lib, &index, "Nakamura2016-al");
     r.paperstack
         .folders
-        .push("CRISPR_Active_Learning/screens".to_string());
-    let path = index.get("Naik2016-al").unwrap().unwrap().path.clone();
+        .push("Active_Screens/screens".to_string());
+    let path = index.get("Nakamura2016-al").unwrap().unwrap().path.clone();
     lib.save(&r, Some(&path)).unwrap();
     index.refresh(&lib).unwrap();
     let all = index.shelves().unwrap().all;
 
-    let n = crate::remove::shelf(
-        &lib,
-        &mut index,
-        Shelf::Collection,
-        "crispr_active_learning",
-    )
-    .unwrap();
+    let n = crate::remove::shelf(&lib, &mut index, Shelf::Collection, "active_screens").unwrap();
     assert_eq!(n, 3);
     assert_eq!(index.shelves().unwrap().all, all);
-    assert!(keys(&index, "folder:CRISPR_Active_Learning", Sort::Relevance).is_empty());
-    assert!(
-        keys(
-            &index,
-            "folder:CRISPR_Active_Learning/screens",
-            Sort::Relevance
-        )
-        .is_empty()
-    );
-    let naik = record_of(&lib, &index, "Naik2016-al");
-    assert!(naik.paperstack.folders.is_empty());
-    assert_eq!(naik.paperstack.labels, ["method"]);
+    assert!(keys(&index, "folder:Active_Screens", Sort::Relevance).is_empty());
+    assert!(keys(&index, "folder:Active_Screens/screens", Sort::Relevance).is_empty());
+    let nakamura = record_of(&lib, &index, "Nakamura2016-al");
+    assert!(nakamura.paperstack.folders.is_empty());
+    assert_eq!(nakamura.paperstack.labels, ["method"]);
     // Others' collections are left as they were.
-    let adduri = record_of(&lib, &index, "Adduri2026-st");
-    assert_eq!(adduri.paperstack.folders, ["Single Cell Data"]);
+    let abbas = record_of(&lib, &index, "Abbas2026-st");
+    assert_eq!(abbas.paperstack.folders, ["Single Cell Data"]);
 
     crate::remove::shelf(&lib, &mut index, Shelf::Label, "to-read").unwrap();
     assert!(keys(&index, "label:to-read", Sort::Relevance).is_empty());
@@ -394,9 +381,9 @@ fn draws_the_library() {
     let mut app = App::new(lib, index).unwrap();
     let s = screen(&mut app, 160, 44);
     println!("{s}");
-    assert!(s.contains("Sensitivity analysis"));
+    assert!(s.contains("Bounding hidden bias"));
     assert!(s.contains("Single Cell Data"));
-    assert!(s.contains("2017/VanderWeele/TJ/"));
+    assert!(s.contains("2017/Whitlock/TJ/"));
 }
 
 /// A left click where any of `what` is drawn the `nth` time, on the
@@ -451,18 +438,154 @@ fn clicks() {
 fn draws_add() {
     let (_dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
-    app.popup = Popup::Add("https://arxiv.org/abs/2412.08821".to_string());
+    app.popup = Popup::Add("https://arxiv.org/abs/2412.99901".to_string());
     let s = screen(&mut app, 160, 44);
-    assert!(s.contains("arXiv 2412.08821"));
+    assert!(s.contains("arXiv 2412.99901"));
+}
+
+/// A paper found, as a registry gives it.
+fn found(doi: &str, family: &str, title: &str) -> crate::resolve::Found {
+    crate::resolve::Found {
+        csl: serde_json::json!({
+            "DOI": doi,
+            "title": title,
+            "author": [{ "family": family, "given": "A" }],
+            "issued": { "date-parts": [[2025]] },
+        }),
+        arxiv: None,
+        preprint: None,
+        pdfs: Vec::new(),
+        source: "crossref",
+    }
+}
+
+#[test]
+fn draws_choose() {
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    app.popup = Popup::Choose(Box::new(crate::app::Choose {
+        path: "~/Downloads/letters.pdf".to_string(),
+        papers: vec![
+            found(
+                "10.1000/letters.2025.101",
+                "Alder",
+                "Clinic Visits Among Rural Adults, 2013-2023",
+            ),
+            found(
+                "10.1000/letters.2025.102",
+                "Birch",
+                "Inherited Variants in Kidney Stone Disease",
+            ),
+        ],
+        at: 0,
+    }));
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("Which paper?"));
+    assert!(s.contains("1. 10.1000/letters.2025.101"));
+    assert!(s.contains("Birch"));
+    for k in crate::app::keys("2") {
+        assert!(app.key(k).is_none());
+    }
+    let Popup::Choose(c) = &app.popup else {
+        panic!("the popup closed")
+    };
+    assert_eq!(c.at, 1);
+    let enter = crate::app::keys("<enter>").remove(0);
+    assert!(matches!(app.key(enter), Some(crate::app::Action::Choose)));
+    let esc = crate::app::keys("<esc>").remove(0);
+    app.key(esc);
+    assert!(matches!(app.popup, Popup::None));
+}
+
+#[test]
+fn lists_the_papers_in_a_pdf() {
+    let e: anyhow::Error = crate::add::Ambiguous {
+        name: "letters.pdf".to_string(),
+        papers: vec![
+            found(
+                "10.1000/letters.2025.101",
+                "Alder",
+                "Clinic Visits Among Rural Adults, 2013-2023",
+            ),
+            found(
+                "10.1000/letters.2025.102",
+                "Birch",
+                "Inherited Variants in Kidney Stone Disease",
+            ),
+        ],
+    }
+    .into();
+    let s = e.to_string();
+    assert!(s.starts_with(
+        "letters.pdf: this PDF holds more than one paper; add the one meant by its id:\n"
+    ));
+    let line = format!(
+        "{:<40} 2025 {:<16} Inherited",
+        "10.1000/letters.2025.102", "Birch"
+    );
+    assert!(s.contains(&line));
+    assert!(e.downcast_ref::<crate::add::Ambiguous>().is_some());
+}
+
+/// A page of a journal's letters: the end of one, with its article
+/// information and references, and the start of the next.
+const LETTERS: &str = "\n\nResults | Between 2013 and 2023, there were 1200 visits\n\
+to the clinics studied.\n\nAnn Alder, PhD\nBen Birch, MPP\nCara L. Cedar, PhD\n\
+Author Affiliations: An Institute, Somewhere (Alder, Birch, Cedar);\n\
+Accepted for Publication: August 9, 2025.\n\n\
+Published Online: May 1, 2025. doi:10.1000/letters.2025.101\n\
+Corresponding Author: Dan M. Elm, PhD, Some University School\n\
+Funding/Support: This study was supported by A Foundation\n\
+One Foundation for Kidney Health and the Other Foundation for Stones and\n\
+1. Fir A, Gum B. Trends in Something Else. Letters.\n\n\
+Published online June 16, 2025. doi:10.1000/letters.2025.90\n\
+3. Hazel HT, Ivy ME. Rural clinic closures in the treatment\n\
+of older patients during a pandemic. Letters. 2021;1(2):3-\n\
+4. doi:10.1000/letters.2021.7\n\
+Juniper J, Kauri K. A Study. Published online May 1, 2025. doi:10.1000/letters.2025.80\n\n\
+Inherited Variants in Kidney\n\
+Stone Disease\n\
+Genetic testing for kidney stones has typi-\n\
+Supplemental content\n\nLetters\n\
+letters.example (Reprinted) Letters November 18, 2025 Volume 1, Number 2 3\n";
+
+#[test]
+fn reads_a_page_of_letters() {
+    let reading = crate::pdf::Reading {
+        pages: vec![
+            LETTERS.to_string(),
+            "Published Online: May 2, 2025. doi:10.1/later".to_string(),
+        ],
+        embedded: Vec::new(),
+    };
+    // Its own article's, not a reference's, nor a later page's.
+    assert_eq!(
+        crate::pdf::article_info_dois(&reading),
+        vec!["10.1000/letters.2025.101".to_string()]
+    );
+    assert_eq!(
+        crate::pdf::title_lines(LETTERS),
+        vec!["Inherited Variants in Kidney Stone Disease".to_string()]
+    );
+    // An ordinary paper's first page names no article of its own.
+    let paper = crate::pdf::Reading {
+        pages: vec![
+            "A Title of a Paper\n\nAnn Author\n\nAbstract. Words.\n\n\
+                     https://doi.org/10.1000/paper.2026.1"
+                .to_string(),
+        ],
+        embedded: Vec::new(),
+    };
+    assert!(crate::pdf::article_info_dois(&paper).is_empty());
 }
 
 #[test]
 fn reads_sources() {
     assert!(
-        matches!(Source::of("https://doi.org/10.7554/eLife.10047"), Source::Doi(d) if d == "10.7554/eLife.10047")
+        matches!(Source::of("https://doi.org/10.5555/demo.2016.03"), Source::Doi(d) if d == "10.5555/demo.2016.03")
     );
-    assert!(matches!(Source::of("2412.08821v2"), Source::Arxiv(_)));
-    assert!(matches!(Source::of("PMID: 28693043"), Source::Pmid(_)));
+    assert!(matches!(Source::of("2412.99901v2"), Source::Arxiv(_)));
+    assert!(matches!(Source::of("PMID: 99999901"), Source::Pmid(_)));
     assert!(matches!(Source::of("~/Downloads/x.pdf"), Source::Pdf(_)));
     assert!(matches!(Source::of("@article{x,"), Source::Bibtex));
     assert!(matches!(Source::of("linear baselines"), Source::Words(_)));
@@ -470,26 +593,26 @@ fn reads_sources() {
 
 #[test]
 fn finds_titles_on_a_page() {
-    // deunicode once ran "33" into "Purine", and "pathogens" into the next line.
-    let page = "eLife 2023;12:RP91040.   1 of 33\n\nPurine nucleosides replace cAMP \nin \
-                allosteric regulation of PKA in \ntrypanosomatid\u{a0}pathogens\n\nVeronica Ober";
-    let title = "Purine nucleosides replace cAMP in allosteric regulation of PKA in trypanosomatid pathogens";
+    // deunicode once ran "33" into "Purine", and "parasites" into the next line.
+    let page = "Fict Biol 2023;12:RP00001.   1 of 33\n\nPurine sensors replace cGMP \nin \
+                allosteric control of PKX in \nimaginary\u{a0}parasites\n\nVera Oakes";
+    let title = "Purine sensors replace cGMP in allosteric control of PKX in imaginary parasites";
     assert!(crate::pdf::has_title(title, page));
     // Hyphenated across a line.
     assert!(crate::pdf::has_title(
-        "Quantifying organismal complexity",
-        "Quan-\ntifying organismal complexity using"
+        "Quantifying imaginary complexity",
+        "Quan-\ntifying imaginary complexity using"
     ));
     // Words run together in the registry's title.
     assert!(crate::pdf::has_title(
-        "StatisticallyCalibrated Tokenization forGenomic Models",
-        "Statistically Calibrated Tokenization\nfor Genomic Models"
+        "CarefullyCalibrated Tokenization forImaginary Models",
+        "Carefully Calibrated Tokenization\nfor Imaginary Models"
     ));
     assert!(!crate::pdf::has_title(
         title,
-        "Purine nucleosides in PKA signalling"
+        "Purine sensors in PKX signalling"
     ));
-    let csl = serde_json::json!({ "author": [{ "family": "Ober", "given": "V" }] });
+    let csl = serde_json::json!({ "author": [{ "family": "Oakes", "given": "V" }] });
     assert!(crate::pdf::has_author(&csl, page));
     assert!(!crate::pdf::has_author(&csl, "San Juan, Puerto Rico"));
 }
@@ -499,98 +622,98 @@ fn reads_ids_in_publishers_addresses() {
     use Source::*;
     let cases = [
         (
-            "https://onlinelibrary.wiley.com/doi/full/10.1002/sim.7400",
-            Doi("10.1002/sim.7400".into()),
+            "https://onlinelibrary.wiley.com/doi/full/10.1002/fict.0001",
+            Doi("10.1002/fict.0001".into()),
         ),
         (
-            "https://link.springer.com/article/10.1007/s10654-021-00757-1",
-            Doi("10.1007/s10654-021-00757-1".into()),
+            "https://link.springer.com/article/10.1007/s99999-021-00001-1",
+            Doi("10.1007/s99999-021-00001-1".into()),
         ),
         (
-            "https://www.biorxiv.org/content/10.1101/2023.09.11.557287v1.full.pdf",
-            Doi("10.1101/2023.09.11.557287".into()),
+            "https://www.biorxiv.org/content/10.1101/2023.09.11.999901v1.full.pdf",
+            Doi("10.1101/2023.09.11.999901".into()),
         ),
         (
-            "https://www.nature.com/articles/s41586-020-2649-2.pdf",
-            Doi("10.1038/s41586-020-2649-2".into()),
+            "https://www.nature.com/articles/s99999-020-0001-2.pdf",
+            Doi("10.1038/s99999-020-0001-2".into()),
         ),
         (
-            "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0000217",
-            Doi("10.1371/journal.pone.0000217".into()),
+            "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.9999999",
+            Doi("10.1371/journal.pone.9999999".into()),
         ),
         (
-            "https://www.sciencedirect.com/science/article/pii/S0092867423013442",
-            Pii("S0092867423013442".into()),
+            "https://www.sciencedirect.com/science/article/pii/S0000000023999991",
+            Pii("S0000000023999991".into()),
         ),
         (
-            "https://www.cell.com/cell/fulltext/S0092-8674(23)01344-2",
-            Pii("S0092867423013442".into()),
+            "https://www.cell.com/cell/fulltext/S0000-0000(23)99999-1",
+            Pii("S0000000023999991".into()),
         ),
         (
-            "https://www.cell.com/cell-genomics/pdf/S2666-979X(26)00051-0.pdf",
-            Pii("S2666979X26000510".into()),
+            "https://www.cell.com/cell-genomics/pdf/S0000-000X(26)99999-0.pdf",
+            Pii("S0000000X26999990".into()),
         ),
         (
-            "https://www.cell.com/action/showPdf?pii=S1097-2765(24)00526-4",
-            Pii("S1097276524005264".into()),
+            "https://www.cell.com/action/showPdf?pii=S0000-0001(24)99999-4",
+            Pii("S0000000124999994".into()),
         ),
         (
-            "https://linkinghub.elsevier.com/retrieve/pii/S2211124726004389",
-            Pii("S2211124726004389".into()),
+            "https://linkinghub.elsevier.com/retrieve/pii/S0000000226999998",
+            Pii("S0000000226999998".into()),
         ),
         (
-            "https://arxiv.org/pdf/2412.08821v2",
-            Arxiv("2412.08821".into()),
+            "https://arxiv.org/pdf/2412.99901v2",
+            Arxiv("2412.99901".into()),
         ),
         (
-            "https://pubmed.ncbi.nlm.nih.gov/28693043/",
-            Pmid("28693043".into()),
+            "https://pubmed.ncbi.nlm.nih.gov/99999901/",
+            Pmid("99999901".into()),
         ),
         (
-            "https://pmc.ncbi.nlm.nih.gov/articles/PMC5629050/",
-            Pmcid("PMC5629050".into()),
+            "https://pmc.ncbi.nlm.nih.gov/articles/PMC9999901/",
+            Pmcid("PMC9999901".into()),
         ),
         (
-            "https://academic.oup.com/bioinformatics/article/34/17/i884/5093234",
-            Url("https://academic.oup.com/bioinformatics/article/34/17/i884/5093234".into()),
+            "https://academic.oup.com/bioinformatics/article/99/99/i999/9999999",
+            Url("https://academic.oup.com/bioinformatics/article/99/99/i999/9999999".into()),
         ),
         (
-            "doi:10.7554/eLife.10047.",
-            Doi("10.7554/eLife.10047".into()),
+            "doi:10.5555/demo.2016.03.",
+            Doi("10.5555/demo.2016.03".into()),
         ),
-        ("arXiv:2412.08821v1", Arxiv("2412.08821".into())),
-        ("PMC5629050", Pmcid("PMC5629050".into())),
+        ("arXiv:2412.99901v1", Arxiv("2412.99901".into())),
+        ("PMC9999901", Pmcid("PMC9999901".into())),
     ];
     for (given, want) in cases {
         assert_eq!(Source::of(given), want, "{given}");
     }
     assert_eq!(
-        crate::source::dois("see https://doi.org/10.1038/nature12373), and 10.1038/NATURE12373."),
-        ["10.1038/nature12373"]
+        crate::source::dois("see https://doi.org/10.5555/fict12373), and 10.5555/FICT12373."),
+        ["10.5555/fict12373"]
     );
     assert_eq!(
-        crate::source::arxiv_ids("arXiv:2412.08821v1 [cs.CL] 11 Dec 2024"),
-        ["2412.08821"]
+        crate::source::arxiv_ids("arXiv:2412.99901v1 [cs.CL] 11 Dec 2024"),
+        ["2412.99901"]
     );
     assert_eq!(
-        crate::source::unversioned("solv-int/9901001v2"),
-        "solv-int/9901001"
+        crate::source::unversioned("solv-int/9912999v2"),
+        "solv-int/9912999"
     );
-    assert_eq!(crate::source::unversioned("2412.08821"), "2412.08821");
+    assert_eq!(crate::source::unversioned("2412.99901"), "2412.99901");
     assert_eq!(
-        Source::of("https://arxiv.org/abs/solv-int/9901001v1"),
-        Source::Arxiv("solv-int/9901001".into())
+        Source::of("https://arxiv.org/abs/solv-int/9912999v1"),
+        Source::Arxiv("solv-int/9912999".into())
     );
 }
 
 #[test]
 fn reads_a_pages_meta_tags() {
     let html = r#"<head><meta name="citation_title" content="A &amp; B">
-        <meta content="10.1038/s41586-020-2649-2" name="citation_doi">
+        <meta content="10.1038/s99999-020-0001-2" name="citation_doi">
         <meta name="citation_pdf_url" content="https://x.org/a.pdf"/></head>"#;
     assert_eq!(
         crate::resolve::from_metas(&crate::resolve::metas(html)),
-        Some(Source::Doi("10.1038/s41586-020-2649-2".into()))
+        Some(Source::Doi("10.1038/s99999-020-0001-2".into()))
     );
     let metas = crate::resolve::metas(html);
     assert!(metas.contains(&("citation_title".into(), "A & B".into())));
@@ -616,10 +739,10 @@ fn tidies_what_registries_give() {
 #[test]
 fn writes_initials_run_together() {
     let mut r = demo::records().remove(0);
-    r.csl["author"] = serde_json::json!([{ "family": "Abbott", "given": "B. P." }]);
-    assert!(layout::record(&r).starts_with("2017/Abbott/BP/"));
-    r.csl["author"] = serde_json::json!([{ "family": "Naik", "given": "Armaghan W." }]);
-    assert!(layout::record(&r).starts_with("2017/Naik/Armaghan W/"));
+    r.csl["author"] = serde_json::json!([{ "family": "Abernathy", "given": "B. P." }]);
+    assert!(layout::record(&r).starts_with("2017/Abernathy/BP/"));
+    r.csl["author"] = serde_json::json!([{ "family": "Nakamura", "given": "Aiko W." }]);
+    assert!(layout::record(&r).starts_with("2017/Nakamura/Aiko W/"));
 }
 
 #[test]
@@ -627,18 +750,18 @@ fn knows_a_paper_already_here() {
     let (_dir, _lib, index) = library();
     assert_eq!(
         index
-            .by_doi("10.7326/m16-2607")
+            .by_doi("10.5555/DEMO.2017.01")
             .unwrap()
             .unwrap()
             .record
             .key,
-        "VanderWeele2017-ex"
+        "Whitlock2017-ex"
     );
     assert_eq!(
-        index.by_arxiv("2412.08821").unwrap().unwrap().record.key,
-        "LCM-team2024-lc"
+        index.by_arxiv("2412.99901").unwrap().unwrap().record.key,
+        "SCM-team2024-lc"
     );
-    let t = "Sensitivity analysis in observational research: introducing the E-value";
+    let t = "Bounding hidden bias in observational research: introducing the W-value";
     assert!(index.by_title(t, Some(2018)).unwrap().is_some());
     assert!(index.by_title(t, Some(2020)).unwrap().is_none());
 }
@@ -646,12 +769,12 @@ fn knows_a_paper_already_here() {
 #[test]
 fn reads_a_paper_from_a_pages_tags() {
     // NeurIPS's pages before 2022: Highwire's tags, no DOI.
-    let html = r#"<meta name="citation_title" content="Attention is All you Need">
-        <meta name="citation_author" content="Vaswani, Ashish">
-        <meta name="citation_author" content="Shazeer, Noam">
+    let html = r#"<meta name="citation_title" content="Notice is All you Want">
+        <meta name="citation_author" content="Vance, Ada">
+        <meta name="citation_author" content="Shearer, Noel">
         <meta name="citation_journal_title" content="Advances in Neural Information Processing Systems">
         <meta name="citation_volume" content="30">
-        <meta name="citation_firstpage" content="5998"><meta name="citation_lastpage" content="6008">
+        <meta name="citation_firstpage" content="101"><meta name="citation_lastpage" content="110">
         <meta name="citation_publication_date" content="2017">"#;
     assert_eq!(
         crate::resolve::from_metas(&crate::resolve::metas(html)),
@@ -660,11 +783,11 @@ fn reads_a_paper_from_a_pages_tags() {
     let found = crate::resolve::from_tags(&crate::resolve::metas(html), "https://papers.nips.cc/x")
         .unwrap();
     assert_eq!(found.csl["type"], "paper-conference");
-    assert_eq!(found.csl["author"][0]["family"], "Vaswani");
+    assert_eq!(found.csl["author"][0]["family"], "Vance");
     assert_eq!(found.csl["issued"]["date-parts"][0][0], 2017);
-    assert_eq!(found.csl["page"], "5998-6008");
+    assert_eq!(found.csl["page"], "101-110");
     let r = crate::record::Record {
-        key: "Vaswani2017-x".into(),
+        key: "Vance2017-x".into(),
         csl: found.csl,
         paperstack: Default::default(),
     };
@@ -712,7 +835,7 @@ fn searches_6000_quickly() {
         "p",
         "pert",
         "perturbation linear",
-        "author:Huber year:2020..",
+        "author:Halvorsen year:2020..",
         "\"single cell\" -label:benchmark",
     ] {
         let t = std::time::Instant::now();
@@ -732,12 +855,12 @@ fn reads_text_whose_letters_change_length_lowercase() {
     // The Kelvin sign is three bytes, its lowercase `k` one: a place found
     // in the one once cut the other inside a letter.
     assert_eq!(
-        crate::source::arxiv_ids("\u{212A} arXiv:2412.08821v1 [cs.CL]"),
-        ["2412.08821"]
+        crate::source::arxiv_ids("\u{212A} arXiv:2412.99901v1 [cs.CL]"),
+        ["2412.99901"]
     );
     assert_eq!(
-        Source::of("https://www.Nature.com/articles/s41586-020-2649-2"),
-        Source::Doi("10.1038/s41586-020-2649-2".into())
+        Source::of("https://www.Nature.com/articles/s99999-020-0001-2"),
+        Source::Doi("10.1038/s99999-020-0001-2".into())
     );
     assert!(matches!(Source::of("https://ÄÄÄ.de/x"), Source::Url(_)));
     // An escape at the very end is read, and one that is none is kept.
@@ -756,7 +879,7 @@ fn reads_years_written_with_a_hyphen() {
 fn keeps_a_key_for_its_paper_over_anothers_alias() {
     let (_dir, lib, mut index) = library();
     let mut r = demo::records().remove(1);
-    r.paperstack.aliases = vec!["VanderWeele2017-ex".into()];
+    r.paperstack.aliases = vec!["Whitlock2017-ex".into()];
     lib.save(&r, None).unwrap();
     let done = index.refresh(&lib).unwrap();
     assert!(
@@ -766,19 +889,19 @@ fn keeps_a_key_for_its_paper_over_anothers_alias() {
     );
     assert_eq!(
         index
-            .get("VanderWeele2017-ex")
+            .get("Whitlock2017-ex")
             .unwrap()
             .unwrap()
             .record
             .title(),
-        "Sensitivity analysis in observational research: Introducing the E-value"
+        "Bounding hidden bias in observational research: Introducing the W-value"
     );
 }
 
 #[test]
 fn moves_no_pdf_over_anothers() {
     let (_dir, lib, index) = library();
-    let hit = index.get("Naik2016-al").unwrap().unwrap();
+    let hit = index.get("Nakamura2016-al").unwrap().unwrap();
     std::fs::write(lib.root.join(&hit.path).with_extension("pdf"), b"%PDF-mine").unwrap();
     let mut moved = crate::record::Record::clone(&hit.record);
     moved.csl["issued"] = serde_json::json!({ "date-parts": [[2017]] });
@@ -939,7 +1062,7 @@ fn first_page(title: &str) -> Vec<u8> {
 #[test]
 fn attaches_only_the_papers_own_pdf() {
     let (_dir, lib, mut index) = library();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
     let other = crate::add::attach(
         &lib,
@@ -963,7 +1086,7 @@ fn attaches_only_the_papers_own_pdf() {
 #[test]
 fn takes_a_scan_only_named_or_by_its_doi() {
     let (_dir, lib, mut index) = library();
-    let key = "Naik2016-al";
+    let key = "Nakamura2016-al";
     let doi = index
         .get(key)
         .unwrap()
@@ -990,7 +1113,7 @@ fn takes_a_scan_only_named_or_by_its_doi() {
     assert_eq!(added.how, "x.pdf");
 
     // Named by the person: taken, and said to be unchecked.
-    let key = "VanderWeele2017-ex";
+    let key = "Whitlock2017-ex";
     let added = crate::add::attach(&lib, &mut index, key, &scan, "x.pdf", true).unwrap();
     assert!(added.how.contains("no text to check it by"));
 }
@@ -1017,7 +1140,7 @@ fn files_the_pdf_downloaded_for_the_paper_awaited() {
     let downloads = dir.path().join("Downloads");
     std::fs::create_dir(&downloads).unwrap();
     let mut app = App::new(lib, index).unwrap();
-    let key = "Kedzierska2025-zs".to_string();
+    let key = "Kowalczyk2025-zs".to_string();
     let title = app
         .index
         .get(&key)
@@ -1055,28 +1178,28 @@ fn files_the_pdf_downloaded_for_the_paper_awaited() {
 fn library_export() -> serde_json::Value {
     serde_json::json!([
         {
-            "_id": "1", "pubtype": "PP_ARTICLE", "citekey": "Gonzalez-Rosa2018-vd",
-            "title": "Myocardial polyploidization creates a barrier to heart regeneration in zebrafish",
+            "_id": "1", "pubtype": "PP_ARTICLE", "citekey": "Gomez-Ruiz2018-vd",
+            "title": "Cardiac polyploidy builds a barrier to fin regrowth in imaginary fish",
             "author": [
-                { "first": "Juan Manuel", "last": "González-Rosa", "initials": "JM" },
-                { "first": "Michka", "last": "Sharpe", "initials": "M" }
+                { "first": "Juana María", "last": "Gómez-Ruiz", "initials": "JM" },
+                { "first": "Mika", "last": "Sharma", "initials": "M" }
             ],
             "published": { "year": "2018", "month": "2", "day": "26" },
-            "journal": "Dev. Cell", "journalfull": "Developmental Cell",
-            "volume": "44", "issue": "4", "pages": "433-446.e7",
-            "doi": "10.1016/j.devcel.2018.01.021", "pmid": "29486195", "pmc": "PMC5830170",
-            "abstract": "Polyploid hearts regenerate less.",
-            "foldersNamed": ["Research/Heart"], "labelsNamed": ["to-read"], "star": 1,
+            "journal": "Dev. Fict", "journalfull": "Developmental Fiction",
+            "volume": "1", "issue": "2", "pages": "3-14.e7",
+            "doi": "10.5555/demo.2018.01", "pmid": "99999902", "pmc": "PMC9999902",
+            "abstract": "Polyploid fins regrow less.",
+            "foldersNamed": ["Research/Fins"], "labelsNamed": ["to-read"], "star": 1,
             "attachments": [{
                 "article_pdf": 1,
-                "filename": "All Papers/G/González-Rosa et al. 2018 - Myocardial polyploidization creates a barrier to heart regeneration in zebrafish.pdf"
+                "filename": "All Papers/G/Gómez-Ruiz et al. 2018 - Cardiac polyploidy builds a barrier to fin regrowth in imaginary fish.pdf"
             }],
-            "url": ["http://dx.doi.org/10.1016/j.devcel.2018.01.021"]
+            "url": ["http://dx.doi.org/10.5555/demo.2018.01"]
         },
         {
-            "_id": "2", "pubtype": "PP_CONFERENCE_PAPER", "citekey": "Vaswani2017-pp",
-            "title": "Attention is all you need",
-            "author": [{ "first": "Ashish", "last": "Vaswani" }],
+            "_id": "2", "pubtype": "PP_CONFERENCE_PAPER", "citekey": "Vance2017-pp",
+            "title": "Notice is all you want",
+            "author": [{ "first": "Ada", "last": "Vance" }],
             "published": { "year": "2017" }, "booktitle": "Advances in Neural Information Processing Systems",
             "foldersNamed": ["Research/ML/NLP", "Research/ML/Transformers"], "labelsNamed": ["Machine Learning"]
         },
@@ -1086,9 +1209,9 @@ fn library_export() -> serde_json::Value {
         },
         { "_id": "4", "pubtype": "PP_ARTICLE", "citekey": "Gone2019-xx", "title": "In the trash", "trashed": 1 },
         {
-            "_id": "5", "pubtype": "PP_ARTICLE", "citekey": "VanderWeele2017-pp",
-            "title": "Sensitivity analysis in observational research: Introducing the E-value",
-            "doi": "10.7326/M16-2607", "foldersNamed": ["grant_NFRF"]
+            "_id": "5", "pubtype": "PP_ARTICLE", "citekey": "Whitlock2017-pp",
+            "title": "Bounding hidden bias in observational research: Introducing the W-value",
+            "doi": "10.5555/demo.2017.01", "foldersNamed": ["grant_xyz"]
         }
     ])
 }
@@ -1100,19 +1223,19 @@ fn moves_a_library_from_its_export() {
     std::fs::write(&export, serde_json::to_vec(&library_export()).unwrap()).unwrap();
     // Unzipped from the library's ZIP, its accents stored apart, as a Mac may.
     let pdfs = dir.path().join("Library PDFs");
-    let name = "González-Rosa et al. 2018 - Myocardial polyploidization creates a barrier to heart regeneration in zebrafish.pdf";
+    let name = "Gómez-Ruiz et al. 2018 - Cardiac polyploidy builds a barrier to fin regrowth in imaginary fish.pdf";
     let nfd: String = unicode_normalization::UnicodeNormalization::nfd(name).collect();
     std::fs::create_dir_all(pdfs.join("All Papers/G")).unwrap();
     std::fs::write(
         pdfs.join("All Papers/G").join(nfd),
-        tiny_pdf(&["Myocardial polyploidization"]),
+        tiny_pdf(&["Cardiac polyploidy"]),
     )
     .unwrap();
 
     let dry = crate::migrate::import(&lib, &mut index, &export, Some(&pdfs), true).unwrap();
     assert_eq!((dry.added, dry.merged, dry.trashed, dry.pdfs), (3, 1, 1, 1));
     assert!(
-        index.get("Gonzalez-Rosa2018-vd").unwrap().is_none(),
+        index.get("Gomez-Ruiz2018-vd").unwrap().is_none(),
         "a dry run writes nothing"
     );
 
@@ -1123,27 +1246,27 @@ fn moves_a_library_from_its_export() {
     );
     assert!(done.errors.is_empty(), "{:?}", done.errors);
 
-    let hit = index.get("Gonzalez-Rosa2018-vd").unwrap().unwrap();
+    let hit = index.get("Gomez-Ruiz2018-vd").unwrap().unwrap();
     let r = &hit.record;
     assert_eq!(r.csl_type(), "article-journal");
-    assert_eq!(r.venue(), "Developmental Cell");
+    assert_eq!(r.venue(), "Developmental Fiction");
     assert_eq!(r.year(), Some(2018));
-    assert_eq!(r.csl["PMCID"], "PMC5830170");
-    assert_eq!(r.paperstack.folders, ["Research/Heart"]);
+    assert_eq!(r.csl["PMCID"], "PMC9999902");
+    assert_eq!(r.paperstack.folders, ["Research/Fins"]);
     assert!(r.paperstack.starred && hit.has_pdf);
-    assert!(hit.path.starts_with("2018/González-Rosa/Juan Manuel/"));
+    assert!(hit.path.starts_with("2018/Gómez-Ruiz/Juana María/"));
     let bib = bibtex::entry(r);
     assert!(
-        bib.starts_with("@article{Gonzalez-Rosa2018-vd,")
-            && bib.contains("journal = {Developmental Cell}"),
+        bib.starts_with("@article{Gomez-Ruiz2018-vd,")
+            && bib.contains("journal = {Developmental Fiction}"),
         "{bib}"
     );
 
-    let ml = index.get("Vaswani2017-pp").unwrap().unwrap();
+    let ml = index.get("Vance2017-pp").unwrap().unwrap();
     assert_eq!(ml.record.csl_type(), "paper-conference");
     assert_eq!(
         keys(&index, "folder:\"Research/ML/NLP\"", Sort::Added),
-        ["Vaswani2017-pp"]
+        ["Vance2017-pp"]
     );
     assert!(
         index.get("Gone2019-xx").unwrap().is_none(),
@@ -1156,13 +1279,13 @@ fn moves_a_library_from_its_export() {
     );
 
     // Already here, by its DOI: given the folder, its other key an alias.
-    let here = index.get("VanderWeele2017-pp").unwrap().unwrap();
-    assert_eq!(here.record.key, "VanderWeele2017-ex");
+    let here = index.get("Whitlock2017-pp").unwrap().unwrap();
+    assert_eq!(here.record.key, "Whitlock2017-ex");
     assert!(
         here.record
             .paperstack
             .folders
-            .contains(&"grant_NFRF".to_string())
+            .contains(&"grant_xyz".to_string())
     );
 
     // Again: nothing added twice.
@@ -1173,7 +1296,7 @@ fn moves_a_library_from_its_export() {
 #[test]
 fn serves_the_library_over_mcp() {
     let (_dir, lib, mut index) = library();
-    let key = "Kedzierska2025-zs";
+    let key = "Kowalczyk2025-zs";
     let title = index.get(key).unwrap().unwrap().record.title().to_string();
     crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
     let mut server = crate::mcp::Server {
@@ -1219,23 +1342,23 @@ fn serves_the_library_over_mcp() {
     assert_eq!(found["isError"], false);
     assert_eq!(
         found["structuredContent"]["papers"][0]["key"],
-        "Ahlmann-Eltze2025-pb"
+        "Brandt-Okafor2025-pb"
     );
     assert_eq!(
         found["structuredContent"]["papers"][0]["authors"][0],
-        "Ahlmann-Eltze, C"
+        "Brandt-Okafor, C"
     );
 
     let bib = call(
         &mut server,
         "get_paper",
-        serde_json::json!({ "key": "VanderWeele2017-ex", "format": "bibtex" }),
+        serde_json::json!({ "key": "Whitlock2017-ex", "format": "bibtex" }),
     );
     assert!(
         bib["content"][0]["text"]
             .as_str()
             .unwrap()
-            .starts_with("@article{VanderWeele2017-ex,")
+            .starts_with("@article{Whitlock2017-ex,")
     );
     let keys = call(
         &mut server,
@@ -1246,7 +1369,7 @@ fn serves_the_library_over_mcp() {
         keys["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("@Carter2021-mr")
+            .contains("@Corbett2021-mr")
     );
 
     let read = call(&mut server, "read_paper", serde_json::json!({ "key": key }));
@@ -1264,7 +1387,7 @@ fn serves_the_library_over_mcp() {
     let none = call(
         &mut server,
         "read_paper",
-        serde_json::json!({ "key": "VanderWeele2017-ex" }),
+        serde_json::json!({ "key": "Whitlock2017-ex" }),
     );
     assert_eq!(none["isError"], true);
 
@@ -1272,31 +1395,31 @@ fn serves_the_library_over_mcp() {
         &mut server,
         "update_paper",
         serde_json::json!({
-        "key": "Naik2016-al", "add_collections": ["grant_NFRF"], "starred": true }),
+        "key": "Nakamura2016-al", "add_collections": ["grant_xyz"], "starred": true }),
     );
     assert_eq!(updated["structuredContent"]["starred"], true);
     assert!(
         updated["structuredContent"]["collections"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!("grant_NFRF"))
+            .contains(&serde_json::json!("grant_xyz"))
     );
     let gone = call(
         &mut server,
         "delete_collection",
-        serde_json::json!({ "name": "grant_NFRF" }),
+        serde_json::json!({ "name": "grant_xyz" }),
     );
     assert_eq!(gone["structuredContent"]["papers"], 1, "{gone}");
     let deleted = call(
         &mut server,
         "delete_papers",
-        serde_json::json!({ "keys": ["Naik2016-al"] }),
+        serde_json::json!({ "keys": ["Nakamura2016-al"] }),
     );
     assert_eq!(deleted["isError"], false, "{deleted}");
     let again = call(
         &mut server,
         "get_paper",
-        serde_json::json!({ "key": "Naik2016-al" }),
+        serde_json::json!({ "key": "Nakamura2016-al" }),
     );
     assert_eq!(again["isError"], true);
     let unknown = call(&mut server, "no_such_tool", serde_json::json!({}));

@@ -760,7 +760,7 @@ pub fn tidy(mut csl: Value) -> Value {
 }
 
 /// A name as arXiv gives it, `Given Family`, as CSL's; a group's, as
-/// `LCM team`, whole.
+/// `SCM team`, whole.
 fn name(full: &str) -> Value {
     const PARTICLES: &[&str] = &[
         "van", "von", "de", "der", "den", "di", "da", "du", "del", "la", "le",

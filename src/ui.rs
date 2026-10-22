@@ -3,7 +3,7 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Doomed, Fetch, Focus, Popup, Shelf, Target};
+use crate::app::{App, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target};
 use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
@@ -62,6 +62,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Popup::Help => Some(help(f, &t)),
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
+        Popup::Choose(choose) => Some(chooser(f, &t, choose)),
         Popup::None => None,
     };
     if let Some(area) = popup {
@@ -575,6 +576,36 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     }
     let block = dialog(t, "Add paper")
         .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", dim));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+    area
+}
+
+/// The papers a PDF holds, to pick the one it is filed as.
+fn chooser(f: &mut Frame, t: &Theme, choose: &Choose) -> Rect {
+    let dim = Style::new().fg(t.dim);
+    let mut lines = vec![
+        Line::raw(""),
+        Line::styled(clip(&choose.path, 84), dim),
+        Line::raw("Its first page holds more than one paper. Which is it to be filed as?"),
+        Line::raw(""),
+    ];
+    for (n, p) in choose.papers.iter().enumerate() {
+        let picked = n == choose.at;
+        let style = if picked {
+            Style::new().fg(t.title).bold()
+        } else {
+            Style::new().fg(t.text)
+        };
+        let mark = if picked { "›" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{mark} {}. ", n + 1), Style::new().fg(t.accent)),
+            Span::styled(clip(&crate::add::listed(p), 80), style),
+        ]));
+    }
+    let area = centered(f.area(), 92, lines.len() as u16 + 3);
+    f.render_widget(Clear, area);
+    let block = dialog(t, "Which paper?")
+        .title_bottom(Line::styled(" j/k or 1–9 pick · ⏎ add · esc cancel ", dim));
     f.render_widget(Paragraph::new(lines).block(block), area);
     area
 }

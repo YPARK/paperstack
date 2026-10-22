@@ -16,10 +16,10 @@ records and the PDFs together. Reading them is fine.
 
 ```sh
 paperstack find 'perturbation "linear baseline"' --json      # best match first
-paperstack find 'author:Huber year:2020..2026 has:pdf' --json
+paperstack find 'author:Halvorsen year:2020..2026 has:pdf' --json
 paperstack find 'collection:"Single Cell Data" -label:benchmark' --sort year --json
-paperstack get Ahlmann-Eltze2025-pb --json                   # one paper, by key
-find . -name 'Ahlmann-Eltze2025-pb_*'                        # its files
+paperstack get Brandt-Okafor2025-pb --json                   # one paper, by key
+find . -name 'Brandt-Okafor2025-pb_*'                        # its files
 ```
 
 Words and "phrases" are searched in the title, abstract, authors, venue,
@@ -35,7 +35,7 @@ any of them leaves out what it matches. `--sort relevance|year|added|author|titl
 paperstack add 10.1038/s41586-020-2649-2 --json              # by DOI
 paperstack add arXiv:2412.08821 'PMID: 28693043' PMC5629050  # by arXiv id, PMID, PMCID
 paperstack add https://www.sciencedirect.com/science/article/pii/S0092867423013442
-paperstack add ~/Downloads/paper.pdf --folder grant_OCRA_AI  # a PDF, read to tell which paper
+paperstack add ~/Downloads/paper.pdf --folder grant_demo  # a PDF, read to tell which paper
 paperstack add 'Array programming with NumPy'                # a title: added only if one paper has it
 paperstack inbox                                             # file the PDFs saved to inbox/
 paperstack import library-export.json --dry-run            # another library, its keys kept
@@ -44,7 +44,10 @@ paperstack attach KEY ~/Downloads/paper.pdf                  # give a paper the 
 
 A paper already here is not added again. Given only a title that several
 papers have, `add` lists them with their ids and adds none: add the one meant
-by its id. Never add a paper you have not checked is the one meant.
+by its id. A PDF whose first page holds more than one paper, as a journal's
+page of letters, is the same: they are listed and none is added until someone
+chooses or passes an id. Do not guess which. Never add a paper you have not
+checked is the one meant.
 
 ## Deleting
 

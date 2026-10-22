@@ -1,7 +1,7 @@
 //! What is typed to search, by the TUI's `/` and `paperstack find` alike:
 //!
 //! ```text
-//! perturbation "linear baseline" author:Huber year:2020..2026
+//! perturbation "linear baseline" author:Halvorsen year:2020..2026
 //!     folder:"Single Cell Data" -label:benchmark has:pdf is:starred
 //! ```
 //!

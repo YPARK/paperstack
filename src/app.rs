@@ -4,7 +4,7 @@
 //! to the library's trash, asked first; its PDF alone too, the paper kept.
 //! A PDF located on disk is filed beside the paper picked.
 
-use crate::add::{Adder, Options, attach, one_line};
+use crate::add::{Adder, Ambiguous, Options, attach, one_line};
 use crate::bibtex;
 use crate::browser::{self, Arrivals};
 use crate::index::{Hit, Index, Shelves, Sort};
@@ -88,6 +88,8 @@ pub enum Action {
     /// Ask for a PDF on disk, in the system's file dialog, which takes the
     /// terminal.
     Locate,
+    /// File the paper chosen of those a PDF holds, the screen drawn first.
+    Choose,
 }
 
 /// What a click lands on, as the screen was last drawn.
@@ -133,6 +135,17 @@ pub enum Popup {
     Fetch(Box<Fetch>),
     /// What `y` deletes, asked first.
     Delete(Doomed),
+    /// Which of the papers a PDF holds to file it as.
+    Choose(Box<Choose>),
+}
+
+/// A PDF that holds more than one paper, as a page of letters, and the
+/// one picked of them.
+pub struct Choose {
+    /// The PDF's path, as added.
+    pub path: String,
+    pub papers: Vec<crate::resolve::Found>,
+    pub at: usize,
 }
 
 /// What is to be deleted, if `y` is pressed.
@@ -209,6 +222,10 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
                 }
                 Some(Action::Open) => app.open(&mut terminal),
                 Some(Action::Locate) => app.locate(&mut terminal),
+                Some(Action::Choose) => {
+                    terminal.draw(|f| ui::draw(f, &mut app))?;
+                    app.choose();
+                }
                 None => {}
             }
         }
@@ -424,6 +441,30 @@ impl App {
                 } else {
                     self.popup = Popup::None;
                     self.status = "nothing deleted".to_string();
+                }
+                return None;
+            }
+            Popup::Choose(choose) => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.popup = Popup::None;
+                        self.status = "nothing added".to_string();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        choose.at = (choose.at + 1).min(choose.papers.len() - 1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => choose.at = choose.at.saturating_sub(1),
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let n = c as usize - '1' as usize;
+                        if n < choose.papers.len() {
+                            choose.at = n;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.status = format!("adding {}…", choose.papers[choose.at].title());
+                        return Some(Action::Choose);
+                    }
+                    _ => {}
                 }
                 return None;
             }
@@ -727,6 +768,57 @@ impl App {
             options,
         }
         .add(line);
+        if let Err(e) = &done
+            && let Some(a) = e.downcast_ref::<Ambiguous>()
+            && let Source::Pdf(path) = Source::of(line)
+        {
+            self.popup = Popup::Choose(Box::new(Choose {
+                path,
+                papers: a.papers.clone(),
+                at: 0,
+            }));
+            self.status.clear();
+            return;
+        }
+        self.added(done);
+    }
+
+    /// File the PDF asked about as the paper picked of those it holds,
+    /// and show it.
+    pub fn choose(&mut self) {
+        let Popup::Choose(choose) = std::mem::replace(&mut self.popup, Popup::None) else {
+            return;
+        };
+        let Some(net) = &self.net else {
+            self.status = "cannot add here: nothing is fetched".to_string();
+            return;
+        };
+        let found = choose.papers[choose.at].clone();
+        let done = (|| {
+            let (_, bytes) = crate::add::read_pdf(&choose.path)?;
+            self.index.refresh(&self.lib)?;
+            let mut options = Options {
+                pdf: true,
+                ..Options::default()
+            };
+            match &self.shelves[self.shelf].0 {
+                Shelf::Folder(f) => options.folders.push(f.clone()),
+                Shelf::Label(l) => options.labels.push(l.clone()),
+                _ => {}
+            }
+            Adder {
+                lib: &self.lib,
+                index: &mut self.index,
+                net,
+                options,
+            }
+            .file_chosen(found, &bytes)
+        })();
+        self.added(done);
+    }
+
+    /// Say what came of adding, and show the paper added.
+    fn added(&mut self, done: anyhow::Result<crate::add::Added>) {
         match done {
             Ok(added) => {
                 self.status = format!("{}: {}", added.key, added.summary());
