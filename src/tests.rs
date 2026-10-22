@@ -269,14 +269,14 @@ fn deletes_a_pdf_from_the_tui_when_asked() {
     press(&mut app, 'x');
     let s = screen(&mut app, 160, 44);
     assert!(
-        s.contains("Delete this PDF?") && s.contains("The paper stays") && s.contains(&key),
+        s.contains("Delete this PDF?") && s.contains("The paper stays") && s.contains(key),
         "{s}"
     );
     press(&mut app, 'n');
-    assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
+    assert!(app.index.get(key).unwrap().unwrap().has_pdf);
     press(&mut app, 'x');
     press(&mut app, 'y');
-    let hit = app.index.get(&key).unwrap().unwrap();
+    let hit = app.index.get(key).unwrap().unwrap();
     assert!(!hit.has_pdf);
     assert!(app.lib.root.join(&hit.path).is_file());
     assert!(!app.lib.root.join(&hit.path).with_extension("pdf").exists());
@@ -298,13 +298,13 @@ fn locates_a_pdf_on_disk_for_the_paper_picked() {
     let path = dir.path().join("paper.pdf");
     std::fs::write(&path, first_page(&title)).unwrap();
     app.give_pdf(&path);
-    let hit = app.index.get(&key).unwrap().unwrap();
+    let hit = app.index.get(key).unwrap().unwrap();
     assert!(hit.has_pdf);
     assert!(app.lib.root.join(&hit.path).with_extension("pdf").is_file());
     // A paper that has its PDF is not given another until that one is deleted.
     app.give_pdf(&path);
     assert!(app.status.contains("has its PDF"));
-    assert!(app.index.get(&key).unwrap().unwrap().has_pdf);
+    assert!(app.index.get(key).unwrap().unwrap().has_pdf);
 }
 
 #[test]
