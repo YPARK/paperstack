@@ -308,6 +308,103 @@ fn locates_a_pdf_on_disk_for_the_paper_picked() {
 }
 
 #[test]
+fn jumps_to_the_first_and_last_paper_and_says_the_sort() {
+    use crate::index::Sort;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let last = app.shown.len() - 1;
+    assert!(last > 0);
+    let press = |app: &mut App, code, modifiers| app.key(KeyEvent::new(code, modifiers));
+    press(&mut app, KeyCode::Char('G'), KeyModifiers::NONE);
+    assert_eq!(app.list.selected(), Some(last));
+    press(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
+    assert_eq!(app.list.selected(), Some(0));
+    press(&mut app, KeyCode::Down, KeyModifiers::CONTROL);
+    assert_eq!(app.list.selected(), Some(last));
+    press(&mut app, KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(app.list.selected(), Some(0));
+    // With no words to rank by, relevance is newest added, and said so.
+    assert_eq!(app.sort.of(&app.wanted()), Sort::Added);
+    press(&mut app, KeyCode::Char('S'), KeyModifiers::NONE);
+    assert_eq!(app.status, format!("sorted by {}", app.sort.name()));
+}
+
+/// A popup for work on its own thread, fed by `tx` as the work would.
+fn busy(
+    then: crate::app::Then,
+) -> (
+    crate::app::Busy,
+    std::sync::mpsc::Sender<crate::app::Report>,
+) {
+    let (tx, events) = std::sync::mpsc::channel();
+    let busy = crate::app::Busy {
+        title: "Looking for an open copy",
+        what: "A made-up paper".to_string(),
+        said: Vec::new(),
+        since: std::time::Instant::now(),
+        events,
+        stop: Default::default(),
+        browse: false,
+        then,
+    };
+    (busy, tx)
+}
+
+#[test]
+fn shows_what_work_on_its_own_thread_says_until_it_is_done() {
+    use crate::app::{Report, Then};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let (b, tx) = busy(Then::Add);
+    app.popup = Popup::Busy(Box::new(b));
+    tx.send(Report::Said("downloading https://example.org/a.pdf".into()))
+        .unwrap();
+    assert!(app.tick(), "drawn again, the spinner turned");
+    let s = screen(&mut app, 120, 40);
+    assert!(s.contains("Looking for an open copy"), "{s}");
+    assert!(s.contains("downloading https://example.org/a.pdf"), "{s}");
+    // A click elsewhere does not lose the work.
+    app.mouse(ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(
+            ratatui::crossterm::event::MouseButton::Left,
+        ),
+        column: 0,
+        row: 0,
+        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+    });
+    assert!(matches!(app.popup, Popup::Busy(_)));
+    tx.send(Report::Done(Err(anyhow::anyhow!("no such paper"))))
+        .unwrap();
+    app.tick();
+    assert!(matches!(app.popup, Popup::None), "closed when done");
+    assert!(app.status.contains("no such paper"), "{}", app.status);
+}
+
+#[test]
+fn stops_looking_for_an_open_copy_when_asked() {
+    use crate::app::{Report, Then};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let hit = app.shown[0].clone();
+    let (b, tx) = busy(Then::Fetch(hit.clone()));
+    let stop = b.stop.clone();
+    app.popup = Popup::Busy(Box::new(b));
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(stop.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(
+        matches!(app.popup, Popup::Busy(_)),
+        "until the step is done"
+    );
+    tx.send(Report::Done(Err(anyhow::anyhow!("stopped"))))
+        .unwrap();
+    app.tick();
+    assert!(matches!(app.popup, Popup::None), "and not to the browser");
+    assert!(app.status.contains("stopped"), "{}", app.status);
+}
+
+#[test]
 fn deletes_a_collection_keeping_its_papers() {
     use crate::remove::Shelf;
     let (_dir, lib, mut index) = library();

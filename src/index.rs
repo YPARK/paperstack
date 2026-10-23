@@ -46,7 +46,21 @@ pub enum Sort {
     Title,
 }
 
+/// Whether `q` has words to rank papers by, as relevance sorts them.
+pub fn ranks(q: &Query) -> bool {
+    q.terms.iter().filter_map(Text::of).any(|t| !t.negated)
+}
+
 impl Sort {
+    /// The order papers found by `q` are in: by relevance only where it has
+    /// words to rank them by, else newest added first.
+    pub fn of(self, q: &Query) -> Sort {
+        match self {
+            Sort::Relevance if !ranks(q) => Sort::Added,
+            sort => sort,
+        }
+    }
+
     pub const ALL: [Sort; 5] = [
         Sort::Relevance,
         Sort::Added,

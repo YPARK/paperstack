@@ -35,7 +35,11 @@ const BROWSER: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebK
                        (KHTML, like Gecko) Chrome/141.0 Safari/537.36";
 /// The largest PDF downloaded.
 const PDF_LIMIT: u64 = 200 << 20;
+/// How long a PDF's server is waited for, before the first of its bytes: a
+/// copy that does not come is soon given up, for the next.
+const PDF_WAIT: Duration = Duration::from_secs(10);
 
+#[derive(Clone)]
 pub struct Net {
     agent: ureq::Agent,
     /// Given to the registries, which serve those who give one first.
@@ -142,15 +146,23 @@ impl Net {
         ))
     }
 
-    /// A PDF; anything else, as a page asking to sign in, is an error.
+    /// A PDF; anything else, as a page asking to sign in, is an error,
+    /// told by its type before it is read, where it says it is a page.
     pub fn pdf(&self, url: &str) -> anyhow::Result<Vec<u8>> {
         let mut resp = self
             .agent
             .get(url)
+            .config()
+            .timeout_connect(Some(PDF_WAIT))
+            .timeout_recv_response(Some(PDF_WAIT))
+            .build()
             .header("User-Agent", BROWSER)
             .header("Accept", "application/pdf,*/*;q=0.5")
             .call()
             .with_context(|| format!("cannot download {url}"))?;
+        if resp.body().mime_type() == Some("text/html") {
+            bail!("{url} gave a page, not a PDF");
+        }
         let bytes = resp
             .body_mut()
             .with_config()

@@ -4,7 +4,7 @@
 //! to the library's trash, asked first; its PDF alone too, the paper kept.
 //! A PDF located on disk is filed beside the paper picked.
 
-use crate::add::{Adder, Ambiguous, Options, attach, one_line};
+use crate::add::{Added, Adder, Ambiguous, Options, attach, one_line, open_copy};
 use crate::bibtex;
 use crate::browser::{self, Arrivals};
 use crate::index::{Hit, Index, Shelves, Sort};
@@ -27,12 +27,17 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// Two clicks on a paper within this open it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// How often the downloads folder is looked in, while a PDF is awaited.
 const LOOK: Duration = Duration::from_millis(500);
+/// How often work on its own thread is asked how it goes, and the
+/// spinner turned.
+const SPIN: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -82,13 +87,12 @@ impl Shelf {
 pub enum Action {
     /// Present the paper picked with ohp, which takes the terminal.
     Open,
-    /// Add what is named, the screen drawn first, saying so, as it takes a
-    /// while.
+    /// Add what is named, on a thread of its own, its steps shown.
     Add(String),
     /// Ask for a PDF on disk, in the system's file dialog, which takes the
     /// terminal.
     Locate,
-    /// File the paper chosen of those a PDF holds, the screen drawn first.
+    /// File the paper chosen of those a PDF holds, as `Add` does.
     Choose,
 }
 
@@ -97,6 +101,8 @@ pub enum Action {
 pub enum Target {
     Search,
     Add,
+    /// What the papers are sorted by: the next order.
+    Sort,
     /// The sidebar, and a shelf on it, by its place in `shelves`.
     Side,
     Shelf(usize),
@@ -106,7 +112,8 @@ pub enum Target {
     Paper(usize),
     Mark(usize),
     Star(usize),
-    /// The PDF's badge: get one in the browser, or drop the one the paper has.
+    /// The PDF's badge: get one, an open copy or in the browser, or drop the
+    /// one the paper has.
     GetPdf(usize),
     Popup,
 }
@@ -137,6 +144,39 @@ pub enum Popup {
     Delete(Doomed),
     /// Which of the papers a PDF holds to file it as.
     Choose(Box<Choose>),
+    /// Work on a thread of its own, as a download, and what it says.
+    Busy(Box<Busy>),
+}
+
+/// Work on a thread of its own, as downloading a PDF, with what it has said
+/// so far; the screen goes on being drawn meanwhile.
+pub struct Busy {
+    pub title: &'static str,
+    /// What it is for: a paper's title, or what is being added.
+    pub what: String,
+    /// What it has said of its steps, the latest last.
+    pub said: Vec<String>,
+    pub since: Instant,
+    pub events: mpsc::Receiver<Report>,
+    /// Set to stop it after the step it is at, where it can stop.
+    pub stop: Arc<AtomicBool>,
+    /// Asked to stop, and to get the PDF in the browser after.
+    pub browse: bool,
+    pub then: Then,
+}
+
+/// What work on its own thread sends.
+pub enum Report {
+    Said(String),
+    Done(anyhow::Result<Added>),
+}
+
+/// What is done with what the work gave.
+pub enum Then {
+    /// An open copy of this paper's PDF: filed; else got in the browser.
+    Fetch(Hit),
+    /// A paper added: shown; or, where its PDF holds several, asked which.
+    Add,
 }
 
 /// A PDF that holds more than one paper, as a page of letters, and the
@@ -197,8 +237,16 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
             if stale {
                 terminal.draw(|f| ui::draw(f, &mut app))?;
             }
-            // Awaiting a PDF, the downloads folder is looked in between keys.
-            if matches!(app.popup, Popup::Fetch(_)) && !event::poll(LOOK)? {
+            // Awaiting a PDF, the downloads folder is looked in between keys;
+            // work on its own thread is asked how it goes.
+            let wait = match app.popup {
+                Popup::Fetch(_) => Some(LOOK),
+                Popup::Busy(_) => Some(SPIN),
+                _ => None,
+            };
+            if let Some(wait) = wait
+                && !event::poll(wait)?
+            {
                 stale = app.tick();
                 continue;
             }
@@ -217,16 +265,10 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
                 _ => None,
             };
             match action {
-                Some(Action::Add(line)) => {
-                    terminal.draw(|f| ui::draw(f, &mut app))?;
-                    app.add(&line);
-                }
+                Some(Action::Add(line)) => app.add(&line),
                 Some(Action::Open) => app.open(&mut terminal),
                 Some(Action::Locate) => app.locate(&mut terminal),
-                Some(Action::Choose) => {
-                    terminal.draw(|f| ui::draw(f, &mut app))?;
-                    app.choose();
-                }
+                Some(Action::Choose) => app.choose(),
                 None => {}
             }
         }
@@ -320,12 +362,17 @@ impl App {
         self.lib.root.join(&h.path).with_extension("pdf")
     }
 
-    /// Show the papers on the shelf that the query finds.
-    pub fn narrow(&mut self) {
-        let query = self.shelves[self.shelf]
+    /// What is shown: the shelf's query and the one typed.
+    pub fn wanted(&self) -> Query {
+        self.shelves[self.shelf]
             .0
             .query()
-            .and(Query::parse(&self.query));
+            .and(Query::parse(&self.query))
+    }
+
+    /// Show the papers on the shelf that the query finds.
+    pub fn narrow(&mut self) {
+        let query = self.wanted();
         let key = self.current().map(|h| h.record.key.clone());
         match self.index.search(&query, self.sort, false, None) {
             Ok(hits) => self.shown = hits,
@@ -436,6 +483,19 @@ impl App {
                 }
                 return None;
             }
+            Popup::Busy(busy) => {
+                if let Then::Fetch(_) = busy.then {
+                    match key.code {
+                        KeyCode::Char('b') => {
+                            busy.browse = true;
+                            busy.stop.store(true, Ordering::Relaxed);
+                        }
+                        KeyCode::Esc => busy.stop.store(true, Ordering::Relaxed),
+                        _ => {}
+                    }
+                }
+                return None;
+            }
             Popup::Delete(_) => {
                 if key.code == KeyCode::Char('y') {
                     self.delete();
@@ -517,15 +577,15 @@ impl App {
             }
             KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Side,
             KeyCode::Char('l') | KeyCode::Right => self.focus = Focus::List,
+            KeyCode::Up if ctrl => self.step(isize::MIN),
+            KeyCode::Down if ctrl => self.step(isize::MAX),
             KeyCode::Char('j') | KeyCode::Down => self.step(1),
             KeyCode::Char('k') | KeyCode::Up => self.step(-1),
             KeyCode::PageDown => self.step(5),
             KeyCode::PageUp => self.step(-5),
-            KeyCode::Char('S') => {
-                let at = Sort::ALL.iter().position(|&s| s == self.sort).unwrap_or(0);
-                self.sort = Sort::ALL[(at + 1) % Sort::ALL.len()];
-                self.narrow();
-            }
+            KeyCode::Home | KeyCode::Char('g') => self.step(isize::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX),
+            KeyCode::Char('S') => self.resort(),
             KeyCode::Char('a') => {
                 let clip = paste();
                 let clip = clip.trim();
@@ -632,7 +692,7 @@ impl App {
 
     fn click(&mut self, at: Option<Target>) -> Option<Action> {
         if !matches!(self.popup, Popup::None) {
-            if at != Some(Target::Popup) {
+            if at != Some(Target::Popup) && !matches!(self.popup, Popup::Busy(_)) {
                 self.popup = Popup::None;
             }
             return None;
@@ -644,6 +704,7 @@ impl App {
                 self.focus = Focus::List;
             }
             Target::Add => return self.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Target::Sort => self.resort(),
             Target::Side => self.focus = Focus::Side,
             Target::Shelf(i) => {
                 self.focus = Focus::Side;
@@ -695,11 +756,27 @@ impl App {
         None
     }
 
+    /// Sort by the next of [`Sort::ALL`] that orders the papers otherwise,
+    /// as relevance does not without words to rank by; saying by what.
+    fn resort(&mut self) {
+        let wanted = self.wanted();
+        let was = self.sort.of(&wanted);
+        let at = Sort::ALL.iter().position(|&s| s == self.sort).unwrap_or(0);
+        self.sort = (1..Sort::ALL.len())
+            .map(|i| Sort::ALL[(at + i) % Sort::ALL.len()])
+            .find(|s| s.of(&wanted) != was)
+            .unwrap_or(self.sort);
+        self.narrow();
+        self.status = format!("sorted by {}", self.sort.of(&wanted).name());
+    }
+
+    /// Move `by` papers, or shelves, as far as there are: `isize::MIN` to
+    /// the first, `isize::MAX` to the last.
     fn step(&mut self, by: isize) {
         match self.focus {
             Focus::Side => {
-                let mut at = self.shelf;
-                loop {
+                let (mut at, mut left) = (self.shelf, by.unsigned_abs());
+                while left > 0 {
                     let next = at.saturating_add_signed(by.signum());
                     if next == at || next >= self.shelves.len() {
                         break;
@@ -707,7 +784,7 @@ impl App {
                     at = next;
                     if !matches!(self.shelves[at].0, Shelf::Heading(_)) {
                         self.shelf = at;
-                        break;
+                        left -= 1;
                     }
                 }
                 self.list.select(Some(0));
@@ -744,21 +821,19 @@ impl App {
             }
             return;
         }
-        match self.adding(|adder| adder.add(line)) {
-            Err(e) => match e.downcast::<Ambiguous>() {
-                Ok(a) => {
-                    self.popup = Popup::Choose(Box::new(Choose {
-                        name: a.name,
-                        papers: a.papers,
-                        pdf: a.pdf,
-                        at: 0,
-                    }));
-                    self.status.clear();
-                }
-                Err(e) => self.added(Err(e)),
-            },
-            done => self.added(done),
-        }
+        let (what, steps) = Source::of(line).plan();
+        let options = self.options();
+        let line = line.to_string();
+        self.work("Adding", what, Then::Add, move |lib, index, net, say| {
+            say(&format!("asking {}", steps.join(", then ")));
+            Adder {
+                lib,
+                index,
+                net,
+                options,
+            }
+            .add(&line)
+        });
     }
 
     /// File the PDF asked about as the paper picked of those it holds,
@@ -773,20 +848,23 @@ impl App {
         let Some(found) = papers.into_iter().nth(at) else {
             return;
         };
-        let done = self.adding(|adder| adder.file_chosen(found, &pdf));
-        self.added(done);
+        let options = self.options();
+        let what = found.title().to_string();
+        self.work("Adding", what, Then::Add, move |lib, index, net, say| {
+            say("asking the registries of it");
+            Adder {
+                lib,
+                index,
+                net,
+                options,
+            }
+            .file_chosen(found, &pdf)
+        });
     }
 
-    /// Add with `then`, into the folder or label picked on the left, the
-    /// index first brought up to what another program added meanwhile.
-    fn adding(
-        &mut self,
-        then: impl FnOnce(&mut Adder) -> anyhow::Result<crate::add::Added>,
-    ) -> anyhow::Result<crate::add::Added> {
-        let Some(net) = &self.net else {
-            anyhow::bail!("cannot add here: nothing is fetched");
-        };
-        self.index.refresh(&self.lib)?;
+    /// What is added is added into the folder or label picked on the left,
+    /// with an open copy of its PDF.
+    fn options(&self) -> Options {
         let mut options = Options {
             pdf: true,
             ..Options::default()
@@ -796,12 +874,100 @@ impl App {
             Shelf::Label(l) => options.labels.push(l.clone()),
             _ => {}
         }
-        then(&mut Adder {
-            lib: &self.lib,
-            index: &mut self.index,
-            net,
-            options,
-        })
+        options
+    }
+
+    /// Do `job` on a thread of its own, with a library and index of its own,
+    /// brought up to what is on disk; what it says of its steps, by `say`,
+    /// is shown in a popup until it is done, and `then` is done with what it
+    /// gave. `say` answers whether to go on.
+    fn work(
+        &mut self,
+        title: &'static str,
+        what: String,
+        then: Then,
+        job: impl FnOnce(&Library, &mut Index, &Net, &dyn Fn(&str) -> bool) -> anyhow::Result<Added>
+        + Send
+        + 'static,
+    ) {
+        let Some(net) = self.net.clone() else {
+            self.status = "cannot fetch here: nothing is fetched".to_string();
+            return;
+        };
+        let root = self.lib.root.clone();
+        let (tx, events) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        std::thread::spawn(move || {
+            let say = |s: &str| {
+                let _ = tx.send(Report::Said(s.to_string()));
+                !stopped.load(Ordering::Relaxed)
+            };
+            let done = Library::open(&root).and_then(|lib| {
+                let mut index = Index::open(&crate::index::default_path(&lib.root))?;
+                index.refresh(&lib)?;
+                job(&lib, &mut index, &net, &say)
+            });
+            let _ = tx.send(Report::Done(done));
+        });
+        self.status.clear();
+        self.popup = Popup::Busy(Box::new(Busy {
+            title,
+            what,
+            said: Vec::new(),
+            since: Instant::now(),
+            events,
+            stop,
+            browse: false,
+            then,
+        }));
+    }
+
+    /// Take what the work on its own thread has said; when it is done, do
+    /// with what it gave as it was to be done.
+    fn heed(&mut self) {
+        let Popup::Busy(busy) = &mut self.popup else {
+            return;
+        };
+        let done = loop {
+            match busy.events.try_recv() {
+                Ok(Report::Said(s)) => busy.said.push(s),
+                Ok(Report::Done(done)) => break done,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    break Err(anyhow::anyhow!("the work stopped, saying nothing"));
+                }
+            }
+        };
+        let Popup::Busy(busy) = std::mem::replace(&mut self.popup, Popup::None) else {
+            return;
+        };
+        // What the work wrote, read into this index.
+        if let Err(e) = self.index.refresh(&self.lib) {
+            self.status = one_line(&e);
+        }
+        match (busy.then, done) {
+            (Then::Fetch(_), Ok(added)) => self.attached(&added),
+            (Then::Add, Ok(added)) => self.added(Ok(added)),
+            (Then::Fetch(h), Err(e)) if !busy.stop.load(Ordering::Relaxed) => {
+                self.browse(&h, format!("no open copy: {}", one_line(&e)));
+            }
+            (Then::Fetch(h), Err(_)) if busy.browse => self.browse(&h, String::new()),
+            (Then::Fetch(h), Err(_)) => {
+                self.status = format!("{}: stopped; no PDF got", h.record.key);
+            }
+            (Then::Add, Err(e)) => match e.downcast::<Ambiguous>() {
+                Ok(a) => {
+                    self.popup = Popup::Choose(Box::new(Choose {
+                        name: a.name,
+                        papers: a.papers,
+                        pdf: a.pdf,
+                        at: 0,
+                    }));
+                }
+                Err(e) => self.added(Err(e)),
+            },
+        }
     }
 
     /// Say what came of adding, and show the paper added.
@@ -967,17 +1133,37 @@ impl App {
         self.narrow();
     }
 
-    /// Get the PDF of the paper picked in the browser: its page opened
-    /// there, the PDF downloaded there awaited.
+    /// Get the PDF of the paper picked: an open copy, downloaded on a
+    /// thread of its own, its steps shown, if one is to be had; else, or
+    /// asked, in the browser.
     pub fn get_pdf(&mut self) {
-        let Some(h) = self.current() else { return };
+        let Some(h) = self.current().cloned() else {
+            return;
+        };
         if h.has_pdf {
             self.status = format!("{} has its PDF: ⏎ opens it", h.record.key);
             return;
         }
+        if self.net.is_none() {
+            self.browse(&h, String::new());
+            return;
+        }
+        let what = h.record.title().to_string();
+        let hit = h.clone();
+        self.work(
+            "Looking for an open copy",
+            what,
+            Then::Fetch(h),
+            move |lib, index, net, say| open_copy(lib, index, net, &hit, say),
+        );
+    }
+
+    /// Get the PDF of `h` in the browser: its page opened there, the PDF
+    /// downloaded there awaited; `note` said in the dialog.
+    fn browse(&mut self, h: &Hit, note: String) {
         let page = browser::page(&h.record);
         let note = match browser::open(&page) {
-            Ok(()) => String::new(),
+            Ok(()) => note,
             Err(e) => one_line(&e),
         };
         self.popup = Popup::Fetch(Box::new(Fetch {
@@ -993,6 +1179,10 @@ impl App {
     /// Look for the PDF awaited among what has been downloaded since; say
     /// whether anything came of it, to be shown.
     pub fn tick(&mut self) -> bool {
+        if let Popup::Busy(_) = self.popup {
+            self.heed();
+            return true;
+        }
         let Popup::Fetch(fetch) = &mut self.popup else {
             return false;
         };

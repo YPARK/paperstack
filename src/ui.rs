@@ -3,7 +3,7 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target};
+use crate::app::{App, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then};
 use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
@@ -63,6 +63,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
         Popup::Choose(choose) => Some(chooser(f, &t, choose)),
+        Popup::Busy(busy) => Some(busy_dialog(f, &t, busy)),
         Popup::None => None,
     };
     if let Some(area) = popup {
@@ -92,7 +93,7 @@ fn search(f: &mut Frame, app: &mut App, area: Rect) {
     let [brand, box_, right] = Layout::horizontal([
         Constraint::Length(SIDEBAR),
         Constraint::Min(20),
-        Constraint::Length(42),
+        Constraint::Length(52),
     ])
     .areas(area);
     let (name, button) = (" ▤ paperstack ", " + Add ");
@@ -137,25 +138,26 @@ fn search(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(Span::styled(" / ", Style::new().fg(t.dim).bg(t.page))),
         hint,
     );
-    let count = format!(
-        "↓ {}   {} of {} references ",
-        sorted_by(app),
-        app.shown.len(),
-        app.total()
-    );
+    let sort = format!("Sorted by {} ", app.sort.of(&app.wanted()).name());
+    let count = format!("  {} of {} references ", app.shown.len(), app.total());
+    let width = (sort.chars().count() + count.chars().count()) as u16;
+    let start = right.x + right.width.saturating_sub(width);
+    app.targets.push((
+        Rect {
+            x: start,
+            width: (sort.chars().count() as u16).min(right.width),
+            ..right
+        },
+        Target::Sort,
+    ));
     f.render_widget(
-        Paragraph::new(Span::styled(count, Style::new().fg(t.dim)))
-            .alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(Line::from(vec![
+            Span::styled(sort, Style::new().fg(t.accent).bold()),
+            Span::styled(count, Style::new().fg(t.dim)),
+        ]))
+        .alignment(ratatui::layout::Alignment::Right),
         right,
     );
-}
-
-fn sorted_by(app: &App) -> String {
-    let name = app.sort.name();
-    let mut c = name.chars();
-    c.next()
-        .map(|first| first.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
 }
 
 fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
@@ -550,11 +552,11 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     let area = centered(f.area(), 86, 16);
     f.render_widget(Clear, area);
     let (what, steps) = Source::of(line).plan();
-    let dim = Style::new().fg(t.dim);
+    let hint = Style::new().fg(t.hint);
     let mut lines = vec![
         Line::styled(
             "DOI, arXiv id, PMID, address, a PDF's path, a title, or a library's export",
-            dim,
+            hint,
         ),
         Line::from(vec![
             Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
@@ -564,28 +566,28 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     ];
     if !what.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("reads as ", dim),
+            Span::styled("reads as ", hint),
             Span::styled(what, Style::new().fg(t.title).bold()),
         ]));
         for (n, step) in steps.iter().enumerate() {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {}. ", n + 1), dim),
+                Span::styled(format!("  {}. ", n + 1), hint),
                 Span::raw(*step),
             ]));
         }
     }
     let block = dialog(t, "Add paper")
-        .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", dim));
+        .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", hint));
     f.render_widget(Paragraph::new(lines).block(block), area);
     area
 }
 
 /// The papers a PDF holds, to pick the one it is filed as.
 fn chooser(f: &mut Frame, t: &Theme, choose: &Choose) -> Rect {
-    let dim = Style::new().fg(t.dim);
+    let hint = Style::new().fg(t.hint);
     let mut lines = vec![
         Line::raw(""),
-        Line::styled(clip(&choose.name, 84), dim),
+        Line::styled(clip(&choose.name, 84), hint),
         Line::raw("Its first page holds more than one paper. Which is it to be filed as?"),
         Line::raw(""),
     ];
@@ -605,7 +607,7 @@ fn chooser(f: &mut Frame, t: &Theme, choose: &Choose) -> Rect {
     let area = centered(f.area(), 92, lines.len() as u16 + 3);
     f.render_widget(Clear, area);
     let block = dialog(t, "Which paper?")
-        .title_bottom(Line::styled(" j/k or 1–9 pick · ⏎ add · esc cancel ", dim));
+        .title_bottom(Line::styled(" j/k or 1–9 pick · ⏎ add · esc cancel ", hint));
     f.render_widget(Paragraph::new(lines).block(block), area);
     area
 }
@@ -614,12 +616,12 @@ fn chooser(f: &mut Frame, t: &Theme, choose: &Choose) -> Rect {
 fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
     let area = centered(f.area(), 88, 15);
     f.render_widget(Clear, area);
-    let dim = Style::new().fg(t.dim);
+    let hint = Style::new().fg(t.hint);
     let mut lines = vec![
         Line::styled(fetch.title.clone(), Style::new().fg(t.title).bold()),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("opened  ", dim),
+            Span::styled("opened  ", hint),
             Span::styled(fetch.page.clone(), Style::new().fg(t.accent)),
         ]),
         Line::raw(""),
@@ -631,7 +633,7 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
         ]),
         Line::styled(
             "Or paste a path or address, press ctrl-l to locate a file, or the button in Chrome.",
-            dim,
+            hint,
         ),
         Line::raw(""),
         Line::from(vec![
@@ -648,7 +650,7 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
     }
     let block = dialog(t, "Get the PDF").title_bottom(Line::styled(
         " ⏎ take it · ctrl-v paste · ctrl-l a file on disk · ctrl-o the page · esc stop ",
-        dim,
+        hint,
     ));
     f.render_widget(
         Paragraph::new(lines)
@@ -659,9 +661,57 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
     area
 }
 
+/// Steps said of work on its own thread shown, the latest of them.
+const STEPS: usize = 6;
+
+/// Work on its own thread, as a download: what it is for, how long it has
+/// taken, and what it has said, the latest last.
+fn busy_dialog(f: &mut Frame, t: &Theme, busy: &Busy) -> Rect {
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let area = centered(f.area(), 88, STEPS as u16 + 7);
+    f.render_widget(Clear, area);
+    let hint = Style::new().fg(t.hint);
+    let since = busy.since.elapsed();
+    let spin = SPINNER[(since.as_millis() / 100) as usize % SPINNER.len()];
+    let stopping = busy.stop.load(std::sync::atomic::Ordering::Relaxed);
+    let mut lines = vec![
+        Line::styled(clip(&busy.what, 84), Style::new().fg(t.title).bold()),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(format!("{spin} "), Style::new().fg(t.accent).bold()),
+            Span::styled(
+                if stopping {
+                    "stopping after this step".to_string()
+                } else {
+                    "working".to_string()
+                },
+                Style::new().fg(t.accent),
+            ),
+            Span::styled(format!("  {} s", since.as_secs()), hint),
+        ]),
+    ];
+    let from = busy.said.len().saturating_sub(STEPS);
+    let last = busy.said.len().saturating_sub(1);
+    for (i, s) in busy.said.iter().enumerate().skip(from) {
+        let style = if i == last {
+            Style::new().fg(t.text)
+        } else {
+            hint
+        };
+        lines.push(Line::styled(clip(s, 84), style));
+    }
+    let keys = match busy.then {
+        Then::Fetch(_) => " b the browser now · esc stop ",
+        Then::Add => " the screen is yours again when it is done ",
+    };
+    let block = dialog(t, busy.title).title_bottom(Line::styled(keys, hint));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+    area
+}
+
 /// What is to be deleted, asked first.
 fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
-    let dim = Style::new().fg(t.dim);
+    let hint = Style::new().fg(t.hint);
     let pdfs = matches!(doomed, Doomed::Pdfs(_));
     let (title, mut lines) = match doomed {
         Doomed::Papers(papers) | Doomed::Pdfs(papers) => {
@@ -676,7 +726,10 @@ fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
                 })
                 .collect();
             if papers.len() > 10 {
-                lines.push(Line::styled(format!("and {} more", papers.len() - 10), dim));
+                lines.push(Line::styled(
+                    format!("and {} more", papers.len() - 10),
+                    hint,
+                ));
             }
             lines.push(Line::raw(""));
             let (title, note) = if pdfs {
@@ -702,7 +755,7 @@ fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
                     "Their records and PDFs are moved to the library's .trash/ folder.",
                 )
             };
-            lines.push(Line::styled(note, dim));
+            lines.push(Line::styled(note, hint));
             (title, lines)
         }
         Doomed::Shelf(kind, name, count) => {
@@ -724,7 +777,7 @@ fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
     let area = centered(f.area(), 92, lines.len() as u16 + 3);
     f.render_widget(Clear, area);
     let block =
-        dialog(t, &title).title_bottom(Line::styled(" y delete · any other key keeps it ", dim));
+        dialog(t, &title).title_bottom(Line::styled(" y delete · any other key keeps it ", hint));
     f.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -739,7 +792,7 @@ fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     f.render_widget(Clear, area);
     let block = dialog(t, "BibTeX").title_bottom(Line::styled(
         " y copy · j/k scroll · any key closes ",
-        Style::new().fg(t.dim),
+        Style::new().fg(t.hint),
     ));
     f.render_widget(
         Paragraph::new(text.to_string())
@@ -765,12 +818,16 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
         ),
         (
             "S",
-            "sort: relevance, date added, year, first author, title",
+            "sort: relevance, date added, year, first author, title; or click it",
+        ),
+        (
+            "g G",
+            "the first paper, the last; home end, ctrl-↑ ctrl-↓ too",
         ),
         ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
         (
             "p",
-            "get the PDF in your browser, signed in: download it there, as you would",
+            "get the PDF: an open copy, else in your browser, signed in, to download",
         ),
         (
             "f",

@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 /// Open copies of a PDF tried before giving up on one.
 const PDF_TRIES: usize = 4;
+/// Open copies tried for a paper already here, before the browser.
+const OPEN_TRIES: usize = 6;
 /// Ids named in a PDF tried before searching for it.
 const ID_TRIES: usize = 6;
 
@@ -220,6 +222,55 @@ pub fn attach(
         outcome: Outcome::PdfAttached,
         how,
     })
+}
+
+/// Give `hit`, a paper without its PDF, an open copy of it, downloaded:
+/// the first that is that paper's, by [`attach`], of the open publisher's
+/// own, then OpenAlex's, asked only if those fail, then arXiv's. An error,
+/// saying why, where none is to be had. Each step is told to `say`, which
+/// answers whether to go on.
+pub fn open_copy(
+    lib: &Library,
+    index: &mut Index,
+    net: &Net,
+    hit: &Hit,
+    say: &dyn Fn(&str) -> bool,
+) -> anyhow::Result<Added> {
+    let r = &hit.record;
+    let key = &r.key;
+    let arxiv = r
+        .paperstack
+        .arxiv
+        .as_deref()
+        .or_else(|| r.doi().and_then(crate::source::arxiv_of_doi));
+    let doi = r.doi().filter(|d| crate::source::arxiv_of_doi(d).is_none());
+    let urls = doi
+        .map(resolve::publisher_pdfs)
+        .unwrap_or_default()
+        .into_iter()
+        .chain(doi.into_iter().flat_map(|d| {
+            say("asking OpenAlex where open copies are");
+            resolve::openalex_pdfs(net, d)
+        }))
+        .chain(arxiv.map(resolve::arxiv_pdf));
+    let mut seen = std::collections::HashSet::new();
+    let mut why = anyhow::anyhow!("no open copy of {key}'s PDF is known");
+    for url in urls.filter(|u| seen.insert(u.clone())).take(OPEN_TRIES) {
+        if !say(&format!("downloading {url}")) {
+            bail!("stopped");
+        }
+        match net
+            .pdf(&url)
+            .and_then(|bytes| attach(lib, index, key, &bytes, &url, false))
+        {
+            Ok(added) => return Ok(added),
+            Err(e) => {
+                say(&format!("  not it: {}", one_line(&e)));
+                why = e;
+            }
+        }
+    }
+    Err(why)
 }
 
 /// An error, its causes after it, on one line.
@@ -714,7 +765,7 @@ fn candidate(net: &Net, c: &resolve::Candidate) -> anyhow::Result<Found> {
                 && found.arxiv.is_none()
             {
                 found.arxiv = Some(id.clone());
-                found.pdfs.push(format!("https://arxiv.org/pdf/{id}"));
+                found.pdfs.push(resolve::arxiv_pdf(id));
             }
             Ok(found)
         }

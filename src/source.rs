@@ -119,6 +119,14 @@ pub fn dois(text: &str) -> Vec<String> {
     out
 }
 
+/// The arXiv id an arXiv DOI names, as `10.48550/arXiv.YYMM.NNNNN` does.
+pub fn arxiv_of_doi(doi: &str) -> Option<&str> {
+    const PREFIX: &str = "10.48550/arxiv.";
+    doi.get(..PREFIX.len())
+        .filter(|p| p.eq_ignore_ascii_case(PREFIX))
+        .map(|_| &doi[PREFIX.len()..])
+}
+
 /// An arXiv id without its version: `2412.99901` of `2412.99901v2`, and
 /// `solv-int/9912999` of `solv-int/9912999v1`.
 pub fn unversioned(id: &str) -> &str {

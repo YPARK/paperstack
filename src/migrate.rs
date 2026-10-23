@@ -205,11 +205,7 @@ fn item(v: &Value) -> Option<Item> {
         _ => false,
     };
     let arxiv = text(v, "arxivid").or_else(|| {
-        text(v, "doi").and_then(|d| {
-            d.to_lowercase()
-                .strip_prefix("10.48550/arxiv.")
-                .map(str::to_string)
-        })
+        text(v, "doi").and_then(|d| crate::source::arxiv_of_doi(&d).map(str::to_string))
     });
     let pdf = v
         .get("attachments")

@@ -111,16 +111,17 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | Key | |
 |---|---|
 | `j` / `k`, arrows | move; on the left, change shelf |
+| `g` / `G`, `home` / `end`, `ctrl-↑` / `ctrl-↓` | the first paper, the last |
 | `h` / `l`, `tab` | switch between shelves and papers |
 | `/` | search, as below; `esc` clears |
-| `S` | sort by relevance, date added, year, first author or title |
+| `S` | sort by relevance, date added, year, first author or title, as shown at the top right; click it too |
 | `enter`, `o` | open the PDF in ohp; quit ohp to come back |
 | `space` | mark a paper; `*` marks all shown, or unmarks them; `esc` unmarks all |
 | `ctrl-e` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
 | `d` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
-| `p` | get the PDF of a paper without one, in the browser |
+| `p` | get the PDF of a paper without one: an open copy, else in the browser |
 | `f` | locate a PDF on disk for the paper picked, where it has none |
 | `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
@@ -156,7 +157,11 @@ PDFs behind a paywall, or a publisher's bot check, are had only in the
 browser, signed in as you.
 
 A paper here without its PDF shows **get PDF**: click it, or press `p`, and
-its page opens in the browser, by its DOI. Download the PDF there, as you
+an open copy is looked for first, as `add` does: the open publisher's own,
+then OpenAlex's, a preprint's among them, then arXiv's. It is filed if its
+first page has the paper's title. Where there is none, its page opens in the
+browser, by its DOI, saying why. A popup shows each step meanwhile; `b`
+goes to the browser at once, `esc` stops. Download the PDF there, as you
 would, and it is filed beside the paper as soon as it lands in
 `~/Downloads`, if its first page has the paper's title; anything else
 downloaded meanwhile is left alone. Or paste the PDF's path, or its address,
@@ -167,7 +172,7 @@ it; given by its path, or located on disk, it is taken as you say. From the
 shell, the same:
 
 ```sh
-paperstack attach Brandt-Okafor2025-pb                 # open its page, await the download
+paperstack attach Brandt-Okafor2025-pb                 # an open copy, else open its page, await the download
 paperstack attach Brandt-Okafor2025-pb ~/Downloads/paper.pdf
 ```
 

@@ -106,8 +106,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Give a paper the PDF behind a paywall: its page opened in the
-    /// browser, the PDF downloaded there awaited; or a PDF's path or address
+    /// Give a paper its PDF: an open copy, downloaded, where there is one;
+    /// else, behind a paywall, its page opened in the browser, the PDF
+    /// downloaded there awaited; or a PDF's path or address
     Attach {
         key: String,
         /// A PDF's path, or its address, to take instead of waiting
@@ -307,6 +308,38 @@ fn email(given: Option<String>) -> Option<String> {
 }
 
 /// The program, as `paperstack` or `pst`.
+/// Open the page of `hit` in the browser and wait `wait` minutes for its
+/// PDF to be downloaded there: the first that is that paper's is filed.
+fn await_download(
+    lib: &Library,
+    index: &mut Index,
+    hit: &index::Hit,
+    wait: u64,
+) -> anyhow::Result<anyhow::Result<add::Added>> {
+    let key = &hit.record.key;
+    let page = browser::page(&hit.record);
+    browser::open(&page)?;
+    let mut arrivals = browser::Arrivals::new(browser::downloads());
+    eprintln!(
+        "opened {page}\ndownload its PDF there; waiting for it in {} …",
+        browser::tilde(&arrivals.dir)
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(wait * 60);
+    while std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        for path in arrivals.next() {
+            let from = browser::tilde(&path);
+            match add::attach(lib, index, key, &std::fs::read(&path)?, &from, false) {
+                Ok(added) => return Ok(Ok(added)),
+                Err(e) => eprintln!("paperstack: {}", add::one_line(&e)),
+            }
+        }
+    }
+    Ok(Err(anyhow::anyhow!(
+        "no PDF of {key} came in {wait} minutes"
+    )))
+}
+
 pub fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let net = || net::Net::new(email(args.email.clone()));
@@ -438,37 +471,18 @@ pub fn main() -> anyhow::Result<()> {
                     let hit = index
                         .get(&key)?
                         .ok_or_else(|| anyhow::anyhow!("no paper with the key {key}"))?;
-                    let page = browser::page(&hit.record);
-                    browser::open(&page)?;
-                    let mut arrivals = browser::Arrivals::new(browser::downloads());
-                    eprintln!(
-                        "opened {page}\ndownload its PDF there; waiting for it in {} …",
-                        browser::tilde(&arrivals.dir)
-                    );
-                    let until =
-                        std::time::Instant::now() + std::time::Duration::from_secs(wait * 60);
-                    let mut done = Err(anyhow::anyhow!("no PDF of {key} came in {wait} minutes"));
-                    'waiting: while std::time::Instant::now() < until {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        for path in arrivals.next() {
-                            let from = browser::tilde(&path);
-                            match add::attach(
-                                &lib,
-                                &mut index,
-                                &key,
-                                &std::fs::read(&path)?,
-                                &from,
-                                false,
-                            ) {
-                                Ok(added) => {
-                                    done = Ok(added);
-                                    break 'waiting;
-                                }
-                                Err(e) => eprintln!("paperstack: {}", add::one_line(&e)),
-                            }
+                    anyhow::ensure!(!hit.has_pdf, "{key} has its PDF already");
+                    let say = |s: &str| {
+                        eprintln!("paperstack: {s}");
+                        true
+                    };
+                    match add::open_copy(&lib, &mut index, &net(), &hit, &say) {
+                        Ok(added) => Ok(added),
+                        Err(e) => {
+                            eprintln!("paperstack: no open copy: {}", add::one_line(&e));
+                            await_download(&lib, &mut index, &hit, wait)?
                         }
                     }
-                    done
                 }
             };
             cli::print_added(&lib, &[(key, done)], json)

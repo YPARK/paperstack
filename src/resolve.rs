@@ -61,7 +61,7 @@ pub fn by_source(net: &Net, source: &Source) -> anyhow::Result<Found> {
 
 pub fn by_doi(net: &Net, doi: &str) -> anyhow::Result<Found> {
     let doi = source::clean_doi(doi);
-    if let Some(id) = doi.to_lowercase().strip_prefix("10.48550/arxiv.") {
+    if let Some(id) = source::arxiv_of_doi(&doi) {
         return by_arxiv(net, id);
     }
     let mut found =
@@ -108,7 +108,7 @@ pub fn by_arxiv(net: &Net, id: &str) -> anyhow::Result<Found> {
     if title.is_empty() || title == "Error" {
         bail!("arXiv does not know {id}");
     }
-    let pdf = format!("https://arxiv.org/pdf/{id}");
+    let pdf = arxiv_pdf(id);
     if let Some(doi) = tag(entry, "arxiv:doi") {
         let doi = source::clean_doi(&doi);
         if let Ok(mut found) = by_doi(net, &doi) {
@@ -430,15 +430,10 @@ pub fn enrich(net: &Net, found: &mut Found) {
             found.pdfs.insert(0, url);
         }
     }
-    let mut query = vec![(
-        "select",
+    let Some(work) = openalex_work(
+        net,
+        &doi,
         "ids,abstract_inverted_index,best_oa_location,locations",
-    )];
-    net.sign(&mut query, "mailto");
-    let Ok(work) = net.json(
-        &format!("https://api.openalex.org/works/doi:{doi}"),
-        "application/json",
-        &query,
     ) else {
         return;
     };
@@ -465,19 +460,50 @@ pub fn enrich(net: &Net, found: &mut Found) {
     {
         found.csl["abstract"] = json!(text);
     }
+    for url in located(&work) {
+        if !found.pdfs.contains(&url) {
+            found.pdfs.push(url);
+        }
+    }
+}
+
+/// Where OpenAlex's work says open copies of its PDF are, the best first.
+fn located(work: &Value) -> Vec<String> {
     let best = work.get("best_oa_location").into_iter();
     let all = work
         .get("locations")
         .and_then(Value::as_array)
         .into_iter()
         .flatten();
-    for loc in best.chain(all) {
-        if let Some(url) = loc.get("pdf_url").and_then(Value::as_str)
-            && !found.pdfs.iter().any(|p| p == url)
-        {
-            found.pdfs.push(url.to_string());
-        }
-    }
+    best.chain(all)
+        .filter_map(|loc| loc.get("pdf_url").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// OpenAlex's work of `doi`, its fields `select`.
+fn openalex_work(net: &Net, doi: &str, select: &str) -> Option<Value> {
+    let mut query = vec![("select", select)];
+    net.sign(&mut query, "mailto");
+    net.json(
+        &format!("https://api.openalex.org/works/doi:{doi}"),
+        "application/json",
+        &query,
+    )
+    .ok()
+}
+
+/// Where OpenAlex knows open copies of the PDF of `doi` to be, the best
+/// first.
+pub fn openalex_pdfs(net: &Net, doi: &str) -> Vec<String> {
+    openalex_work(net, doi, "best_oa_location,locations")
+        .map(|w| located(&w))
+        .unwrap_or_default()
+}
+
+/// arXiv's PDF of the paper `id`.
+pub fn arxiv_pdf(id: &str) -> String {
+    format!("https://arxiv.org/pdf/{id}")
 }
 
 /// PubMed's abstract, its sections' labels kept: for journals, as Nature's,

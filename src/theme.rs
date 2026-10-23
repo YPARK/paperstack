@@ -20,6 +20,8 @@ pub struct Theme {
     pub text: Color,
     /// What matters less: counts, years, keys, hints.
     pub dim: Color,
+    /// A dialog's hints and keys, which are read, so not dim.
+    pub hint: Color,
     pub title: Color,
     pub venue: Color,
     /// What is picked and in focus, and what may be acted on.
@@ -47,6 +49,7 @@ impl Theme {
                 side: Color::Rgb(241, 238, 232),
                 text: Color::Rgb(43, 43, 43),
                 dim: Color::Rgb(138, 133, 126),
+                hint: Color::Rgb(29, 78, 137),
                 title: Color::Rgb(28, 30, 36),
                 venue: Color::Rgb(29, 78, 137),
                 accent: Color::Rgb(29, 78, 137),
@@ -65,6 +68,7 @@ impl Theme {
                 side: Color::Reset,
                 text: Color::Reset,
                 dim: Color::DarkGray,
+                hint: Color::LightBlue,
                 title: Color::Reset,
                 venue: Color::LightBlue,
                 accent: Color::Blue,
