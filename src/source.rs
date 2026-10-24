@@ -72,7 +72,7 @@ pub fn clean_doi(s: &str) -> String {
             }
         }
         // bioRxiv's version: `10.1101/2023.09.11.999901v1`.
-        if d.starts_with("10.1101/")
+        if is_rxiv(&d)
             && let Some(at) = d.rfind('v')
             && d[at + 1..].chars().all(|c| c.is_ascii_digit())
             && at + 1 < d.len()
@@ -117,6 +117,12 @@ pub fn dois(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether a DOI is bioRxiv's or medRxiv's: `10.1101/` before openRxiv,
+/// `10.64898/` after.
+pub fn is_rxiv(doi: &str) -> bool {
+    doi.starts_with("10.1101/") || doi.starts_with("10.64898/")
 }
 
 /// The arXiv id an arXiv DOI names, as `10.48550/arXiv.YYMM.NNNNN` does.
@@ -219,7 +225,11 @@ impl Source {
         let (what, steps): (String, Vec<&'static str>) = match self {
             Source::Doi(d) => (
                 format!("DOI {d}"),
-                vec!["doi.org: the paper as CSL JSON (Crossref, DataCite, mEDRA)"],
+                vec![
+                    "doi.org: the paper as CSL JSON (Crossref, DataCite, mEDRA)",
+                    "else its page's citation_ tags",
+                    "else its open PDF told as a file's, or filed as unresolved",
+                ],
             ),
             Source::Arxiv(id) => (
                 format!("arXiv {id}"),
@@ -236,7 +246,10 @@ impl Source {
             Source::Pii(id) => (format!("Elsevier PII {id}"), vec!["Crossref: its DOI"]),
             Source::Url(u) => (
                 format!("page {u}"),
-                vec!["the page's citation_doi, citation_arxiv_id or citation_pmid"],
+                vec![
+                    "the page's citation_doi, citation_arxiv_id or citation_pmid",
+                    "else its citation_ tags; else filed as unresolved",
+                ],
             ),
             Source::Pdf(p) => (
                 format!("file {p}"),

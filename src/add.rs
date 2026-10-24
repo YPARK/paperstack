@@ -8,11 +8,11 @@ use crate::index::{Hit, Index};
 use crate::library::{self, Library};
 use crate::net::Net;
 use crate::pdf;
-use crate::record::{Meta, Record, new_key};
+use crate::record::{Meta, Record, UNRESOLVED, new_key};
 use crate::resolve::{self, Found};
 use crate::source::Source;
 use anyhow::{Context, bail};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -106,6 +106,8 @@ pub enum Outcome {
     Published,
     /// Already here, and given the PDF it lacked.
     PdfAttached,
+    /// Already here as a paper nothing knew, now as one known.
+    Resolved,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +145,7 @@ impl Added {
             Outcome::Known => "already here",
             Outcome::Published => "now as published",
             Outcome::PdfAttached => "given its PDF",
+            Outcome::Resolved => "now resolved",
         };
         let pdf = if self.has_pdf { "" } else { ", no PDF" };
         format!("{what}, by {}{pdf}", self.how)
@@ -196,13 +199,21 @@ pub fn attach(
         bail!("{from} is not a PDF");
     }
     let r = &hit.record;
-    let how = match shows(
+    let shown = shows(
         &pdf::read(bytes)?,
         r.title(),
         r.doi(),
         r.paperstack.arxiv.as_deref(),
-    ) {
+    );
+    let how = match shown {
         Some(true) => from.to_string(),
+        // An unresolved paper's title is but its DOI or address: a PDF
+        // without it may yet be the paper's.
+        Some(false) if r.is_unresolved() && named => format!("{from}, as named"),
+        Some(false) if r.is_unresolved() => bail!(
+            "{from} does not name {key}'s DOI: if it is {key}'s, \
+             attach it by its path, as `paperstack attach {key} <file>`"
+        ),
         Some(false) => bail!("{from} is not \"{}\"", r.title()),
         None if named => format!("{from}, with no text to check it by"),
         None => bail!(
@@ -305,11 +316,92 @@ impl Adder<'_> {
                 self.file(found, None, "its title")
             }
             id => {
-                let found = resolve::by_source(self.net, id)?;
-                let how = id_name(id);
-                self.file(found, None, &how)
+                let line = line.trim();
+                let found = match id {
+                    // Where doi.org knows not the DOI, its page: the
+                    // publisher's address given, or doi.org's.
+                    Source::Doi(doi) => {
+                        resolve::by_doi_at(self.net, doi, line.contains("://").then_some(line))
+                    }
+                    _ => resolve::by_source(self.net, id),
+                };
+                match found {
+                    Ok(mut found) => match self.unresolved_at(id)? {
+                        Some(hit) => {
+                            resolve::enrich(self.net, &mut found);
+                            self.merge(hit, found, None, &id_name(id))
+                        }
+                        None => self.file(found, None, &id_name(id)),
+                    },
+                    Err(e) if matches!(id, Source::Doi(_) | Source::Url(_)) => {
+                        self.unresolved(id, line, &e)
+                    }
+                    Err(e) => Err(e),
+                }
             }
         }
+    }
+
+    /// The last resort, for a paper neither its DOI nor its page tells: its
+    /// open PDF, where one is had, told as any other; else a record of the
+    /// DOI or address alone, labelled [`UNRESOLVED`] and titled by the PDF
+    /// where there is one, for a later add of it to fill in.
+    fn unresolved(
+        &mut self,
+        id: &Source,
+        line: &str,
+        why: &anyhow::Error,
+    ) -> anyhow::Result<Added> {
+        let doi = match id {
+            Source::Doi(d) => Some(d.as_str()),
+            _ => None,
+        };
+        let url = match doi {
+            Some(d) if !line.contains("://") => format!("https://doi.org/{d}"),
+            _ => line.to_string(),
+        };
+        let mut found = Found::new(json!({ "type": "article", "URL": url }), UNRESOLVED);
+        let bytes = match doi {
+            Some(d) if self.options.pdf => {
+                found.csl["DOI"] = json!(d);
+                resolve::enrich(self.net, &mut found);
+                // Tried here, they are not again when it is filed.
+                self.download(&std::mem::take(&mut found.pdfs))
+            }
+            Some(d) => {
+                found.csl["DOI"] = json!(d);
+                None
+            }
+            None => None,
+        };
+        if let Some(b) = &bytes
+            && let Ok(added) = self.add_pdf(b, line)
+        {
+            return Ok(added);
+        }
+        found.csl["title"] = json!(
+            bytes
+                .as_deref()
+                .and_then(|b| pdf::read(b).ok())
+                .and_then(|r| pdf::title_lines(r.pages.first()?).into_iter().next())
+                .unwrap_or_else(|| line.to_string())
+        );
+        let how = format!(
+            "nothing that knew it ({}); filed {UNRESOLVED}",
+            one_line(why)
+        );
+        self.file(found, bytes.as_deref(), &how)
+    }
+
+    /// The paper filed unresolved by the address `id` is: one by a DOI is
+    /// known by it, as any other.
+    fn unresolved_at(&self, id: &Source) -> anyhow::Result<Option<Hit>> {
+        let Source::Url(url) = id else {
+            return Ok(None);
+        };
+        Ok(self.index.by_title(url, None)?.filter(|h| {
+            h.record.is_unresolved() && h.record.csl.get("URL").and_then(Value::as_str) == Some(url)
+        }))
     }
 
     /// A paper by its title: added only where one paper Crossref, OpenAlex
@@ -386,7 +478,9 @@ impl Adder<'_> {
             id => Some(id),
         });
         let found = match id {
-            Some(id) => Some(resolve::by_source(self.net, &id)?),
+            Some(id) => Some(resolve::by_id_or_tags(
+                self.net, &id, &page.tags, &page.url,
+            )?),
             None => resolve::from_tags(&page.tags, &page.url),
         };
         let Some(mut found) = found else {
@@ -555,7 +649,11 @@ impl Adder<'_> {
 
     /// File what was found, or add to the paper it already is.
     fn file(&mut self, mut found: Found, pdf: Option<&[u8]>, how: &str) -> anyhow::Result<Added> {
-        resolve::enrich(self.net, &mut found);
+        // Of a paper nothing knew, its open copies were tried already.
+        let unresolved = found.source == UNRESOLVED;
+        if !unresolved {
+            resolve::enrich(self.net, &mut found);
+        }
         if let Some(hit) = self.known(&found)? {
             return self.merge(hit, found, pdf, how);
         }
@@ -571,6 +669,9 @@ impl Adder<'_> {
                 ..Meta::default()
             },
         };
+        if unresolved {
+            record.paperstack.labels.push(UNRESOLVED.to_string());
+        }
         let identity = found
             .doi()
             .map(str::to_string)
@@ -621,14 +722,23 @@ impl Adder<'_> {
     fn merge(
         &mut self,
         hit: Hit,
-        found: Found,
+        mut found: Found,
         pdf: Option<&[u8]>,
         how: &str,
     ) -> anyhow::Result<Added> {
         let mut record = Record::clone(&hit.record);
         let mut outcome = Outcome::Known;
         let mut changed = false;
-        if is_preprint(&record.csl) && !is_preprint(&found.csl) {
+        if found.source == UNRESOLVED {
+            // Nothing knew it: what is here stays as it is.
+        } else if record.is_unresolved() {
+            record.csl = std::mem::take(&mut found.csl);
+            record.paperstack.labels.retain(|l| l != UNRESOLVED);
+            record.paperstack.arxiv = record.paperstack.arxiv.or(found.arxiv.clone());
+            record.paperstack.source = Some(found.source.to_string());
+            outcome = Outcome::Resolved;
+            changed = true;
+        } else if is_preprint(&record.csl) && !is_preprint(&found.csl) {
             let pmid = record.csl.get("PMID").cloned();
             record.csl = found.csl.clone();
             if let (Some(pmid), Value::Object(map)) = (pmid, &mut record.csl) {

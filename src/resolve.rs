@@ -27,7 +27,7 @@ pub struct Found {
 }
 
 impl Found {
-    fn new(csl: Value, source: &'static str) -> Self {
+    pub fn new(csl: Value, source: &'static str) -> Self {
         Found {
             csl,
             arxiv: None,
@@ -74,6 +74,23 @@ pub fn by_doi(net: &Net, doi: &str) -> anyhow::Result<Found> {
         found = paper;
     }
     Ok(found)
+}
+
+/// The paper of `doi`; where doi.org gives no record of it, as for a DOI
+/// not yet registered or one whose agency gives none, the tags of its page
+/// at `page`, or at doi.org's address of it. Its page is read only for a
+/// DOI given to add, not for each one a PDF names.
+pub fn by_doi_at(net: &Net, doi: &str, page: Option<&str>) -> anyhow::Result<Found> {
+    by_doi(net, doi).or_else(|e| {
+        let doi = source::clean_doi(doi);
+        let url = page.map_or_else(|| format!("https://doi.org/{doi}"), str::to_string);
+        let (at, html) = net.page(&url).map_err(|_| e)?;
+        let metas = metas(&html);
+        let found = tagged(&metas, &at, &doi).with_context(|| {
+            format!("doi.org does not know {doi}, nor does {url} name the paper in its tags")
+        })?;
+        Ok(with_page_pdf(found, &metas))
+    })
 }
 
 fn by_doi_only(net: &Net, doi: &str) -> anyhow::Result<Found> {
@@ -166,7 +183,7 @@ pub fn by_pmid(net: &Net, pmid: &str) -> anyhow::Result<Found> {
     )?;
     let pmcid = csl.get("PMCID").and_then(Value::as_str).map(str::to_string);
     let mut found = match csl.get("DOI").and_then(Value::as_str) {
-        Some(doi) => by_doi(net, doi)?,
+        Some(doi) => by_doi(net, doi).unwrap_or_else(|_| Found::new(tidy(csl), "pubmed")),
         None => Found::new(tidy(csl), "pubmed"),
     };
     found.csl["PMID"] = json!(pmid);
@@ -280,18 +297,23 @@ pub fn by_page(net: &Net, url: &str) -> anyhow::Result<Found> {
         || "the publisher would not give its page: give the paper's DOI, or save its PDF to inbox/",
     )?;
     let metas = metas(&html);
-    let mut found = match from_metas(&metas) {
-        Some(source) => by_source(net, &source)?,
+    let found = match from_metas(&metas) {
+        Some(source) => by_id_or_tags(net, &source, &metas, &at)?,
         None => from_tags(&metas, &at).with_context(|| {
             format!(
                 "{url} names no DOI, arXiv id or PMID, nor a title and authors, in its meta tags"
             )
         })?,
     };
-    if let Some((_, pdf)) = metas.into_iter().find(|(k, _)| k == "citation_pdf_url") {
-        found.pdfs.insert(0, pdf);
+    Ok(with_page_pdf(found, &metas))
+}
+
+/// `found`, the PDF its page's tags name first.
+fn with_page_pdf(mut found: Found, metas: &[(String, String)]) -> Found {
+    if let Some((_, pdf)) = metas.iter().find(|(k, _)| k == "citation_pdf_url") {
+        found.pdfs.insert(0, pdf.clone());
     }
-    Ok(found)
+    found
 }
 
 /// The paper a page's Highwire tags describe, `citation_title`,
@@ -381,6 +403,30 @@ pub fn from_tags(metas: &[(String, String)], url: &str) -> Option<Found> {
     })
 }
 
+/// The paper `id`, a page's, names; else, where its registry knows it
+/// not, as the page's tags at `url` describe it.
+pub fn by_id_or_tags(
+    net: &Net,
+    id: &Source,
+    metas: &[(String, String)],
+    url: &str,
+) -> anyhow::Result<Found> {
+    by_source(net, id).or_else(|e| {
+        match id {
+            Source::Doi(doi) => tagged(metas, url, &source::clean_doi(doi)),
+            _ => from_tags(metas, url),
+        }
+        .ok_or(e)
+    })
+}
+
+/// The paper of `doi` as its page's tags describe it.
+fn tagged(metas: &[(String, String)], url: &str, doi: &str) -> Option<Found> {
+    let mut found = from_tags(metas, url)?;
+    found.csl["DOI"] = json!(doi);
+    Some(found)
+}
+
 /// Where open publishers keep a paper's PDF, by its DOI, as their pages,
 /// which are not always to be had, would say.
 pub fn publisher_pdfs(doi: &str) -> Vec<String> {
@@ -410,7 +456,7 @@ pub fn publisher_pdfs(doi: &str) -> Vec<String> {
         ));
     } else if lower.starts_with("10.3389/") {
         out.push(format!("https://www.frontiersin.org/articles/{doi}/pdf"));
-    } else if lower.starts_with("10.1101/") {
+    } else if source::is_rxiv(&lower) {
         out.push(format!("https://www.biorxiv.org/content/{doi}v1.full.pdf"));
         out.push(format!("https://www.medrxiv.org/content/{doi}v1.full.pdf"));
     } else if lower.starts_with("10.1038/") {

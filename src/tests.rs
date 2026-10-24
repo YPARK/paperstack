@@ -733,6 +733,10 @@ fn reads_ids_in_publishers_addresses() {
             Doi("10.1101/2023.09.11.999901".into()),
         ),
         (
+            "https://www.biorxiv.org/content/10.64898/2026.01.01.999901v2.full",
+            Doi("10.64898/2026.01.01.999901".into()),
+        ),
+        (
             "https://www.nature.com/articles/s99999-020-0001-2.pdf",
             Doi("10.1038/s99999-020-0001-2".into()),
         ),
@@ -1552,4 +1556,234 @@ fn finds_the_library_where_it_is_or_should_be() {
     )
     .unwrap();
     assert_eq!(crate::default_root_in(h), h.join("paperstack"));
+}
+
+/// The web with nothing in it.
+fn offline() -> crate::net::Net {
+    crate::net::Net::canned(&[])
+}
+
+fn record(index: &Index, key: &str) -> std::sync::Arc<crate::record::Record> {
+    index.get(key).unwrap().unwrap().record
+}
+
+/// A paper's record as doi.org gives it, under `doi`.
+fn csl(doi: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "article-journal",
+        "title": "A fictional map of CT1 cells",
+        "author": [{ "family": "Doe", "given": "Jane" }],
+        "issued": { "date-parts": [[2026, 1, 2]] },
+        "DOI": doi,
+    })
+}
+
+/// A paper's page with its Highwire tags, under `doi`.
+fn tagged_page(doi: &str) -> String {
+    format!(
+        r#"<html><head>
+        <meta name="citation_title" content="A fictional map of CT1 cells">
+        <meta name="citation_author" content="Doe, Jane">
+        <meta name="citation_author" content="Roe, Richard">
+        <meta name="citation_publication_date" content="2026/01/02">
+        <meta name="citation_doi" content="{doi}">
+        </head></html>"#
+    )
+}
+
+fn adder<'a>(
+    lib: &'a Library,
+    index: &'a mut Index,
+    net: &'a crate::net::Net,
+) -> crate::add::Adder<'a> {
+    crate::add::Adder {
+        lib,
+        index,
+        net,
+        options: crate::add::Options::default(),
+    }
+}
+
+#[test]
+fn reads_the_page_given_where_doi_org_does_not_know_its_doi() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.64898/2026.01.01.999901";
+    let url = format!("https://www.biorxiv.org/content/{doi}v1.full");
+    let net = crate::net::Net::canned(&[(&format!("page {url}"), &tagged_page(doi))]);
+    let added = adder(&lib, &mut index, &net).add(&url).unwrap();
+    let record = record(&index, &added.key);
+    assert_eq!(record.title(), "A fictional map of CT1 cells");
+    assert_eq!(record.doi(), Some(doi));
+}
+
+#[test]
+fn reads_a_dois_page_where_doi_org_gives_no_record() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.5555/fict.2026.02";
+    let page = format!("page https://doi.org/{doi}");
+    let net = crate::net::Net::canned(&[(&page, &tagged_page(doi))]);
+    let added = adder(&lib, &mut index, &net).add(doi).unwrap();
+    let record = record(&index, &added.key);
+    assert_eq!(record.title(), "A fictional map of CT1 cells");
+    assert_eq!(record.doi(), Some(doi));
+}
+
+#[test]
+fn reads_a_pages_tags_where_its_doi_is_not_known() {
+    let doi = "10.5555/fict.2026.03";
+    let url = "https://journal.example/article/3";
+    let net = crate::net::Net::canned(&[(&format!("page {url}"), &tagged_page(doi))]);
+    let found = crate::resolve::by_page(&net, url).unwrap();
+    assert_eq!(found.title(), "A fictional map of CT1 cells");
+    assert_eq!(found.doi(), Some(doi));
+}
+
+#[test]
+fn keeps_pubmeds_record_where_its_doi_is_not_known() {
+    let csl = csl("10.5555/fict.2026.04");
+    let net = crate::net::Net::canned(&[(
+        "json https://api.ncbi.nlm.nih.gov/lit/ctxp/v1/pubmed/",
+        &csl.to_string(),
+    )]);
+    let found = crate::resolve::by_pmid(&net, "99999904").unwrap();
+    assert_eq!(found.title(), "A fictional map of CT1 cells");
+    assert_eq!(found.doi(), Some("10.5555/fict.2026.04"));
+    assert_eq!(found.csl["PMID"], "99999904");
+}
+
+#[test]
+fn files_a_paper_no_one_knows_with_its_pdf_titled_by_it() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.5555/fict.2026.05";
+    let pdf = String::from_utf8(first_page("A Fictional Map of CT1 Cells")).unwrap();
+    let net = crate::net::Net::canned(&[
+        (
+            &format!("json https://api.openalex.org/works/doi:{doi}"),
+            r#"{ "best_oa_location": { "pdf_url": "https://repository.example/5.pdf" } }"#,
+        ),
+        ("pdf https://repository.example/5.pdf", &pdf),
+    ]);
+    let mut adder = adder(&lib, &mut index, &net);
+    adder.options.pdf = true;
+    let added = adder.add(doi).unwrap();
+    assert!(added.has_pdf);
+    let record = record(&index, &added.key);
+    assert_eq!(record.title(), "A Fictional Map of CT1 Cells");
+    assert_eq!(record.doi(), Some(doi));
+    assert_eq!(record.paperstack.labels, ["unresolved"]);
+}
+
+#[test]
+fn files_a_paper_no_one_knows_and_resolves_it_when_known() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.5555/fict.2026.06";
+    let offline = offline();
+    let first = adder(&lib, &mut index, &offline).add(doi).unwrap();
+    assert!(!first.has_pdf);
+    let placeholder = record(&index, &first.key);
+    assert_eq!(placeholder.title(), doi);
+    assert_eq!(placeholder.paperstack.labels, ["unresolved"]);
+
+    let csl = csl(doi);
+    let known =
+        crate::net::Net::canned(&[(&format!("json https://doi.org/{doi}"), &csl.to_string())]);
+    let again = adder(&lib, &mut index, &known).add(doi).unwrap();
+    assert_eq!(again.key, first.key);
+    assert_eq!(again.outcome, crate::add::Outcome::Resolved);
+    let resolved = record(&index, &again.key);
+    assert_eq!(resolved.title(), "A fictional map of CT1 cells");
+    assert!(resolved.paperstack.labels.is_empty());
+}
+
+#[test]
+fn attaches_to_an_unresolved_paper_the_pdf_naming_its_doi() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.5555/fict.2026.07";
+    let offline = offline();
+    let key = adder(&lib, &mut index, &offline).add(doi).unwrap().key;
+    let body = [
+        "We study what the title says, and report what we found, in some detail,",
+        "with methods, data and results set out over the pages that follow this one.",
+    ];
+    let pdf = |head: &[&str]| tiny_pdf(&[head, &body[..]].concat());
+    let other = pdf(&["A Fictional Map of CT1 Cells"]);
+    let err = crate::add::attach(&lib, &mut index, &key, &other, "x.pdf", false);
+    assert!(err.is_err());
+    let doi_line = format!("https://doi.org/{doi}");
+    let its = pdf(&["A Fictional Map of CT1 Cells", &doi_line]);
+    let added = crate::add::attach(&lib, &mut index, &key, &its, "x.pdf", false).unwrap();
+    assert!(added.has_pdf);
+}
+
+#[test]
+fn attaches_to_a_page_unresolved_the_pdf_named_by_its_path() {
+    let (_dir, lib, mut index) = library();
+    let offline = offline();
+    let url = "https://journal.example/article/8";
+    let key = adder(&lib, &mut index, &offline).add(url).unwrap().key;
+    let pdf = first_page("A Fictional Map of CT1 Cells");
+    assert!(crate::add::attach(&lib, &mut index, &key, &pdf, "x.pdf", false).is_err());
+    let added = crate::add::attach(&lib, &mut index, &key, &pdf, "x.pdf", true).unwrap();
+    assert!(added.has_pdf);
+}
+
+#[test]
+fn leaves_a_paper_here_alone_where_nothing_knows_its_doi() {
+    let (_dir, lib, mut index) = library();
+    let doi = "10.5555/demo.2017.01";
+    let before = index.by_doi(doi).unwrap().unwrap().record;
+    let offline = offline();
+    let added = adder(&lib, &mut index, &offline).add(doi).unwrap();
+    assert_eq!(added.key, before.key);
+    assert_eq!(added.outcome, crate::add::Outcome::Known);
+    let after = index.by_doi(doi).unwrap().unwrap().record;
+    assert_eq!(after.csl, before.csl);
+    assert_eq!(after.paperstack.labels, before.paperstack.labels);
+    assert!(!after.is_unresolved());
+}
+
+#[test]
+fn resolves_a_page_filed_unresolved_when_its_page_is_had() {
+    let (_dir, lib, mut index) = library();
+    let url = "https://journal.example/article/9";
+    let offline = offline();
+    let first = adder(&lib, &mut index, &offline).add(url).unwrap();
+    let net =
+        crate::net::Net::canned(&[(&format!("page {url}"), &tagged_page("10.5555/fict.2026.09"))]);
+    let again = adder(&lib, &mut index, &net).add(url).unwrap();
+    assert_eq!(again.key, first.key);
+    assert_eq!(again.outcome, crate::add::Outcome::Resolved);
+    let record = record(&index, &again.key);
+    assert_eq!(record.title(), "A fictional map of CT1 cells");
+    assert!(!record.is_unresolved());
+}
+
+#[test]
+fn reads_an_arxiv_doi_on_a_page_as_arxivs() {
+    let url = "https://journal.example/article/10";
+    let atom = "<feed><entry><title>A Fictional Map of CT1 Cells</title>\
+                <author><name>Jane Doe</name></author>\
+                <published>2026-01-02T00:00:00Z</published></entry></feed>";
+    let net = crate::net::Net::canned(&[
+        (
+            &format!("page {url}"),
+            &tagged_page("10.48550/arXiv.2601.00010"),
+        ),
+        ("text https://export.arxiv.org/api/query", atom),
+    ]);
+    let found = crate::resolve::by_page(&net, url).unwrap();
+    assert_eq!(found.arxiv.as_deref(), Some("2601.00010"));
+}
+
+#[test]
+fn tells_why_a_pdf_is_not_an_unresolved_papers() {
+    let (_dir, lib, mut index) = library();
+    let offline = offline();
+    let key = adder(&lib, &mut index, &offline)
+        .add("10.5555/fict.2026.11")
+        .unwrap()
+        .key;
+    let pdf = first_page("A Fictional Map of CT1 Cells");
+    let err = crate::add::attach(&lib, &mut index, &key, &pdf, "x.pdf", false).unwrap_err();
+    assert!(err.to_string().contains("does not name"), "{err}");
 }

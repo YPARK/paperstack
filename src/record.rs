@@ -46,7 +46,15 @@ pub struct Name {
     pub given: String,
 }
 
+/// The `source`, and a label, of a paper filed though nothing knew it, by
+/// its DOI or address alone, until a later add of it finds it.
+pub const UNRESOLVED: &str = "unresolved";
+
 impl Record {
+    pub fn is_unresolved(&self) -> bool {
+        self.paperstack.source.as_deref() == Some(UNRESOLVED)
+    }
+
     fn text(&self, field: &str) -> Option<&str> {
         match self.csl.get(field)? {
             Value::String(s) => Some(s.trim()).filter(|s| !s.is_empty()),

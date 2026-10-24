@@ -45,6 +45,10 @@ pub struct Net {
     /// Given to the registries, which serve those who give one first.
     pub email: Option<String>,
     agent_name: String,
+    /// The only answers there are, by `json`, `text`, `page` or `pdf` and
+    /// the address: the web as a test sees it.
+    #[cfg(test)]
+    canned: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
 }
 
 impl Net {
@@ -69,7 +73,36 @@ impl Net {
             agent,
             email,
             agent_name,
+            #[cfg(test)]
+            canned: None,
         }
+    }
+
+    /// A web of these answers only, each under its kind and address, as
+    /// `page https://doi.org/10.5555/x`; anything else is not to be had.
+    #[cfg(test)]
+    pub fn canned(answers: &[(&str, &str)]) -> Self {
+        Net {
+            canned: Some(std::sync::Arc::new(
+                answers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )),
+            ..Net::new(None)
+        }
+    }
+
+    /// The canned answer to `kind` of `url`, where the web is canned.
+    #[cfg(test)]
+    fn answer(&self, kind: &str, url: &str) -> Option<anyhow::Result<String>> {
+        let canned = self.canned.as_ref()?;
+        Some(
+            canned
+                .get(&format!("{kind} {url}"))
+                .cloned()
+                .with_context(|| format!("cannot read {url}")),
+        )
     }
 
     /// Add to `query` the address to write to, as `name`, where one is given.
@@ -81,6 +114,10 @@ impl Net {
 
     /// JSON from a registry, with `query` in its address.
     pub fn json(&self, url: &str, accept: &str, query: &[(&str, &str)]) -> anyhow::Result<Value> {
+        #[cfg(test)]
+        if let Some(text) = self.answer("json", url) {
+            return Ok(serde_json::from_str(&text?)?);
+        }
         let mut req = self
             .agent
             .get(url)
@@ -102,6 +139,10 @@ impl Net {
     /// a request every three seconds, and turns away those who ask faster;
     /// turned away, it is asked once more, later.
     pub fn text(&self, url: &str, query: &[(&str, &str)]) -> anyhow::Result<String> {
+        #[cfg(test)]
+        if let Some(text) = self.answer("text", url) {
+            return text;
+        }
         let arxiv = url.contains("arxiv.org");
         for attempt in 0..2 {
             if arxiv {
@@ -128,6 +169,10 @@ impl Net {
 
     /// A publisher's page, and where it was at last, after redirects.
     pub fn page(&self, url: &str) -> anyhow::Result<(String, String)> {
+        #[cfg(test)]
+        if let Some(html) = self.answer("page", url) {
+            return Ok((url.to_string(), html?));
+        }
         let mut resp = self
             .agent
             .get(url)
@@ -149,6 +194,10 @@ impl Net {
     /// A PDF; anything else, as a page asking to sign in, is an error,
     /// told by its type before it is read, where it says it is a page.
     pub fn pdf(&self, url: &str) -> anyhow::Result<Vec<u8>> {
+        #[cfg(test)]
+        if let Some(bytes) = self.answer("pdf", url) {
+            return Ok(bytes?.into_bytes());
+        }
         let mut resp = self
             .agent
             .get(url)
