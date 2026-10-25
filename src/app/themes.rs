@@ -1530,6 +1530,38 @@ mod tests {
             let (map, t) = app.map.as_ref().unwrap().group();
             map.member_keys(t)
         };
+        // Its card, l: the same, from the card.
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.popup, crate::app::Popup::Card(c) if c.finer));
+        // p, its PDF asked for: the card again once given up.
+        press(&mut app, KeyCode::Char('p'));
+        assert!(matches!(&app.popup, crate::app::Popup::Fetch(_)));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(&app.popup, crate::app::Popup::Card(c) if c.finer));
+        // Again, a PDF of it named: the card again, the paper with it.
+        let title = match &app.popup {
+            crate::app::Popup::Card(c) => c.papers[c.at].record.title().to_string(),
+            _ => unreachable!(),
+        };
+        let pdf = _dir.path().join("got.pdf");
+        std::fs::write(&pdf, crate::tests::first_page(&title)).unwrap();
+        press(&mut app, KeyCode::Char('p'));
+        for c in pdf.display().to_string().chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(&app.popup, crate::app::Popup::Card(c) if c.papers[c.at].has_pdf),
+            "{}",
+            app.status
+        );
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.view, View::List);
+        assert_eq!(app.shown.len(), finer.len());
+        // The group let go, so ⏎ on the map is what sets it again.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.group.is_none());
+        press(&mut app, KeyCode::Char('m'));
         app.to_read = 10;
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.view, View::List);

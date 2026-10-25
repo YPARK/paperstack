@@ -387,7 +387,8 @@ alone, laid out by their links among themselves and gathered in their own
 finer themes, each paper's strongest links drawn beneath. Within, `←` /
 `→` go into the next theme, a click picks a paper and says its title,
 twice opens it in ohp, and `⏎` shows the theme's card: its words, its
-authors and its papers, newest first, `⏎` opening one, `l` listing them.
+authors and its papers, newest first, `⏎` opening one, `p` getting its
+PDF, the card shown again after, `l` listing them.
 `esc`, or `ctrl-g`, comes out to the whole map. Fewer than ten papers in
 view, a theme's or a finer theme's, `⏎` or a double click lists them to
 read instead, the paper clicked picked, a finer theme's alone on its

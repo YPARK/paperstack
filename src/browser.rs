@@ -32,6 +32,10 @@ pub fn page(r: &Record) -> String {
 /// says `none`, the address only shown; else the one the system opens
 /// addresses with.
 pub fn open(url: &str) -> anyhow::Result<()> {
+    // Nor any from the tests.
+    if cfg!(test) {
+        return Ok(());
+    }
     let chosen = std::env::var("PAPERSTACK_BROWSER").unwrap_or_default();
     let mut command = match chosen.trim() {
         "none" => return Ok(()),

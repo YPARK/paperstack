@@ -388,7 +388,7 @@ fn stops_looking_for_an_open_copy_when_asked() {
     let (_dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
     let hit = app.shown[0].clone();
-    let (b, tx) = busy(Then::Fetch(hit.clone()));
+    let (b, tx) = busy(Then::Fetch(hit.clone(), None));
     let stop = b.stop.clone();
     app.popup = Popup::Busy(Box::new(b));
     app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -1157,7 +1157,7 @@ fn tiny_pdf(lines: &[&str]) -> Vec<u8> {
 }
 
 /// The first page of the demo paper `key`'s PDF, or another's.
-fn first_page(title: &str) -> Vec<u8> {
+pub(crate) fn first_page(title: &str) -> Vec<u8> {
     tiny_pdf(&[
         title,
         "A. Author, B. Author",
@@ -1264,6 +1264,7 @@ fn files_the_pdf_downloaded_for_the_paper_awaited() {
         line: String::new(),
         arrivals: crate::browser::Arrivals::new(downloads.clone()),
         note: String::new(),
+        back: None,
     }));
     std::fs::write(
         downloads.join("unrelated.pdf"),

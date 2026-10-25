@@ -883,7 +883,7 @@ fn busy_dialog(f: &mut Frame, t: &Theme, busy: &Busy) -> Rect {
         lines.push(Line::styled(clip(s, 84), style));
     }
     let keys = match busy.then {
-        Then::Fetch(_) => " b the browser now · esc stop ",
+        Then::Fetch(..) => " b the browser now · esc stop ",
         Then::Add | Then::Map | Then::Within => " the screen is yours again when it is done ",
     };
     let block = dialog(t, busy.title).title_bottom(Line::styled(keys, hint));
