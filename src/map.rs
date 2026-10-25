@@ -19,6 +19,21 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// Told each step of the work, as it starts; a step getting on, as
+/// `laying out the map: 40%`, said again as it does.
+pub type Say<'a> = &'a dyn Fn(&str);
+
+/// Whether `a` and `b` say the same step getting on: the same before a
+/// colon, and how far along after it.
+pub fn same_step(a: &str, b: &str) -> bool {
+    fn along(s: &str) -> Option<&str> {
+        let (step, n) = s.split_once(": ")?;
+        let n = n.trim_end_matches('…').strip_suffix('%')?;
+        n.parse::<u32>().is_ok().then_some(step)
+    }
+    along(a).is_some_and(|a| along(b) == Some(a))
+}
+
 /// A paper as the map reads it.
 pub struct Doc {
     pub key: String,
@@ -122,14 +137,20 @@ struct Graph {
 impl Graph {
     /// The links among the papers of `members`, by their places in it, each
     /// to its nearest of them; the words weighed over all `docs`.
-    fn among(docs: &[Doc], members: &[usize]) -> Graph {
+    fn among(docs: &[Doc], members: &[usize], say: Say) -> Graph {
+        say(&format!("reading the words of {} papers", docs.len()));
         let (vocab, vectors, df, common) = tfidf(docs);
         let mut local = vec![None; docs.len()];
         for (l, &d) in members.iter().enumerate() {
             local[d] = Some(l);
         }
+        say(&format!(
+            "finding each of {} papers' {KNN} nearest by their words",
+            members.len()
+        ));
         let near = knn(&vectors, vocab.len(), members, &|k| local[k].is_some());
         let mut edges = fuzzy(members, &near);
+        say("linking the papers that share authors");
         blend(&mut edges, &coauthors(docs, &|d| local[d].is_some()));
         let mut edges: Vec<(usize, usize, f32)> = edges
             .into_iter()
@@ -185,23 +206,23 @@ fn communities(
 impl Map {
     /// The map of `docs`, its themes gathered at `resolution`: the higher,
     /// the more themes, and the smaller.
-    pub fn build(docs: &[Doc], resolution: f64) -> Map {
+    pub fn build(docs: &[Doc], resolution: f64, say: Say) -> Map {
         let all: Vec<usize> = (0..docs.len()).collect();
-        Map::gather(docs, &all, resolution, |edges, theme, count| {
-            layout(docs.len(), edges, theme, count)
+        Map::gather(docs, &all, resolution, say, |edges, theme, count| {
+            layout(docs.len(), edges, theme, count, say)
         })
     }
 
     /// The papers on the map gathered in themes again at `resolution`,
     /// each left where it is: finer or coarser themes, in the same layout.
-    pub fn regroup(&self, docs: &[Doc], resolution: f64) -> Map {
+    pub fn regroup(&self, docs: &[Doc], resolution: f64, say: Say) -> Map {
         let places = self.places(docs);
         let members: Vec<usize> = (0..docs.len()).filter(|&d| places[d].is_some()).collect();
         let xy = members
             .iter()
             .filter_map(|&d| Some(self.xy[places[d]?]))
             .collect();
-        Map::gather(docs, &members, resolution, |_, _, _| xy)
+        Map::gather(docs, &members, resolution, say, |_, _, _| xy)
     }
 
     /// The papers of `members` gathered in themes at `resolution`, and put
@@ -210,9 +231,13 @@ impl Map {
         docs: &[Doc],
         members: &[usize],
         resolution: f64,
+        say: Say,
         place: impl FnOnce(&[(usize, usize, f32)], &[Option<usize>], usize) -> Vec<[f32; 2]>,
     ) -> Map {
-        let mut graph = Graph::among(docs, members);
+        let mut graph = Graph::among(docs, members, say);
+        say(&format!(
+            "gathering the themes at resolution {resolution:.2}"
+        ));
         let (theme, count) = communities(members.len(), &graph.edges, resolution);
         let xy = place(&graph.edges, &theme, count);
         let mut map = Map {
@@ -225,6 +250,7 @@ impl Map {
             common: std::mem::take(&mut graph.common),
         };
         map.recount();
+        say(&format!("naming {count} themes by their words"));
         let mut by_doc = vec![None; docs.len()];
         for (&d, &t) in members.iter().zip(&map.theme) {
             by_doc[d] = t;
@@ -237,13 +263,17 @@ impl Map {
     /// its papers alone, each linked to its nearest within it; the papers
     /// left where they are on the map, and the other themes as they were.
     /// The theme of the largest part now, or none where it does not split.
-    pub fn split(&mut self, docs: &[Doc], t: usize, resolution: f64) -> Option<usize> {
+    pub fn split(&mut self, docs: &[Doc], t: usize, resolution: f64, say: Say) -> Option<usize> {
         let on_map = self.places(docs);
         // The theme's papers, by doc; and each doc's place among them.
         let members: Vec<usize> = (0..docs.len())
             .filter(|&d| on_map[d].is_some_and(|m| self.theme[m] == Some(t)))
             .collect();
-        let graph = Graph::among(docs, &members);
+        let graph = Graph::among(docs, &members, say);
+        say(&format!(
+            "gathering {} papers in finer themes at resolution {resolution:.2}",
+            members.len()
+        ));
         let (part, count) = communities(members.len(), &graph.edges, resolution);
         if count < 2 {
             return None;
@@ -269,6 +299,7 @@ impl Map {
             .map(|m| m.and_then(|m| self.theme[m]))
             .collect();
         // Only those whose words were cleared, `t` and the new, named anew.
+        say(&format!("naming {count} themes by their words"));
         let mut named = self.themes.clone();
         graph.name(&mut named, docs, &by_doc);
         for (theme, named) in self.themes.iter_mut().zip(named) {
@@ -421,6 +452,7 @@ impl Map {
 /// A paper new since the map was built, and the theme its nearest papers
 /// on the map have most: what share of them, by weight, and where among
 /// them it would be put.
+#[derive(Clone)]
 pub struct Placing {
     pub key: String,
     pub theme: usize,
@@ -509,7 +541,7 @@ impl Map {
 /// The maps kept: the one shown, and the one before it was built again;
 /// and where the papers new since the one shown was built would go, to be
 /// asked of before they are put there.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Kept {
     pub current: Map,
     pub previous: Option<Map>,
@@ -530,9 +562,9 @@ impl Kept {
 
     /// A map of `docs` built at `resolution`, and kept at `path`, with none
     /// before it.
-    pub fn build(path: &Path, docs: &[Doc], resolution: f64) -> anyhow::Result<Kept> {
+    pub fn build(path: &Path, docs: &[Doc], resolution: f64, say: Say) -> anyhow::Result<Kept> {
         let kept = Kept {
-            current: Map::build(docs, checked(resolution)?),
+            current: Map::build(docs, checked(resolution)?, say),
             previous: None,
             placed: Vec::new(),
             path: path.to_path_buf(),
@@ -543,13 +575,14 @@ impl Kept {
 
     /// The maps kept at `path`, brought up to `docs`; one built and kept
     /// where none was.
-    pub fn open(path: &Path, docs: &[Doc]) -> anyhow::Result<Kept> {
+    pub fn open(path: &Path, docs: &[Doc], say: Say) -> anyhow::Result<Kept> {
         match Kept::read(path) {
             Some(mut kept) => {
+                say("placing the papers new since the map");
                 kept.refresh(docs);
                 Ok(kept)
             }
-            None => Kept::build(path, docs, RESOLUTION),
+            None => Kept::build(path, docs, RESOLUTION, say),
         }
     }
 
@@ -588,28 +621,35 @@ impl Kept {
 
     /// `map` shown, with the names given to the themes of the one shown
     /// till now, which is kept as the previous; new papers placed again.
-    fn show(&mut self, mut map: Map, docs: &[Doc]) -> anyhow::Result<()> {
+    fn show(&mut self, mut map: Map, docs: &[Doc], say: Say) -> anyhow::Result<()> {
         map.carry_names(&self.current);
         self.previous = Some(std::mem::replace(&mut self.current, map));
+        say("placing the papers new since the map");
         self.placed = self.current.place(docs);
+        say("keeping the map");
         self.save()
     }
 
     /// A map of `docs` built and shown at `resolution`, else the one shown
     /// till now's, which is kept as the previous.
-    pub fn rebuild(&mut self, docs: &[Doc], resolution: Option<f64>) -> anyhow::Result<()> {
+    pub fn rebuild(
+        &mut self,
+        docs: &[Doc],
+        resolution: Option<f64>,
+        say: Say,
+    ) -> anyhow::Result<()> {
         let resolution = checked(resolution.unwrap_or(self.current.resolution))?;
-        self.show(Map::build(docs, resolution), docs)
+        self.show(Map::build(docs, resolution, say), docs, say)
     }
 
     /// The map shown, brought up to `docs` first, gathered in themes again
     /// at `resolution`, its layout as it was; the map as it was kept as
     /// the previous.
-    pub fn regroup(&mut self, docs: &[Doc], resolution: f64) -> anyhow::Result<()> {
+    pub fn regroup(&mut self, docs: &[Doc], resolution: f64, say: Say) -> anyhow::Result<()> {
         let resolution = checked(resolution)?;
         self.current.keep(&keys(docs));
-        let map = self.current.regroup(docs, resolution);
-        self.show(map, docs)
+        let map = self.current.regroup(docs, resolution, say);
+        self.show(map, docs, say)
     }
 
     /// Theme `t` of the map shown, brought up to `docs` first, split in
@@ -620,15 +660,16 @@ impl Kept {
         docs: &[Doc],
         t: usize,
         resolution: f64,
+        say: Say,
     ) -> anyhow::Result<Option<usize>> {
         let resolution = checked(resolution)?;
         self.current.keep(&keys(docs));
         anyhow::ensure!(t < self.current.themes.len(), "no such theme");
         let mut map = self.current.clone();
-        let Some(largest) = map.split(docs, t, resolution) else {
+        let Some(largest) = map.split(docs, t, resolution, say) else {
             return Ok(None);
         };
-        self.show(map, docs)?;
+        self.show(map, docs, say)?;
         Ok(Some(largest))
     }
 
@@ -1031,6 +1072,7 @@ fn layout(
     edges: &[(usize, usize, f32)],
     theme: &[Option<usize>],
     themes: usize,
+    say: Say,
 ) -> Vec<[f32; 2]> {
     let mut rng = Rng(42);
     let centres: Vec<[f32; 2]> = (0..themes)
@@ -1046,7 +1088,7 @@ fn layout(
         n_epochs: if n > 10_000 { 200 } else { 500 },
         ..Umap::default()
     }
-    .fit(edges, n, &init);
+    .fit(edges, n, &init, say);
     y.as_chunks::<2>().0.to_vec()
 }
 
@@ -1202,7 +1244,7 @@ impl Hogwild {
 impl Umap {
     /// `edges` as `(i, j, weight)`, weight in (0, 1], each pair once; `init`
     /// the `n × 2` places to start from, row by row. The result is centred.
-    fn fit(&self, edges: &[(usize, usize, f32)], n: usize, init: &[f32]) -> Vec<f32> {
+    fn fit(&self, edges: &[(usize, usize, f32)], n: usize, init: &[f32], say: Say) -> Vec<f32> {
         assert_eq!(init.len(), n * 2, "init size mismatch");
 
         let max_weight = edges.iter().map(|e| e.2).fold(1e-4f32, f32::max);
@@ -1220,6 +1262,12 @@ impl Umap {
         let coords = &Hogwild(init.iter().map(|x| AtomicU32::new(x.to_bits())).collect());
         let (a, b, n_neg, seed) = (self.a, self.b, self.negative_sample_rate, self.seed);
         for epoch in 0..self.n_epochs {
+            if epoch % (self.n_epochs / 10).max(1) == 0 {
+                say(&format!(
+                    "laying out the map: {}%",
+                    epoch * 100 / self.n_epochs
+                ));
+            }
             let epoch_f = epoch as f32;
             let alpha = self.learning_rate * (1.0 - epoch_f / self.n_epochs as f32);
             edges
@@ -1331,7 +1379,7 @@ mod tests {
     #[test]
     fn gathers_papers_by_their_words_and_names_the_themes() {
         let docs = two_subjects(30);
-        let map = Map::build(&docs, RESOLUTION);
+        let map = Map::build(&docs, RESOLUTION, &|_| {});
         let theme_of = |key: &str| map.theme[map.keys.iter().position(|k| k == key).unwrap()];
         assert!(map.themes.len() >= 2);
         // Each subject's papers in themes of their own.
@@ -1359,10 +1407,10 @@ mod tests {
     #[test]
     fn gathers_the_themes_again_in_the_same_layout() {
         let mut docs = two_subjects(20);
-        let map = Map::build(&docs, RESOLUTION);
+        let map = Map::build(&docs, RESOLUTION, &|_| {});
         // A paper new since stays off it, to be placed.
         docs.push(doc("new", "single cell atlas marker3 cluster1", &[]));
-        let coarse = map.regroup(&docs, 0.2);
+        let coarse = map.regroup(&docs, 0.2, &|_| {});
         assert_eq!(coarse.resolution, 0.2);
         assert_eq!(coarse.keys, map.keys);
         assert_eq!(coarse.xy, map.xy);
@@ -1374,14 +1422,14 @@ mod tests {
     fn a_name_given_follows_its_papers() {
         let docs = two_subjects(20);
         let dir = tempfile::tempdir().unwrap();
-        let mut kept = Kept::open(&dir.path().join("map.json"), &docs).unwrap();
+        let mut kept = Kept::open(&dir.path().join("map.json"), &docs, &|_| {}).unwrap();
         let cell0 =
             |map: &Map| map.theme[map.keys.iter().position(|k| k == "cell0").unwrap()].unwrap();
         let t = cell0(&kept.current);
         kept.name(t, "  scRNA atlases ").unwrap();
         assert_eq!(kept.current.themes[t].name(), "scRNA atlases");
         // Gathered again at the same resolution, the same papers: named still.
-        kept.regroup(&docs, RESOLUTION).unwrap();
+        kept.regroup(&docs, RESOLUTION, &|_| {}).unwrap();
         assert_eq!(
             kept.current.themes[cell0(&kept.current)].name(),
             "scRNA atlases"
@@ -1403,9 +1451,47 @@ mod tests {
     }
 
     #[test]
+    fn says_each_step_as_it_starts() {
+        let said = std::cell::RefCell::new(Vec::new());
+        Map::build(&two_subjects(10), RESOLUTION, &|s| {
+            said.borrow_mut().push(s.to_string())
+        });
+        let said = said.into_inner();
+        for step in [
+            "reading the words",
+            "finding each",
+            "gathering the themes",
+            "laying out the map: 0%",
+            "laying out the map: 90%",
+            "naming",
+        ] {
+            assert!(said.iter().any(|s| s.starts_with(step)), "{step}: {said:?}");
+        }
+    }
+
+    #[test]
+    fn says_a_step_getting_on_in_place() {
+        assert!(same_step(
+            "laying out the map: 10%",
+            "laying out the map: 20%"
+        ));
+        assert!(!same_step("laying out the map: 90%", "naming 9 themes"));
+        // Lines that are no step getting on stay, colon or not.
+        assert!(!same_step("  not it: a review", "  not it: an erratum"));
+        assert!(!same_step(
+            "downloading https://a/b%20c",
+            "downloading https://a/d%20e"
+        ));
+        assert!(same_step(
+            "laying out the map: 10%…",
+            "laying out the map: 20%…"
+        ));
+    }
+
+    #[test]
     fn splits_a_theme_in_finer_ones() {
         let docs = two_subjects(20);
-        let mut map = Map::build(&docs, RESOLUTION);
+        let mut map = Map::build(&docs, RESOLUTION, &|_| {});
         // Both subjects as one theme, as at a coarse resolution.
         let xy = map.xy.clone();
         for t in map.theme.iter_mut().flatten() {
@@ -1413,7 +1499,7 @@ mod tests {
         }
         map.recount();
         assert_eq!(map.themes[0].size, 40);
-        let largest = map.split(&docs, 0, RESOLUTION).expect("it splits");
+        let largest = map.split(&docs, 0, RESOLUTION, &|_| {}).expect("it splits");
         assert!(map.themes.len() >= 2);
         assert_eq!(map.themes[largest].size, map.themes[0].size);
         let theme_of = |key: &str| map.theme[map.keys.iter().position(|k| k == key).unwrap()];
@@ -1434,7 +1520,7 @@ mod tests {
     #[test]
     fn places_a_new_paper_with_its_nearest() {
         let mut docs = two_subjects(20);
-        let mut map = Map::build(&docs, RESOLUTION);
+        let mut map = Map::build(&docs, RESOLUTION, &|_| {});
         // Words of half the papers say nothing; these say which half.
         docs.push(doc(
             "new",
@@ -1472,11 +1558,11 @@ mod tests {
         let path = default_path(&dir.path().join("index-ab.json"));
         assert!(path.ends_with("map-ab.json"));
         let docs = two_subjects(10);
-        let kept = Kept::open(&path, &docs).unwrap();
+        let kept = Kept::open(&path, &docs, &|_| {}).unwrap();
         assert!(kept.placed.is_empty() && kept.previous.is_none());
         let mut kept = Kept::read(&path).unwrap();
         let more = two_subjects(12);
-        kept.rebuild(&more, None).unwrap();
+        kept.rebuild(&more, None, &|_| {}).unwrap();
         let mut kept = Kept::read(&path).unwrap();
         assert_eq!(kept.current.keys.len(), more.len());
         assert_eq!(kept.previous.as_ref().unwrap().keys.len(), docs.len());

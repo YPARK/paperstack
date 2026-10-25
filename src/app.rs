@@ -246,7 +246,20 @@ pub struct Busy {
 /// What work on its own thread sends.
 pub enum Report {
     Said(String),
-    Done(anyhow::Result<Added>),
+    Done(anyhow::Result<Done>),
+}
+
+/// What work on its own thread gave.
+pub enum Done {
+    Added(Added),
+    Mapped(Box<Mapped>),
+}
+
+/// What the map's work gave: the maps, a theme to pick, what to say.
+pub struct Mapped {
+    pub kept: map::Kept,
+    pub picked: Option<usize>,
+    pub status: String,
 }
 
 /// What is done with what the work gave.
@@ -255,6 +268,8 @@ pub enum Then {
     Fetch(Hit),
     /// A paper added: shown; or, where its PDF holds several, asked which.
     Add,
+    /// The map built, or its themes gathered again: shown.
+    Map,
 }
 
 /// A PDF that holds more than one paper, as a page of letters, and the
@@ -355,6 +370,7 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
         }
         Ok(())
     })();
+    app.wait_for_map();
     give_back();
     result
 }
@@ -362,6 +378,14 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
 /// The terminal, as ratatui takes it, with the mouse's clicks and wheel.
 fn take() -> DefaultTerminal {
     let terminal = ratatui::init();
+    // Work on a thread of its own that panics is said to have stopped; the
+    // terminal stays the TUI's, which goes on.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            hook(info);
+        }
+    }));
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
     terminal
 }
@@ -899,49 +923,139 @@ impl App {
             self.view = View::List;
             return;
         }
+        // The theme whose papers are listed, picked.
+        let listed = match &self.shelves[self.shelf].0 {
+            Shelf::Theme(t, _) => Some(*t),
+            _ => None,
+        };
         match &mut self.map {
-            Some(m) if m.has(self.index.keys()) => {}
-            Some(_) => self.bring_up_map(),
-            None => {
-                let path = map::default_path(self.index.path());
-                match map::Kept::open(&path, &self.index.docs()) {
-                    Ok(kept) => {
-                        self.map = Some(MapView {
-                            kept,
-                            picked: 0,
-                            colours: false,
-                            canvas: Rect::default(),
-                            seen: self.index.keys().map(str::to_string).collect(),
-                        });
-                        self.reshelve();
-                    }
-                    Err(e) => {
-                        self.status = one_line(&e);
-                        return;
-                    }
+            Some(m) if m.has(self.index.keys()) => {
+                if let Some(t) = listed {
+                    m.picked = t;
+                }
+                self.view = View::Map;
+                let new = m.kept.placed.len();
+                if new > 0 {
+                    self.status = new_since(new);
                 }
             }
-        }
-        self.view = View::Map;
-        let shelf = &self.shelves[self.shelf].0;
-        let Some(m) = &mut self.map else { return };
-        // The theme whose papers are listed, picked.
-        if let Shelf::Theme(t, _) = shelf {
-            m.picked = *t;
-        }
-        let new = m.kept.placed.len();
-        if new > 0 {
-            self.status = format!(
-                "{new} papers new since the map: A puts them in the themes said, R gathers the themes again"
-            );
+            Some(_) => self.bring_up_map(listed),
+            None => {
+                let path = map::default_path(self.index.path());
+                let docs = self.index.docs();
+                self.map_work("the library's themes", move |say| {
+                    let kept = map::Kept::open(&path, &docs, say)?;
+                    let status = new_since(kept.placed.len());
+                    Ok(Mapped {
+                        kept,
+                        picked: None,
+                        status,
+                    })
+                });
+            }
         }
     }
 
+    /// The map's `job` done on a thread of its own, what it does said as it
+    /// goes; the map shown with what it gave once done.
+    fn map_work(
+        &mut self,
+        what: &str,
+        job: impl FnOnce(map::Say) -> anyhow::Result<Mapped> + Send + 'static,
+    ) {
+        self.spawn("Map", what.to_string(), Then::Map, move |say| {
+            let mapped = job(&|s: &str| {
+                say(&format!("{s}…"));
+            })?;
+            Ok(Done::Mapped(Box::new(mapped)))
+        });
+    }
+
+    /// The maps kept, changed by `job` on a thread of its own, from the
+    /// papers as they are; it gives a theme to pick, and what to say.
+    fn redo_map(
+        &mut self,
+        what: &str,
+        job: impl FnOnce(
+            &mut map::Kept,
+            &[map::Doc],
+            map::Say,
+        ) -> anyhow::Result<(Option<usize>, String)>
+        + Send
+        + 'static,
+    ) {
+        let Some(m) = &self.map else { return };
+        let mut kept = m.kept.clone();
+        let docs = self.index.docs();
+        self.map_work(what, move |say| {
+            // Done but not kept, as where it cannot be written, it is shown
+            // all the same, with why.
+            let (picked, status) =
+                job(&mut kept, &docs, say).unwrap_or_else(|e| (None, one_line(&e)));
+            Ok(Mapped {
+                kept,
+                picked,
+                status,
+            })
+        });
+    }
+
+    /// The map's work on its own thread, if any, waited for and its map
+    /// shown: as `paperstack screen` drives the keys, and before quitting,
+    /// so a map being written is not cut off.
+    pub fn wait_for_map(&mut self) {
+        while let Popup::Busy(busy) = &self.popup
+            && matches!(busy.then, Then::Map)
+        {
+            std::thread::sleep(SPIN / 10);
+            self.tick();
+        }
+    }
+
+    /// The map the work gave, shown, and what it said.
+    fn mapped(&mut self, mapped: Mapped) {
+        let Mapped {
+            kept,
+            picked,
+            status,
+        } = mapped;
+        match &mut self.map {
+            Some(m) => m.kept = kept,
+            None => {
+                self.map = Some(MapView {
+                    kept,
+                    picked: 0,
+                    colours: false,
+                    canvas: Rect::default(),
+                    seen: HashSet::new(),
+                })
+            }
+        }
+        if let (Some(m), Some(p)) = (&mut self.map, picked) {
+            m.picked = p;
+        }
+        self.view = View::Map;
+        self.status = status;
+        self.map_settled();
+    }
+
     /// The map brought up to the papers: those gone taken off it, those
-    /// new placed, to be asked of.
-    fn bring_up_map(&mut self) {
+    /// new placed, to be asked of; `picked`, if any, picked.
+    fn bring_up_map(&mut self, picked: Option<usize>) {
+        self.redo_map(
+            "the map, brought up to the papers",
+            move |kept, docs, say| {
+                say("placing the papers new since the map");
+                kept.refresh(docs);
+                Ok((picked, new_since(kept.placed.len())))
+            },
+        );
+    }
+
+    /// The map as brought up to the papers as they are now, a theme it
+    /// names picked, and the shelves again.
+    fn map_settled(&mut self) {
         let Some(m) = &mut self.map else { return };
-        m.kept.refresh(&self.index.docs());
         m.seen = self.index.keys().map(str::to_string).collect();
         m.settle();
         self.reshelve();
@@ -1073,25 +1187,23 @@ impl App {
     /// Gather the themes again from all papers, at the map's resolution,
     /// the map till now kept as the previous.
     fn rebuild(&mut self) {
-        let Some(m) = &mut self.map else { return };
-        let started = Instant::now();
-        self.status = match m.kept.rebuild(&self.index.docs(), None) {
-            Ok(()) => format!(
+        self.redo_map("all papers' themes, gathered again", |kept, docs, say| {
+            let started = Instant::now();
+            kept.rebuild(docs, None, say)?;
+            let status = format!(
                 "{} themes gathered at resolution {:.2} in {:.1}s; u shows the previous again",
-                m.map().named(),
-                m.map().resolution,
+                kept.current.named(),
+                kept.current.resolution,
                 started.elapsed().as_secs_f32()
-            ),
-            Err(e) => one_line(&e),
-        };
-        m.settle();
-        self.reshelve();
+            );
+            Ok((None, status))
+        });
     }
 
     /// Gather the themes again a step finer, `by` 1, or coarser, -1, in
     /// steps of half again, the papers where they are.
     fn regroup(&mut self, by: i32) {
-        let Some(m) = &mut self.map else { return };
+        let Some(m) = &self.map else { return };
         let now = m.map().resolution;
         // The next step on, from a resolution on one or between two.
         let at = now.ln() / STEP.ln();
@@ -1106,36 +1218,32 @@ impl App {
             self.status = format!("the themes are at their {most}, resolution {now:.2}");
             return;
         }
-        self.status = match m.kept.regroup(&self.index.docs(), r) {
-            Ok(()) => format!(
+        self.redo_map("the themes, gathered again", move |kept, docs, say| {
+            kept.regroup(docs, r, say)?;
+            let status = format!(
                 "{} themes at resolution {r:.2}; u shows the previous again",
-                m.map().named()
-            ),
-            Err(e) => one_line(&e),
-        };
-        m.settle();
-        self.reshelve();
+                kept.current.named()
+            );
+            Ok((None, status))
+        });
     }
 
     /// The theme picked split in finer themes of its own; the largest of
     /// them picked.
     fn split_theme(&mut self) {
-        let Some(m) = &mut self.map else { return };
+        let Some(m) = &self.map else { return };
         let t = m.picked;
         let Some(name) = m.map().themes.get(t).map(map::Theme::name) else {
             return;
         };
-        let docs = self.index.docs();
-        self.status = match m.kept.split(&docs, t, map::RESOLUTION) {
-            Ok(None) => format!("{name} does not split further"),
-            Ok(Some(largest)) => {
-                m.picked = largest;
-                format!("{name} split in finer themes; u shows it whole again")
-            }
-            Err(e) => one_line(&e),
-        };
-        m.settle();
-        self.reshelve();
+        self.redo_map(&format!("{name}, split"), move |kept, docs, say| {
+            let picked = kept.split(docs, t, map::RESOLUTION, say)?;
+            let status = match picked {
+                Some(_) => format!("{name} split in finer themes; u shows it whole again"),
+                None => format!("{name} does not split further"),
+            };
+            Ok((picked, status))
+        });
     }
 
     /// Ask for theme `t`'s name, its own or its words to start from.
@@ -1191,14 +1299,18 @@ impl App {
 
     /// The previous map shown again, the one till now kept as its previous.
     fn undo_map(&mut self) {
-        let Some(m) = &mut self.map else { return };
-        self.status = match m.kept.undo(&self.index.docs()) {
-            Ok(false) => "no previous map kept".to_string(),
-            Ok(true) => format!("the map of {} shown again; u for the other", m.map().built),
-            Err(e) => one_line(&e),
-        };
-        m.settle();
-        self.reshelve();
+        self.redo_map("the map before", |kept, docs, say| {
+            say("placing the papers new since the map");
+            let status = if kept.undo(docs)? {
+                format!(
+                    "the map of {} shown again; u for the other",
+                    kept.current.built
+                )
+            } else {
+                "no previous map kept".to_string()
+            };
+            Ok((None, status))
+        });
     }
 
     /// Sort by the next of [`Sort::ALL`] that orders the papers otherwise,
@@ -1340,18 +1452,34 @@ impl App {
             return;
         };
         let root = self.lib.root.clone();
+        self.spawn(title, what, then, move |say| {
+            Library::open(&root)
+                .and_then(|lib| {
+                    let mut index = Index::open(&crate::index::default_path(&lib.root))?;
+                    index.refresh(&lib)?;
+                    job(&lib, &mut index, &net, say)
+                })
+                .map(Done::Added)
+        });
+    }
+
+    /// Do `job` on a thread of its own; what it says of its steps, by
+    /// `say`, is shown in a popup until it is done, and `then` is done with
+    /// what it gave. `say` answers whether to go on.
+    fn spawn(
+        &mut self,
+        title: &'static str,
+        what: String,
+        then: Then,
+        job: impl FnOnce(&dyn Fn(&str) -> bool) -> anyhow::Result<Done> + Send + 'static,
+    ) {
         let (tx, events) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         std::thread::spawn(move || {
-            let say = |s: &str| {
+            let done = job(&|s: &str| {
                 let _ = tx.send(Report::Said(s.to_string()));
                 !stopped.load(Ordering::Relaxed)
-            };
-            let done = Library::open(&root).and_then(|lib| {
-                let mut index = Index::open(&crate::index::default_path(&lib.root))?;
-                index.refresh(&lib)?;
-                job(&lib, &mut index, &net, &say)
             });
             let _ = tx.send(Report::Done(done));
         });
@@ -1376,7 +1504,17 @@ impl App {
         };
         let done = loop {
             match busy.events.try_recv() {
-                Ok(Report::Said(s)) => busy.said.push(s),
+                Ok(Report::Said(s)) => {
+                    // A step said again, as it gets on, in place of before.
+                    if busy
+                        .said
+                        .last()
+                        .is_some_and(|last| map::same_step(last, &s))
+                    {
+                        busy.said.pop();
+                    }
+                    busy.said.push(s);
+                }
                 Ok(Report::Done(done)) => break done,
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1387,13 +1525,19 @@ impl App {
         let Popup::Busy(busy) = std::mem::replace(&mut self.popup, Popup::None) else {
             return;
         };
-        // What the work wrote, read into this index.
-        if let Err(e) = self.index.refresh(&self.lib) {
+        // What the work wrote, read into this index; the map's writes none.
+        if !matches!(busy.then, Then::Map)
+            && let Err(e) = self.index.refresh(&self.lib)
+        {
             self.status = one_line(&e);
         }
         match (busy.then, done) {
-            (Then::Fetch(_), Ok(added)) => self.attached(&added),
-            (Then::Add, Ok(added)) => self.added(Ok(added)),
+            (Then::Map, Ok(Done::Mapped(mapped))) => self.mapped(*mapped),
+            (Then::Map, Err(e)) => self.status = one_line(&e),
+            (Then::Fetch(_), Ok(Done::Added(added))) => self.attached(&added),
+            (Then::Add, Ok(Done::Added(added))) => self.added(Ok(added)),
+            // Work gives what it was started for.
+            (_, Ok(_)) => {}
             (Then::Fetch(h), Err(e)) if !busy.stop.load(Ordering::Relaxed) => {
                 self.browse(&h, format!("no open copy: {}", one_line(&e)));
             }
@@ -1430,7 +1574,7 @@ impl App {
                 }
                 // Shown on the map, as a cross, to be put in a theme.
                 if self.view == View::Map {
-                    self.bring_up_map();
+                    self.bring_up_map(None);
                 }
             }
             Err(e) => self.status = one_line(&e),
@@ -1901,6 +2045,16 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
     spec.chars()
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
         .collect()
+}
+
+/// What to say of `n` papers new since the map; nothing of none.
+fn new_since(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    format!(
+        "{n} papers new since the map: A puts them in the themes said, R gathers the themes again"
+    )
 }
 
 /// `key` typed into `line`: a character, backspace, ctrl-u to clear it or
