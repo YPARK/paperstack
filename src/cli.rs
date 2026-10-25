@@ -171,3 +171,82 @@ pub fn json(lib: &Library, h: &Hit) -> Value {
         "score": h.score,
     })
 }
+
+/// What `paperstack themes` prints: for a person, the words most papers
+/// have, then each theme of `MIN_THEME` papers or more, its words and its
+/// authors; and where the papers new since would go. For an agent, JSON.
+pub fn themes(
+    map: &crate::map::Map,
+    placed: &[crate::map::Placing],
+    json: bool,
+) -> anyhow::Result<()> {
+    if json {
+        let themes: Vec<Value> = map
+            .themes
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let keys: Vec<&str> = map.members(i).map(|(_, k)| k).collect();
+                json!({
+                    "theme": i,
+                    "words": t.words,
+                    "size": t.size,
+                    "authors": t.authors.iter().map(|(a, n)| json!({"name": a, "papers": n})).collect::<Vec<_>>(),
+                    "keys": keys,
+                })
+            })
+            .collect();
+        let new: Vec<Value> = placed
+            .iter()
+            .map(|p| json!({"key": p.key, "theme": p.theme, "share": p.share}))
+            .collect();
+        let common: Vec<Value> = map
+            .common
+            .iter()
+            .map(|(w, n)| json!({"word": w, "papers": n}))
+            .collect();
+        let out = json!({"built": map.built, "common": common, "themes": themes, "new": new});
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    let common: Vec<String> = map
+        .common
+        .iter()
+        .take(15)
+        .map(|(w, n)| format!("{w} {n}"))
+        .collect();
+    println!("{} papers, built {}", map.keys.len(), map.built);
+    println!("most papers have: {}\n", common.join(", "));
+    let named = map.named();
+    let small = map.themes.len() - named;
+    for (i, t) in map.themes.iter().enumerate().take(named) {
+        println!("{i:>3} {:>5}  {}", t.size, t.words.join(" · "));
+        if !t.authors.is_empty() {
+            let a: Vec<String> = t
+                .authors
+                .iter()
+                .map(|(a, n)| format!("{a} ({n})"))
+                .collect();
+            println!("           {}", a.join(", "));
+        }
+    }
+    if small > 0 {
+        println!(
+            "    and {small} themes of fewer than {} papers",
+            crate::map::MIN_THEME
+        );
+    }
+    if !placed.is_empty() {
+        println!("\n{} papers new since, by their nearest:", placed.len());
+        for p in placed {
+            println!(
+                "  {:<24} {:>3}% {}",
+                p.key,
+                (p.share * 100.0).round(),
+                map.themes[p.theme].name()
+            );
+        }
+        println!("`--assign` puts them there; `--rebuild` gathers the themes again");
+    }
+    Ok(())
+}

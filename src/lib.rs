@@ -14,6 +14,7 @@ mod demo;
 mod index;
 mod layout;
 mod library;
+mod map;
 mod mcp;
 mod migrate;
 mod net;
@@ -71,6 +72,23 @@ enum Command {
     },
     /// Bring the index up to the records, and say what could not be read
     Index,
+    /// The library's themes: papers gathered by their words and shared
+    /// authors, each theme named by the words that set it apart; papers
+    /// new since put in the themes of their nearest, once asked
+    Themes {
+        #[arg(long)]
+        json: bool,
+        /// Put the new papers in the themes said
+        #[arg(long, conflicts_with_all = ["rebuild", "undo"])]
+        assign: bool,
+        /// Gather the themes again from all papers, keeping these as the
+        /// previous
+        #[arg(long, conflicts_with = "undo")]
+        rebuild: bool,
+        /// Show the previous themes again, keeping these as the previous
+        #[arg(long)]
+        undo: bool,
+    },
     /// Find papers: words, "phrases", author:, year:2020..2026, folder:, has:pdf, -...
     Find {
         query: Vec<String>,
@@ -616,6 +634,36 @@ pub fn main() -> anyhow::Result<()> {
                 index.shelves()?.all
             );
             Ok(())
+        }
+        Some(Command::Themes {
+            json,
+            assign,
+            rebuild,
+            undo,
+        }) => {
+            let (_, index) = open(&args.library)?;
+            let path = map::default_path(index.path());
+            let docs = index.docs();
+            let kept = match map::Kept::read(&path) {
+                Some(mut kept) => {
+                    if rebuild {
+                        kept.rebuild(&docs)?;
+                    } else if undo {
+                        anyhow::ensure!(kept.undo(&docs)?, "no previous themes kept");
+                    } else {
+                        kept.refresh(&docs);
+                        if assign {
+                            kept.assign()?;
+                        }
+                    }
+                    kept
+                }
+                None => {
+                    anyhow::ensure!(!undo, "no previous themes kept");
+                    map::Kept::build(&path, &docs)?
+                }
+            };
+            cli::themes(&kept.current, &kept.placed, json)
         }
         Some(Command::Find {
             query,
