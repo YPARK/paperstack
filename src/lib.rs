@@ -459,6 +459,7 @@ pub fn main() -> anyhow::Result<()> {
             app.theme = theme::Theme::of(args.theme);
             for key in keys.iter().flat_map(|k| app::keys(k)) {
                 let _ = app.key(key);
+                app.wait_for_map();
             }
             if svg {
                 print!("{}", app::screen_svg(&mut app, width, height));
@@ -673,21 +674,41 @@ pub fn main() -> anyhow::Result<()> {
             let (lib, mut index) = open(&args.library)?;
             let path = map::default_path(index.path());
             let docs = index.docs();
+            // Each step of the work, on a terminal's stderr, a step getting
+            // on in place of its line before; the themes alone on stdout.
+            let last = std::cell::RefCell::new(String::new());
+            let terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+            let say = &|s: &str| {
+                use ratatui::crossterm::{cursor, execute, terminal as term};
+                if !terminal {
+                    return;
+                }
+                let mut last = last.borrow_mut();
+                if map::same_step(&last, s) {
+                    let _ = execute!(
+                        std::io::stderr(),
+                        cursor::MoveUp(1),
+                        term::Clear(term::ClearType::CurrentLine)
+                    );
+                }
+                eprintln!("{s}…");
+                *last = s.to_string();
+            };
             let kept = match map::Kept::read(&path) {
                 Some(mut kept) => {
                     if rebuild {
-                        kept.rebuild(&docs, resolution)?;
+                        kept.rebuild(&docs, resolution, say)?;
                     } else if let Some(t) = split {
                         let r = resolution.unwrap_or(map::RESOLUTION);
                         anyhow::ensure!(
-                            kept.split(&docs, t, r)?.is_some(),
+                            kept.split(&docs, t, r, say)?.is_some(),
                             "theme {} does not split at that resolution; try a higher --resolution",
                             t + 1
                         );
                     } else if undo {
                         anyhow::ensure!(kept.undo(&docs)?, "no previous themes kept");
                     } else if let Some(r) = resolution {
-                        kept.regroup(&docs, r)?;
+                        kept.regroup(&docs, r, say)?;
                     } else {
                         kept.refresh(&docs);
                         if assign {
@@ -713,7 +734,7 @@ pub fn main() -> anyhow::Result<()> {
                         !undo && split.is_none() && name.is_none() && label.is_none(),
                         "no themes kept yet: `paperstack themes` gathers them"
                     );
-                    map::Kept::build(&path, &docs, resolution.unwrap_or(map::RESOLUTION))?
+                    map::Kept::build(&path, &docs, resolution.unwrap_or(map::RESOLUTION), say)?
                 }
             };
             cli::themes(&kept.current, &kept.placed, json)

@@ -1796,6 +1796,9 @@ fn toggles_the_map_and_shows_a_themes_papers() {
     let mut app = App::new(lib, index).unwrap();
     let ctrl_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
     app.key(ctrl_g);
+    // Built on a thread of its own, the popup saying how it goes.
+    assert!(matches!(app.popup, Popup::Busy(_)));
+    app.wait_for_map();
     assert_eq!(app.view, View::Map);
     // Kept beside the index, not in the user's cache.
     assert!(dir.path().join("map.json").is_file());
@@ -1837,15 +1840,18 @@ fn gathers_the_themes_finer_and_back() {
     let mut app = App::new(lib, index).unwrap();
     let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
     app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    app.wait_for_map();
     let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
     assert_eq!(resolution(&app), 1.0);
     app.key(key('+'));
+    app.wait_for_map();
     assert_eq!(resolution(&app), 1.5);
     // Not starred, as `s` would a paper in the list: the theme is split,
     // and its largest part picked, or it is said that it does not split.
     let themes = |app: &App| app.map.as_ref().unwrap().map().themes.len();
     let before = themes(&app);
     app.key(key('s'));
+    app.wait_for_map();
     let m = app.map.as_ref().unwrap();
     if app.status.contains("does not split") {
         assert_eq!(themes(&app), before);
@@ -1855,6 +1861,7 @@ fn gathers_the_themes_finer_and_back() {
     }
     assert_eq!(resolution(&app), 1.5);
     app.key(key('-'));
+    app.wait_for_map();
     assert_eq!(resolution(&app), 1.0);
 }
 
@@ -1874,6 +1881,7 @@ fn names_a_theme_and_labels_its_papers() {
         }
     };
     app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    app.wait_for_map();
     let picked = app.map.as_ref().unwrap().picked;
     // n names the picked theme; its shelf says so.
     press(&mut app, KeyCode::Char('n'));
