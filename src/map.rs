@@ -111,6 +111,9 @@ const COAUTHOR_WEIGHT: f32 = 0.5;
 pub const MIN_THEME: usize = 5;
 /// Louvain's resolution, unless another is asked for.
 pub const RESOLUTION: f64 = 1.0;
+/// UMAP's epochs, and its first step's size, from a layout before.
+const WARM_EPOCHS: usize = 100;
+const WARM_RATE: f32 = 0.25;
 
 /// `r`, if a resolution themes can be gathered at.
 fn checked(r: f64) -> anyhow::Result<f64> {
@@ -205,23 +208,49 @@ fn communities(
 
 impl Map {
     /// The map of `docs`, its themes gathered at `resolution`: the higher,
-    /// the more themes, and the smaller.
+    /// the more themes, and the smaller; laid out anew.
     pub fn build(docs: &[Doc], resolution: f64, say: Say) -> Map {
+        Map::laid_out(docs, resolution, None, say)
+    }
+
+    /// The map of `docs` built again, as `build` does, but laid out from
+    /// where the papers are on this one, so it keeps its shape and its
+    /// size; a paper new since from among its nearest on it, as `place`
+    /// puts it.
+    pub fn rebuild(&self, docs: &[Doc], resolution: f64, say: Say) -> Map {
+        say("placing the papers new since the map");
+        let new: HashMap<String, [f32; 2]> = self
+            .place(docs)
+            .into_iter()
+            .map(|p| (p.key, p.xy))
+            .collect();
+        // A paper of no theme is nowhere in particular, as `place` reads it.
+        let from: Vec<Option<[f32; 2]>> = self
+            .places(docs)
+            .into_iter()
+            .zip(docs)
+            .map(|(m, d)| match m {
+                Some(m) => self.theme[m].map(|_| self.xy[m]),
+                None => new.get(&d.key).copied(),
+            })
+            .collect();
+        Map::laid_out(docs, resolution, Some(&from), say)
+    }
+
+    /// The map of `docs`, laid out anew, or from the places `from`.
+    fn laid_out(docs: &[Doc], resolution: f64, from: Option<&[Option<[f32; 2]>]>, say: Say) -> Map {
         let all: Vec<usize> = (0..docs.len()).collect();
         Map::gather(docs, &all, resolution, say, |edges, theme, count| {
-            layout(docs.len(), edges, theme, count, say)
+            layout(docs.len(), edges, theme, count, from, say)
         })
     }
 
     /// The papers on the map gathered in themes again at `resolution`,
     /// each left where it is: finer or coarser themes, in the same layout.
     pub fn regroup(&self, docs: &[Doc], resolution: f64, say: Say) -> Map {
-        let places = self.places(docs);
-        let members: Vec<usize> = (0..docs.len()).filter(|&d| places[d].is_some()).collect();
-        let xy = members
-            .iter()
-            .filter_map(|&d| Some(self.xy[places[d]?]))
-            .collect();
+        let xy_of = self.xy_of(docs);
+        let members: Vec<usize> = (0..docs.len()).filter(|&d| xy_of[d].is_some()).collect();
+        let xy = members.iter().filter_map(|&d| xy_of[d]).collect();
         Map::gather(docs, &members, resolution, say, |_, _, _| xy)
     }
 
@@ -355,6 +384,14 @@ impl Map {
         }
     }
 
+    /// Where each of `docs` is on the plane; none for one not on the map.
+    fn xy_of(&self, docs: &[Doc]) -> Vec<Option<[f32; 2]>> {
+        self.places(docs)
+            .into_iter()
+            .map(|m| Some(self.xy[m?]))
+            .collect()
+    }
+
     /// Each of `docs`' place on the map; none for one not on it.
     fn places(&self, docs: &[Doc]) -> Vec<Option<usize>> {
         let at: HashMap<&str, usize> = self
@@ -370,21 +407,18 @@ impl Map {
 
     /// Each theme's size and centre, from its papers.
     fn recount(&mut self) {
-        for t in &mut self.themes {
-            t.size = 0;
-            t.centre = [0.0; 2];
+        let placed = self
+            .xy
+            .iter()
+            .zip(&self.theme)
+            .filter_map(|(p, t)| Some((*p, (*t)?)));
+        let middles = middles(placed, self.themes.len());
+        for (theme, middle) in self.themes.iter_mut().zip(middles) {
+            theme.size = 0;
+            theme.centre = middle.unwrap_or_default();
         }
-        for (p, t) in self.xy.iter().zip(&self.theme) {
-            if let Some(t) = *t {
-                let th = &mut self.themes[t];
-                th.size += 1;
-                th.centre[0] += p[0];
-                th.centre[1] += p[1];
-            }
-        }
-        for t in self.themes.iter_mut().filter(|t| t.size > 0) {
-            t.centre[0] /= t.size as f32;
-            t.centre[1] /= t.size as f32;
+        for t in self.theme.iter().flatten() {
+            self.themes[*t].size += 1;
         }
         // Largest first still, as `named` counts them.
         let mut order: Vec<usize> = (0..self.themes.len()).collect();
@@ -631,15 +665,22 @@ impl Kept {
     }
 
     /// A map of `docs` built and shown at `resolution`, else the one shown
-    /// till now's, which is kept as the previous.
+    /// till now's, which is kept as the previous: laid out from where the
+    /// papers are on it, so the map keeps its shape, or, `fresh`, anew.
     pub fn rebuild(
         &mut self,
         docs: &[Doc],
         resolution: Option<f64>,
+        fresh: bool,
         say: Say,
     ) -> anyhow::Result<()> {
         let resolution = checked(resolution.unwrap_or(self.current.resolution))?;
-        self.show(Map::build(docs, resolution, say), docs, say)
+        let map = if fresh {
+            Map::build(docs, resolution, say)
+        } else {
+            self.current.rebuild(docs, resolution, say)
+        };
+        self.show(map, docs, say)
     }
 
     /// The map shown, brought up to `docs` first, gathered in themes again
@@ -1072,24 +1113,101 @@ fn layout(
     edges: &[(usize, usize, f32)],
     theme: &[Option<usize>],
     themes: usize,
+    from: Option<&[Option<[f32; 2]>]>,
     say: Say,
 ) -> Vec<[f32; 2]> {
     let mut rng = Rng(42);
-    let centres: Vec<[f32; 2]> = (0..themes)
-        .map(|_| [rng.range(-10.0, 10.0), rng.range(-10.0, 10.0)])
-        .collect();
-    let mut init = Vec::with_capacity(n * 2);
-    for t in theme {
-        let c = t.map_or([0.0, 0.0], |t| centres[t]);
-        init.push(c[0] + rng.range(-1.0, 1.0));
-        init.push(c[1] + rng.range(-1.0, 1.0));
-    }
+    // From where the papers were, if most were somewhere; else anew.
+    let from = from.filter(|from| 2 * from.iter().flatten().count() >= n);
+    let (init, epochs, rate, size) = match from {
+        // Each paper where it was; one never placed among its theme's, or
+        // its theme, if none of it was, off at the map's edge.
+        Some(from) => {
+            let known: Vec<[f32; 2]> = from.iter().flatten().copied().collect();
+            let size = spread(&known);
+            let placed = from
+                .iter()
+                .zip(theme)
+                .filter_map(|(p, t)| Some(((*p)?, (*t)?)));
+            let middles: Vec<[f32; 2]> = middles(placed, themes)
+                .into_iter()
+                .map(|m| {
+                    m.unwrap_or_else(|| {
+                        let a = rng.range(0.0, std::f32::consts::TAU);
+                        [2.0 * size * a.cos(), 2.0 * size * a.sin()]
+                    })
+                })
+                .collect();
+            let init = from
+                .iter()
+                .zip(theme)
+                .map(|(p, t)| match p {
+                    // Apart, if a little, as two placed alike would not be.
+                    Some(p) => rng.near(*p, 0.01 * size),
+                    None => rng.near(t.map_or([0.0, 0.0], |t| middles[t]), 1.0),
+                })
+                .collect();
+            (init, WARM_EPOCHS, WARM_RATE, Some(size))
+        }
+        // Each theme somewhere of its own, its papers about it.
+        None => {
+            let centres: Vec<[f32; 2]> = (0..themes)
+                .map(|_| [rng.range(-10.0, 10.0), rng.range(-10.0, 10.0)])
+                .collect();
+            let init = theme
+                .iter()
+                .map(|t| rng.near(t.map_or([0.0, 0.0], |t| centres[t]), 1.0))
+                .collect();
+            let epochs = if n > 10_000 { 200 } else { 500 };
+            (init, epochs, 1.0, None)
+        }
+    };
+    let init: Vec<[f32; 2]> = init;
     let y = Umap {
-        n_epochs: if n > 10_000 { 200 } else { 500 },
+        n_epochs: epochs,
+        learning_rate: rate,
         ..Umap::default()
     }
-    .fit(edges, n, &init, say);
-    y.as_chunks::<2>().0.to_vec()
+    .fit(edges, n, init.as_flattened(), say);
+    let mut y = y.as_chunks::<2>().0.to_vec();
+    // As large as the map before, not larger by each layout's push apart.
+    if let Some(size) = size {
+        let k = size / spread(&y).max(f32::MIN_POSITIVE);
+        for p in &mut y {
+            p[0] *= k;
+            p[1] *= k;
+        }
+    }
+    y
+}
+
+/// How far places lie from their middle, on average.
+fn spread(xy: &[[f32; 2]]) -> f32 {
+    let n = xy.len().max(1) as f32;
+    let m = xy
+        .iter()
+        .fold([0.0f32; 2], |m, p| [m[0] + p[0] / n, m[1] + p[1] / n]);
+    xy.iter()
+        .map(|p| (p[0] - m[0]).hypot(p[1] - m[1]))
+        .sum::<f32>()
+        / n
+}
+
+/// The middle of each theme's places, of those given with their themes;
+/// none for a theme given none.
+fn middles(
+    placed: impl Iterator<Item = ([f32; 2], usize)>,
+    themes: usize,
+) -> Vec<Option<[f32; 2]>> {
+    let mut sum = vec![([0.0f32; 2], 0usize); themes];
+    for (p, t) in placed {
+        sum[t].0[0] += p[0];
+        sum[t].0[1] += p[1];
+        sum[t].1 += 1;
+    }
+    sum.into_iter()
+        .map(|(c, k)| (k > 0).then(|| [c[0] / k as f32, c[1] / k as f32]))
+        .collect()
 }
 
 /// Each theme's words: those of its papers most and of all papers least,
@@ -1178,6 +1296,11 @@ impl Rng {
 
     fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * ((self.next() >> 40) as f32 / (1u64 << 24) as f32)
+    }
+
+    /// A place within `r` of `c` each way.
+    fn near(&mut self, c: [f32; 2], r: f32) -> [f32; 2] {
+        [c[0] + self.range(-r, r), c[1] + self.range(-r, r)]
     }
 
     fn shuffle<T>(&mut self, v: &mut [T]) {
@@ -1489,6 +1612,74 @@ mod tests {
     }
 
     #[test]
+    fn built_again_from_a_map_keeps_its_shape() {
+        let mut docs = two_subjects(30);
+        let map = Map::build(&docs, RESOLUTION, &|_| {});
+        docs.push(doc("new", "single cell atlas marker3 cluster1", &[]));
+        let again = map.rebuild(&docs, RESOLUTION, &|_| {});
+        assert_eq!(again.keys.len(), map.keys.len() + 1);
+        assert!(
+            again
+                .xy
+                .iter()
+                .all(|p| p[0].is_finite() && p[1].is_finite())
+        );
+        // Each paper near where it was, against the map's spread.
+        let n = map.keys.len() as f32;
+        let mean = map
+            .xy
+            .iter()
+            .fold([0.0, 0.0], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
+        let spread = map
+            .xy
+            .iter()
+            .map(|p| (p[0] - mean[0]).hypot(p[1] - mean[1]))
+            .sum::<f32>()
+            / n;
+        let moved = map
+            .xy
+            .iter()
+            .zip(&again.xy)
+            .map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
+            .sum::<f32>()
+            / n;
+        assert!(moved < 0.5 * spread, "moved {moved} of spread {spread}");
+    }
+
+    #[test]
+    fn built_again_and_again_stays_its_size() {
+        let docs = two_subjects(30);
+        let first = Map::build(&docs, RESOLUTION, &|_| {});
+        let mut map = first.clone();
+        for _ in 0..6 {
+            map = map.rebuild(&docs, RESOLUTION, &|_| {});
+        }
+        let (was, now) = (spread(&first.xy), spread(&map.xy));
+        assert!((now - was).abs() < 0.1 * was, "spread {was} became {now}");
+    }
+
+    #[test]
+    fn built_fresh_is_laid_out_anew() {
+        let docs = two_subjects(30);
+        let dir = tempfile::tempdir().unwrap();
+        let mut kept = Kept::open(&dir.path().join("map.json"), &docs, &|_| {}).unwrap();
+        let moved = |kept: &Kept| {
+            let (a, b) = (&kept.previous.as_ref().unwrap().xy, &kept.current.xy);
+            a.iter()
+                .zip(b)
+                .map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
+                .sum::<f32>()
+                / spread(a)
+                / a.len() as f32
+        };
+        kept.rebuild(&docs, None, false, &|_| {}).unwrap();
+        let warm = moved(&kept);
+        kept.rebuild(&docs, None, true, &|_| {}).unwrap();
+        let fresh = moved(&kept);
+        assert!(warm < fresh, "warm moved {warm}, fresh {fresh}");
+    }
+
+    #[test]
     fn splits_a_theme_in_finer_ones() {
         let docs = two_subjects(20);
         let mut map = Map::build(&docs, RESOLUTION, &|_| {});
@@ -1562,7 +1753,7 @@ mod tests {
         assert!(kept.placed.is_empty() && kept.previous.is_none());
         let mut kept = Kept::read(&path).unwrap();
         let more = two_subjects(12);
-        kept.rebuild(&more, None, &|_| {}).unwrap();
+        kept.rebuild(&more, None, false, &|_| {}).unwrap();
         let mut kept = Kept::read(&path).unwrap();
         assert_eq!(kept.current.keys.len(), more.len());
         assert_eq!(kept.previous.as_ref().unwrap().keys.len(), docs.len());

@@ -1105,7 +1105,8 @@ impl App {
                     self.ask_label(keys, name.unwrap_or_default());
                 }
             }
-            KeyCode::Char('R') => self.rebuild(),
+            KeyCode::Char('R') => self.rebuild(false),
+            KeyCode::Char('F') => self.rebuild(true),
             KeyCode::Char('s') => self.split_theme(),
             KeyCode::Char('+' | '=') => self.regroup(1),
             KeyCode::Char('-') => self.regroup(-1),
@@ -1185,11 +1186,17 @@ impl App {
     }
 
     /// Gather the themes again from all papers, at the map's resolution,
-    /// the map till now kept as the previous.
-    fn rebuild(&mut self) {
-        self.redo_map("all papers' themes, gathered again", |kept, docs, say| {
+    /// the map till now kept as the previous: laid out from where the
+    /// papers are, so the map keeps its shape, or, `fresh`, anew.
+    fn rebuild(&mut self, fresh: bool) {
+        let what = if fresh {
+            "all papers' themes, gathered and laid out anew"
+        } else {
+            "all papers' themes, gathered again"
+        };
+        self.redo_map(what, move |kept, docs, say| {
             let started = Instant::now();
-            kept.rebuild(docs, None, say)?;
+            kept.rebuild(docs, None, fresh, say)?;
             let status = format!(
                 "{} themes gathered at resolution {:.2} in {:.1}s; u shows the previous again",
                 kept.current.named(),

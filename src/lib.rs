@@ -82,9 +82,13 @@ enum Command {
         #[arg(long, group = "action")]
         assign: bool,
         /// Gather the themes again from all papers, keeping these as the
-        /// previous
+        /// previous; laid out from where the papers are, so the map keeps
+        /// its shape
         #[arg(long, group = "action")]
         rebuild: bool,
+        /// With `--rebuild`, the map laid out anew
+        #[arg(long, requires = "rebuild")]
+        fresh: bool,
         /// Show the previous themes again, keeping these as the previous
         #[arg(long, group = "action")]
         undo: bool,
@@ -665,6 +669,7 @@ pub fn main() -> anyhow::Result<()> {
             json,
             assign,
             rebuild,
+            fresh,
             undo,
             split,
             resolution,
@@ -697,7 +702,7 @@ pub fn main() -> anyhow::Result<()> {
             let kept = match map::Kept::read(&path) {
                 Some(mut kept) => {
                     if rebuild {
-                        kept.rebuild(&docs, resolution, say)?;
+                        kept.rebuild(&docs, resolution, fresh, say)?;
                     } else if let Some(t) = split {
                         let r = resolution.unwrap_or(map::RESOLUTION);
                         anyhow::ensure!(
