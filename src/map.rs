@@ -1381,14 +1381,14 @@ impl Rng {
 
 // UMAP's SGD, as legume-numeric's `matrix::umap` runs it, copied here:
 // the low-dimensional kernel `1 / (1 + a·d^(2b))`, `(a, b)` fit for spread 1
-// and min_dist 0.1. Each edge is sampled from both ends, as uwot and
-// umap-learn sample it, in proportion to its weight; each end in turn
-// pulled towards the other and pushed from `negative_sample_rate` random
-// points. Edges are taken in parallel, the places shared without locks, as
+// and min_dist 0.5, papers alike near but not on one another. Each edge is
+// sampled from both ends, as uwot and umap-learn sample it, in proportion to
+// its weight; each end in turn pulled towards the other and pushed from
+// `negative_sample_rate` random points. Edges are taken in parallel, the places shared without locks, as
 // HOGWILD! (Recht et al., NeurIPS 2011) and umap-learn's numba take them.
 
-const A: f32 = 1.929;
-const B: f32 = 0.7915;
+const A: f32 = 0.583;
+const B: f32 = 1.334;
 
 struct Umap {
     n_epochs: usize,
