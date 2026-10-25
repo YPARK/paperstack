@@ -405,6 +405,12 @@ Within a theme, its finer themes are blocks. `g` shows the map as laid
 out, each paper a dot near those alike, and again the mosaic. A theme picked on the left is picked on the
 map too.
 
+`t` colours each theme by the papers added to it lately, from grey,
+where none came, to orange, where most did: the topics you read now
+stand out. Lately is the last 6 months at first; `[` and `]` make it
+shorter and longer, from a month to 5 years. `t` again, or `c`, the colours as
+before.
+
 A search typed in the list shows on the map too: the papers it finds,
 those new since among them, as dots over the rest in grey, with how many
 above the map. Each key in the footer, clicked, is as if pressed.

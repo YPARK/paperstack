@@ -11,6 +11,7 @@ use super::*;
 /// its colour, the links among its papers beneath, the paper picked marked.
 pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
+    app.stay_recent();
     let Some(m) = &mut app.map else { return };
     let mut area = area;
     if let Some(inside) = m.inside {
@@ -142,14 +143,42 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
             })
             .collect()
     });
-    // A theme in its colour: the picked one, or every one named where all
-    // are; none while a search is shown, over the rest in grey.
-    let colour = |i: usize| {
-        if found.is_none() && (i == picked || all && i < named) {
-            colour_of(i)
-        } else {
-            t.dim
+    // Each theme's share of papers come lately, as of the most of any; a
+    // few more counted in each, that one new of one or two not outshine.
+    let heat: Option<Vec<f32>> = m.recent.as_ref().map(|r| {
+        let mut n = vec![(0u32, 0u32); map.themes.len()];
+        // On the whole map, the papers new since it too, in their themes.
+        let new = within
+            .is_none()
+            .then_some(&m.kept.placed)
+            .into_iter()
+            .flatten();
+        let papers = map.keys.iter().zip(map.theme.iter().copied());
+        for (k, th) in papers.chain(new.map(|p| (&p.key, Some(p.theme)))) {
+            if let Some(c) = th.and_then(|th| n.get_mut(th)) {
+                c.0 += u32::from(r.keys.contains(k));
+                c.1 += 1;
+            }
         }
+        let share: Vec<f32> = n.iter().map(|&(a, b)| a as f32 / (b + 3) as f32).collect();
+        // Of those coloured by it, the named.
+        let most = share.iter().take(named).copied().fold(0.0, f32::max);
+        share
+            .iter()
+            .map(|s| if most > 0.0 { s / most } else { 0.0 })
+            .collect()
+    });
+    // A theme in its colour: the picked one, or every one named where all
+    // are; or, recent asked, from grey to orange by its share come lately;
+    // none while a search is shown, over the rest in grey.
+    let heat_of = |i: usize| {
+        let heat = heat.as_ref().filter(|_| found.is_none() && i < named);
+        heat.map(|h| h[i])
+    };
+    let colour = |i: usize| match heat_of(i) {
+        Some(h) => heated(h),
+        None if found.is_none() && (i == picked || all && i < named) => colour_of(i),
+        None => t.dim,
     };
     let xy = |i: usize| (f64::from(map.xy[i][0]), f64::from(map.xy[i][1]));
     let canvas = Canvas::default()
@@ -202,8 +231,10 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(canvas, area);
     // As a mosaic, each theme a block in a faint pastel, boxed in a
     // paler one of its colour; the picked one less faint.
+    // Recent asked, the more come lately, the less faint.
     let fill = |i: usize| {
         let k = if is_picked(i) { 0.7 } else { 0.85 };
+        let k = heat_of(i).map_or(k, |h| k + 0.05 - 0.45 * h);
         pastel(colour(i), k, t.page)
     };
     let edge = |i: usize| pastel(colour(i), 0.4, t.page);
@@ -213,10 +244,16 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
     // Each theme's name over the map, in the cells it is clicked in.
     for (i, col, row, len) in labels {
         let style = if is_picked(i) {
-            Style::new().fg(t.on_accent).bg(colour_of(i)).bold()
+            match heat_of(i) {
+                // On orange or grey, the text, to be read.
+                Some(_) => Style::new().fg(t.text).bg(colour(i)).bold(),
+                None => Style::new().fg(t.on_accent).bg(colour_of(i)).bold(),
+            }
         } else if m.mosaic {
             // On its block, in its block's pastel, the text to be read.
             Style::new().fg(t.text).bg(fill(i)).bold()
+        } else if heat_of(i).is_some() {
+            Style::new().fg(colour(i)).bold()
         } else if all {
             Style::new().fg(colour_of(i)).bold()
         } else {
@@ -232,6 +269,12 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Paragraph::new(Span::styled(name, style)), at);
         app.targets.push((at, Target::Label(i)));
     }
+}
+
+/// From grey, none come lately, to orange, the most.
+fn heated(heat: f32) -> Color {
+    let (grey, orange) = (Color::Rgb(150, 150, 150), Color::Rgb(235, 120, 30));
+    pastel(orange, 1.0 - heat.clamp(0.0, 1.0), grey)
 }
 
 /// `c` made faint on `page`, as a pastel: `k` of the way to it; to a dark
