@@ -1878,6 +1878,7 @@ fn keeps_a_record_filed_under_its_name_in_nfd() {
         let (_dir, lib, mut index) = library();
         let mut r = demo::records().remove(0);
         r.csl["author"] = serde_json::json!([{ "family": "Ålundqvé", "given": "A" }]);
+        r.key = "Alundqve2026-nf".to_string();
         // Filed by another machine, its accents stored apart.
         let nfc = layout::record(&r).to_string_lossy().to_string();
         let nfd = PathBuf::from(nfc.nfd().collect::<String>());
@@ -1887,14 +1888,33 @@ fn keeps_a_record_filed_under_its_name_in_nfd() {
         if with_pdf {
             std::fs::write(lib.root.join(&nfd).with_extension("pdf"), b"%PDF-1.4").unwrap();
         }
-        index.refresh(&lib).unwrap();
-        let hit = index.get(&r.key).unwrap().unwrap();
+        let done = index.refresh(&lib).unwrap();
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        let was = index.get(&r.key).unwrap().unwrap().path;
 
         r.paperstack.folders.push("CT1".to_string());
-        let saved = lib.save(&r, Some(&hit.path)).unwrap();
-        assert!(lib.root.join(&saved).is_file(), "with_pdf={with_pdf}");
-        assert_eq!(index.refresh(&lib).unwrap().removed, 0);
+        // Where the file system tells the two forms of its name apart, as
+        // Linux's do, it is moved, and its old folders go; where it does
+        // not, as APFS, it is written where it was.
+        let moved = !lib.root.join(layout::record(&r)).exists();
+        let saved = lib.save(&r, Some(&was)).unwrap();
+        assert_eq!(saved != was, moved);
+        if moved {
+            assert!(
+                !lib.root.join(&was).parent().unwrap().exists(),
+                "its folder gone"
+            );
+        }
+        let done = index.refresh(&lib).unwrap();
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(done.removed, usize::from(moved), "with_pdf={with_pdf}");
+        let records = lib.walk().unwrap().records;
+        let ours = records
+            .iter()
+            .filter(|f| f.path.to_string_lossy().contains(&r.key));
+        assert_eq!(ours.count(), 1, "one record of it");
         let hit = index.get(&r.key).unwrap().unwrap();
+        assert_eq!(hit.path, saved);
         assert!(hit.record.paperstack.folders.iter().any(|f| f == "CT1"));
         assert_eq!(hit.has_pdf, with_pdf);
     }

@@ -60,13 +60,7 @@ pub fn paper(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<Path
         })?;
     }
     // Its folders, if it was the last paper in them.
-    let mut dir = record.parent();
-    while let Some(d) = dir.filter(|d| *d != lib.root) {
-        if fs::remove_dir(d).is_err() {
-            break;
-        }
-        dir = d.parent();
-    }
+    lib.prune(&record);
     Ok(to)
 }
 

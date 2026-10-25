@@ -102,14 +102,27 @@ impl Library {
             if let Some(old) = old_pdf.filter(|p| p.exists()) {
                 fs::rename(&old, &new_pdf)?;
             }
-            match fs::remove_file(self.root.join(was)) {
+            let old = self.root.join(was);
+            match fs::remove_file(&old) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     return Err(e).context("cannot take away the record where it was");
                 }
-                _ => {}
+                _ => self.prune(&old),
             }
         }
         Ok(rel)
+    }
+
+    /// The folders `file` was in, from its own up, as far as they are left
+    /// empty.
+    pub fn prune(&self, file: &Path) {
+        let mut dir = file.parent();
+        while let Some(d) = dir.filter(|d| *d != self.root) {
+            if fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
     }
 
     /// Every record and PDF under the root, but in the inbox and in hidden
