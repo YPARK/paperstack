@@ -188,7 +188,8 @@ pub fn themes(
             .map(|(i, t)| {
                 let keys: Vec<&str> = map.members(i).map(|(_, k)| k).collect();
                 json!({
-                    "theme": i,
+                    "theme": i + 1,
+                    "name": t.name(),
                     "words": t.words,
                     "size": t.size,
                     "authors": t.authors.iter().map(|(a, n)| json!({"name": a, "papers": n})).collect::<Vec<_>>(),
@@ -198,14 +199,14 @@ pub fn themes(
             .collect();
         let new: Vec<Value> = placed
             .iter()
-            .map(|p| json!({"key": p.key, "theme": p.theme, "share": p.share}))
+            .map(|p| json!({"key": p.key, "theme": p.theme + 1, "share": p.share}))
             .collect();
         let common: Vec<Value> = map
             .common
             .iter()
             .map(|(w, n)| json!({"word": w, "papers": n}))
             .collect();
-        let out = json!({"built": map.built, "common": common, "themes": themes, "new": new});
+        let out = json!({"built": map.built, "resolution": map.resolution, "common": common, "themes": themes, "new": new});
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
@@ -215,12 +216,21 @@ pub fn themes(
         .take(15)
         .map(|(w, n)| format!("{w} {n}"))
         .collect();
-    println!("{} papers, built {}", map.keys.len(), map.built);
+    println!(
+        "{} papers, built {} at resolution {:.2}",
+        map.keys.len(),
+        map.built,
+        map.resolution
+    );
     println!("most papers have: {}\n", common.join(", "));
     let named = map.named();
     let small = map.themes.len() - named;
     for (i, t) in map.themes.iter().enumerate().take(named) {
-        println!("{i:>3} {:>5}  {}", t.size, t.words.join(" · "));
+        let words = t.words.join(" · ");
+        match &t.called {
+            Some(called) => println!("{:>3} {:>5}  {called}: {words}", i + 1, t.size),
+            None => println!("{:>3} {:>5}  {words}", i + 1, t.size),
+        }
         if !t.authors.is_empty() {
             let a: Vec<String> = t
                 .authors

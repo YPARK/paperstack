@@ -127,6 +127,8 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `ctrl-g`, `m` | the map of themes, and back to the list; `ctrl-g` while typing a search too |
+| `n` | on a theme's shelf, name the theme |
+| `L` | label the papers marked, else all shown |
 | `q` | quit |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
@@ -372,13 +374,18 @@ words are alike or their authors shared, gathered into themes, each named
 by the words that set it apart. `←` / `→`, or a click, picks a theme: its
 words, its authors of most papers and its newest papers are shown beside
 it, and `enter` lists its papers, on its shelf under THEMES, where search
-narrows them further. `c` colours every theme, not the picked one alone.
+narrows them further. `c` colours every theme, not the picked one alone;
+`?` on the map lists its keys.
 
 ```sh
-paperstack themes             # the words most papers have, and each theme's
-paperstack themes --json      # with each theme's keys, for an agent
-paperstack themes --rebuild   # gather the themes again from all papers
-paperstack themes --undo      # the themes before, shown again
+paperstack themes                 # the words most papers have, and each theme's
+paperstack themes --json          # with each theme's keys, for an agent; numbered from 1, as shown
+paperstack themes --split 3       # theme 3 in finer themes of its own
+paperstack themes --resolution 2  # every theme finer, the papers where they are
+paperstack themes --rebuild       # gather the themes again from all papers
+paperstack themes --undo          # the themes before, shown again
+paperstack themes --name 3 "VAEs and flows"  # a name of your own for theme 3
+paperstack themes --label 3 vae   # the label vae on each of theme 3's papers
 ```
 
 Each paper's title, abstract and keywords, with pairs of words as "single
@@ -387,11 +394,26 @@ them, and papers sharing authors, but not through a consortium's hundreds,
 make a graph. Its communities, by Louvain's moves, are the themes; UMAP lays
 it out. Five thousand papers take a second or two.
 
-The map is kept on this machine, beside the index, with the one before the
-last rebuild. Papers added since go to the theme their nearest papers have
-most, but only when asked: the map shows them as crosses, and `a`, or
-`paperstack themes --assign`, puts them there; `R`, or `--rebuild`, gathers
-the themes again instead, and `u`, or `--undo`, shows the map before.
+A theme too broad, as one of all machine learning, splits in finer themes
+of its own: `s`, or `--split N`, gathers its papers again, each by its
+nearest within the theme, the rest of the map as it was. `+` and `-`
+gather every theme again finer or coarser, by Louvain's resolution, 1 at
+first, in steps of half again; `--resolution` gives one. Neither moves a
+paper on the map; `R`, or `--rebuild`, gathers the themes again from all
+papers and lays them out anew.
+
+`n`, on the map or on a theme's shelf, names a theme as you would: the
+name follows its papers when the themes are gathered again, as long as
+they stay together, at least half of them. `L` puts a label on the
+picked theme's papers, in their records, synced as any label; in the list,
+on the papers marked, else on all shown. A label put on too many is taken
+off again by `d` on it under LABELS.
+
+The map is kept on this machine, beside the index, with the one before
+the last `s`, `+`, `-`, `R` or `A`, which `u`, or `--undo`, shows again.
+Papers added since go to the theme their nearest papers have most, but
+only when asked: the map shows them as crosses, and `A`, or `paperstack
+themes --assign`, puts them there.
 
 ## Searching
 

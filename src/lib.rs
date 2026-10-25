@@ -79,15 +79,33 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Put the new papers in the themes said
-        #[arg(long, conflicts_with_all = ["rebuild", "undo"])]
+        #[arg(long, group = "action")]
         assign: bool,
         /// Gather the themes again from all papers, keeping these as the
         /// previous
-        #[arg(long, conflicts_with = "undo")]
+        #[arg(long, group = "action")]
         rebuild: bool,
         /// Show the previous themes again, keeping these as the previous
-        #[arg(long)]
+        #[arg(long, group = "action")]
         undo: bool,
+        /// Split theme N, as numbered here, in finer themes of its own,
+        /// the rest as they are, keeping these as the previous
+        #[arg(long, group = "action", value_name = "N", value_parser = theme_number)]
+        split: Option<usize>,
+        /// Name theme N, as numbered here; a blank name gives it back its
+        /// own words. The name follows its papers when the themes are
+        /// gathered again
+        #[arg(long, group = "action", num_args = 2, value_names = ["N", "NAME"])]
+        name: Option<Vec<String>>,
+        /// Put a label on every paper of theme N, in its record: NAME, else
+        /// the theme's name. `paperstack remove --label` takes it off
+        #[arg(long, group = "action", num_args = 1..=2, value_names = ["N", "NAME"])]
+        label: Option<Vec<String>>,
+        /// How fine the themes are: higher, more and smaller. Alone, the
+        /// themes gathered again at R, the papers where they are; with
+        /// `--rebuild`, the map's own unless given; with `--split`, 1
+        #[arg(long, value_name = "R", conflicts_with_all = ["assign", "undo", "name", "label"])]
+        resolution: Option<f64>,
     },
     /// Find papers: words, "phrases", author:, year:2020..2026, folder:, has:pdf, -...
     Find {
@@ -261,6 +279,13 @@ fn default_root_in(home: &Path) -> PathBuf {
         .find(|p| p.join(library::MARKER).is_file())
         .unwrap_or(&places[0])
         .clone()
+}
+
+/// A theme's place in the map, from its number as `paperstack themes`
+/// shows it, from 1.
+fn theme_number(n: &str) -> anyhow::Result<usize> {
+    let n: usize = anyhow::Context::context(n.parse(), "a theme's number")?;
+    anyhow::Context::context(n.checked_sub(1), "themes are numbered from 1")
 }
 
 /// The library at `root`, and its index brought up to it; what could not
@@ -640,27 +665,55 @@ pub fn main() -> anyhow::Result<()> {
             assign,
             rebuild,
             undo,
+            split,
+            resolution,
+            name,
+            label,
         }) => {
-            let (_, index) = open(&args.library)?;
+            let (lib, mut index) = open(&args.library)?;
             let path = map::default_path(index.path());
             let docs = index.docs();
             let kept = match map::Kept::read(&path) {
                 Some(mut kept) => {
                     if rebuild {
-                        kept.rebuild(&docs)?;
+                        kept.rebuild(&docs, resolution)?;
+                    } else if let Some(t) = split {
+                        let r = resolution.unwrap_or(map::RESOLUTION);
+                        anyhow::ensure!(
+                            kept.split(&docs, t, r)?.is_some(),
+                            "theme {} does not split at that resolution; try a higher --resolution",
+                            t + 1
+                        );
                     } else if undo {
                         anyhow::ensure!(kept.undo(&docs)?, "no previous themes kept");
+                    } else if let Some(r) = resolution {
+                        kept.regroup(&docs, r)?;
                     } else {
                         kept.refresh(&docs);
                         if assign {
                             kept.assign()?;
+                        } else if let Some(name) = &name {
+                            kept.name(theme_number(&name[0])?, &name[1])?;
+                        } else if let Some(label) = &label {
+                            let t = theme_number(&label[0])?;
+                            let theme = kept.current.themes.get(t);
+                            let theme = anyhow::Context::with_context(theme, || {
+                                format!("no theme {}", t + 1)
+                            })?;
+                            let label = label.get(1).cloned().unwrap_or_else(|| theme.name());
+                            let keys = kept.current.member_keys(t);
+                            let n = remove::label(&lib, &mut index, &keys, &label)?;
+                            eprintln!("{n} papers labelled {label}");
                         }
                     }
                     kept
                 }
                 None => {
-                    anyhow::ensure!(!undo, "no previous themes kept");
-                    map::Kept::build(&path, &docs)?
+                    anyhow::ensure!(
+                        !undo && split.is_none() && name.is_none() && label.is_none(),
+                        "no themes kept yet: `paperstack themes` gathers them"
+                    );
+                    map::Kept::build(&path, &docs, resolution.unwrap_or(map::RESOLUTION))?
                 }
             };
             cli::themes(&kept.current, &kept.placed, json)

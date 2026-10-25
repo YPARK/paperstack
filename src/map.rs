@@ -12,6 +12,7 @@
 //! Mech 2008); the layout is UMAP's SGD on the same graph (McInnes, Healy &
 //! Melville, arXiv 1802.03426), as legume-numeric's `matrix::umap` runs it.
 
+use anyhow::Context;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -32,6 +33,9 @@ pub struct Doc {
 pub struct Map {
     /// When it was built, RFC 3339.
     pub built: String,
+    /// Louvain's resolution its themes were gathered at.
+    #[serde(default = "resolution")]
+    pub resolution: f64,
     /// By paper: its key, its place, and its theme, by its place in
     /// `themes`; `None` for one with neither words nor links to place it by.
     pub keys: Vec<String>,
@@ -43,7 +47,7 @@ pub struct Map {
     pub common: Vec<(String, usize)>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Theme {
     /// The words that set it apart, most first.
     pub words: Vec<String>,
@@ -52,11 +56,23 @@ pub struct Theme {
     pub authors: Vec<(String, usize)>,
     /// The middle of its papers on the map.
     pub centre: [f32; 2],
+    /// The name it was given, if one was, in place of its words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub called: Option<String>,
+}
+
+fn resolution() -> f64 {
+    RESOLUTION
 }
 
 impl Theme {
-    /// Its first words, as its name.
+    /// The name it was given, else its first words.
     pub fn name(&self) -> String {
+        self.called.clone().unwrap_or_else(|| self.words_name())
+    }
+
+    /// Its first words, as its name.
+    pub fn words_name(&self) -> String {
         self.words
             .iter()
             .take(2)
@@ -78,66 +94,247 @@ const COAUTHOR_KNN: usize = 10;
 const COAUTHOR_WEIGHT: f32 = 0.5;
 /// Themes of fewer papers are left unnamed on the map.
 pub const MIN_THEME: usize = 5;
+/// Louvain's resolution, unless another is asked for.
+pub const RESOLUTION: f64 = 1.0;
+
+/// `r`, if a resolution themes can be gathered at.
+fn checked(r: f64) -> anyhow::Result<f64> {
+    anyhow::ensure!(
+        r.is_finite() && r > 0.0,
+        "the resolution is a number above 0, not {r}"
+    );
+    Ok(r)
+}
 const NAMED_AT_LEAST: usize = 8;
 const WORDS_NAMED: usize = 6;
 const AUTHORS_NAMED: usize = 6;
 
-impl Map {
-    pub fn build(docs: &[Doc]) -> Map {
-        let n = docs.len();
+/// The papers' words and links, from which the themes are gathered.
+struct Graph {
+    vocab: Vec<String>,
+    vectors: Vec<Vec<(u32, f32)>>,
+    df: Vec<usize>,
+    common: Vec<(String, usize)>,
+    /// `(i, j, weight)`, each pair once, in one order each run.
+    edges: Vec<(usize, usize, f32)>,
+}
+
+impl Graph {
+    /// The links among the papers of `members`, by their places in it, each
+    /// to its nearest of them; the words weighed over all `docs`.
+    fn among(docs: &[Doc], members: &[usize]) -> Graph {
         let (vocab, vectors, df, common) = tfidf(docs);
-        let all: Vec<usize> = (0..n).collect();
-        let mut edges = fuzzy(&all, &knn(&vectors, vocab.len(), &all, &|_| true));
-        blend(&mut edges, &coauthors(docs));
-        let mut edges: Vec<(usize, usize, f32)> =
-            edges.into_iter().map(|((i, j), w)| (i, j, w)).collect();
+        let mut local = vec![None; docs.len()];
+        for (l, &d) in members.iter().enumerate() {
+            local[d] = Some(l);
+        }
+        let near = knn(&vectors, vocab.len(), members, &|k| local[k].is_some());
+        let mut edges = fuzzy(members, &near);
+        blend(&mut edges, &coauthors(docs, &|d| local[d].is_some()));
+        let mut edges: Vec<(usize, usize, f32)> = edges
+            .into_iter()
+            .filter_map(|((i, j), w)| Some((local[i]?, local[j]?, w)))
+            .collect();
         // In one order each run, not the hash map's.
         edges.sort_unstable_by_key(|&(i, j, _)| (i, j));
-        let linked: Vec<bool> = {
-            let mut l = vec![false; n];
-            for &(i, j, _) in &edges {
-                l[i] = true;
-                l[j] = true;
-            }
-            l
-        };
-        let community = louvain(n, &edges, 1.0);
-        // Themes numbered largest first; papers linked to nothing have none.
-        let mut sizes: HashMap<usize, usize> = HashMap::new();
-        for i in (0..n).filter(|&i| linked[i]) {
-            *sizes.entry(community[i]).or_default() += 1;
+        Graph {
+            vocab,
+            vectors,
+            df,
+            common,
+            edges,
         }
-        let mut order: Vec<(usize, usize)> = sizes.into_iter().collect();
-        order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let renumber: HashMap<usize, usize> = order
+    }
+
+    /// Each theme's words and authors, as `theme` gathers `docs`, by doc.
+    fn name(&self, themes: &mut [Theme], docs: &[Doc], theme: &[Option<usize>]) {
+        name_themes(themes, docs, theme, &self.vectors, &self.vocab, &self.df);
+    }
+}
+
+/// The communities of `edges` among `n` nodes at `resolution`, numbered
+/// largest first; nodes linked to nothing in none.
+fn communities(
+    n: usize,
+    edges: &[(usize, usize, f32)],
+    resolution: f64,
+) -> (Vec<Option<usize>>, usize) {
+    let mut linked = vec![false; n];
+    for &(i, j, _) in edges {
+        linked[i] = true;
+        linked[j] = true;
+    }
+    let community = louvain(n, edges, resolution);
+    let mut sizes: HashMap<usize, usize> = HashMap::new();
+    for i in (0..n).filter(|&i| linked[i]) {
+        *sizes.entry(community[i]).or_default() += 1;
+    }
+    let mut order: Vec<(usize, usize)> = sizes.into_iter().collect();
+    order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let renumber: HashMap<usize, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(t, &(c, _))| (c, t))
+        .collect();
+    let theme = (0..n)
+        .map(|i| linked[i].then(|| renumber[&community[i]]))
+        .collect();
+    (theme, order.len())
+}
+
+impl Map {
+    /// The map of `docs`, its themes gathered at `resolution`: the higher,
+    /// the more themes, and the smaller.
+    pub fn build(docs: &[Doc], resolution: f64) -> Map {
+        let all: Vec<usize> = (0..docs.len()).collect();
+        Map::gather(docs, &all, resolution, |edges, theme, count| {
+            layout(docs.len(), edges, theme, count)
+        })
+    }
+
+    /// The papers on the map gathered in themes again at `resolution`,
+    /// each left where it is: finer or coarser themes, in the same layout.
+    pub fn regroup(&self, docs: &[Doc], resolution: f64) -> Map {
+        let places = self.places(docs);
+        let members: Vec<usize> = (0..docs.len()).filter(|&d| places[d].is_some()).collect();
+        let xy = members
             .iter()
-            .enumerate()
-            .map(|(t, &(c, _))| (c, t))
+            .filter_map(|&d| Some(self.xy[places[d]?]))
             .collect();
-        let theme: Vec<Option<usize>> = (0..n)
-            .map(|i| linked[i].then(|| renumber[&community[i]]))
-            .collect();
-        let xy = layout(n, &edges, &theme, order.len());
-        let mut themes: Vec<Theme> = order
-            .iter()
-            .map(|&(_, size)| Theme {
-                words: Vec::new(),
-                size,
-                authors: Vec::new(),
-                centre: [0.0; 2],
-            })
-            .collect();
-        name_themes(&mut themes, docs, &theme, &vectors, &vocab, &df);
+        Map::gather(docs, &members, resolution, |_, _, _| xy)
+    }
+
+    /// The papers of `members` gathered in themes at `resolution`, and put
+    /// on the plane by `place`, from the links and the themes.
+    fn gather(
+        docs: &[Doc],
+        members: &[usize],
+        resolution: f64,
+        place: impl FnOnce(&[(usize, usize, f32)], &[Option<usize>], usize) -> Vec<[f32; 2]>,
+    ) -> Map {
+        let mut graph = Graph::among(docs, members);
+        let (theme, count) = communities(members.len(), &graph.edges, resolution);
+        let xy = place(&graph.edges, &theme, count);
         let mut map = Map {
             built: crate::add::now(),
-            keys: docs.iter().map(|d| d.key.clone()).collect(),
+            resolution,
+            keys: members.iter().map(|&d| docs[d].key.clone()).collect(),
             xy,
             theme,
-            themes,
-            common,
+            themes: vec![Theme::default(); count],
+            common: std::mem::take(&mut graph.common),
         };
         map.recount();
+        let mut by_doc = vec![None; docs.len()];
+        for (&d, &t) in members.iter().zip(&map.theme) {
+            by_doc[d] = t;
+        }
+        graph.name(&mut map.themes, docs, &by_doc);
         map
+    }
+
+    /// Theme `t` split in its own themes, gathered at `resolution` among
+    /// its papers alone, each linked to its nearest within it; the papers
+    /// left where they are on the map, and the other themes as they were.
+    /// The theme of the largest part now, or none where it does not split.
+    pub fn split(&mut self, docs: &[Doc], t: usize, resolution: f64) -> Option<usize> {
+        let on_map = self.places(docs);
+        // The theme's papers, by doc; and each doc's place among them.
+        let members: Vec<usize> = (0..docs.len())
+            .filter(|&d| on_map[d].is_some_and(|m| self.theme[m] == Some(t)))
+            .collect();
+        let graph = Graph::among(docs, &members);
+        let (part, count) = communities(members.len(), &graph.edges, resolution);
+        if count < 2 {
+            return None;
+        }
+        // Part 0, the largest, in `t`, with the papers linked to none in
+        // it; the others in themes of their own. Their words are found
+        // anew, the other themes' kept.
+        let first = self.themes.len();
+        self.themes.extend(vec![Theme::default(); count - 1]);
+        self.themes[t].words.clear();
+        let mut largest = None;
+        for (l, &d) in members.iter().enumerate() {
+            let m = on_map[d].expect("a member is on the map");
+            match part[l] {
+                Some(0) => largest = Some(m),
+                Some(p) => self.theme[m] = Some(first + p - 1),
+                None => {}
+            }
+        }
+        self.recount();
+        let by_doc: Vec<Option<usize>> = on_map
+            .iter()
+            .map(|m| m.and_then(|m| self.theme[m]))
+            .collect();
+        // Only those whose words were cleared, `t` and the new, named anew.
+        let mut named = self.themes.clone();
+        graph.name(&mut named, docs, &by_doc);
+        for (theme, named) in self.themes.iter_mut().zip(named) {
+            if theme.words.is_empty() {
+                theme.words = named.words;
+                theme.authors = named.authors;
+            }
+        }
+        self.theme[largest?]
+    }
+
+    /// The keys of theme `t`'s papers.
+    pub fn member_keys(&self, t: usize) -> Vec<String> {
+        self.members(t).map(|(_, k)| k.to_string()).collect()
+    }
+
+    /// The names given to the themes of `from` on the themes here that
+    /// share most of their papers: at least half of the two together. A
+    /// theme gathered too otherwise loses its name.
+    fn carry_names(&mut self, from: &Map) {
+        let here: HashMap<&str, usize> = self
+            .keys
+            .iter()
+            .zip(&self.theme)
+            .filter_map(|(k, t)| Some((k.as_str(), (*t)?)))
+            .collect();
+        let mut given: Vec<(usize, String)> = Vec::new();
+        for (f, theme) in from.themes.iter().enumerate() {
+            let Some(called) = &theme.called else {
+                continue;
+            };
+            let mut shared: HashMap<usize, usize> = HashMap::new();
+            for (_, k) in from.members(f) {
+                if let Some(&t) = here.get(k) {
+                    *shared.entry(t).or_default() += 1;
+                }
+            }
+            let best = shared
+                .into_iter()
+                .max_by_key(|&(t, n)| (n, std::cmp::Reverse(t)));
+            if let Some((t, n)) = best {
+                let union = theme.size + self.themes[t].size - n;
+                if 2 * n >= union {
+                    given.push((t, called.clone()));
+                }
+            }
+        }
+        for t in &mut self.themes {
+            t.called = None;
+        }
+        for (t, called) in given {
+            self.themes[t].called.get_or_insert(called);
+        }
+    }
+
+    /// Each of `docs`' place on the map; none for one not on it.
+    fn places(&self, docs: &[Doc]) -> Vec<Option<usize>> {
+        let at: HashMap<&str, usize> = self
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (k.as_str(), i))
+            .collect();
+        docs.iter()
+            .map(|d| at.get(d.key.as_str()).copied())
+            .collect()
     }
 
     /// Each theme's size and centre, from its papers.
@@ -235,29 +432,21 @@ impl Map {
     /// Where each paper of `docs` not on the map would go, by its nearest
     /// on it in words and its co-authors; none for a paper near none.
     pub fn place(&self, docs: &[Doc]) -> Vec<Placing> {
-        let at: HashMap<&str, usize> = self
-            .keys
+        let places = self.places(docs);
+        // Those in a theme, to place by.
+        let on_map: Vec<Option<usize>> = places
             .iter()
-            .enumerate()
-            .filter(|&(i, _)| self.theme[i].is_some())
-            .map(|(i, k)| (k.as_str(), i))
+            .map(|m| m.filter(|&m| self.theme[m].is_some()))
             .collect();
-        let on_map: Vec<Option<usize>> = docs
-            .iter()
-            .map(|d| at.get(d.key.as_str()).copied())
-            .collect();
-        let known: HashSet<&str> = self.keys.iter().map(String::as_str).collect();
-        let new: Vec<usize> = (0..docs.len())
-            .filter(|&i| !known.contains(docs[i].key.as_str()))
-            .collect();
-        if new.is_empty() || at.is_empty() {
+        let new: Vec<usize> = (0..docs.len()).filter(|&i| places[i].is_none()).collect();
+        if new.is_empty() || on_map.iter().all(Option::is_none) {
             return Vec::new();
         }
         let (vocab, vectors, _, _) = tfidf(docs);
         let near = knn(&vectors, vocab.len(), &new, &|k| on_map[k].is_some());
         // Each new paper's co-authors on the map.
         let mut shared: HashMap<usize, Vec<(usize, f32)>> = HashMap::new();
-        for ((a, b), x) in coauthors(docs) {
+        for ((a, b), x) in coauthors(docs, &|_| true) {
             for (i, j) in [(a, b), (b, a)] {
                 if on_map[i].is_none() && on_map[j].is_some() {
                     shared.entry(i).or_default().push((j, x * COAUTHOR_WEIGHT));
@@ -339,10 +528,11 @@ impl Kept {
         Some(kept)
     }
 
-    /// A map of `docs` built, and kept at `path`, with none before it.
-    pub fn build(path: &Path, docs: &[Doc]) -> anyhow::Result<Kept> {
+    /// A map of `docs` built at `resolution`, and kept at `path`, with none
+    /// before it.
+    pub fn build(path: &Path, docs: &[Doc], resolution: f64) -> anyhow::Result<Kept> {
         let kept = Kept {
-            current: Map::build(docs),
+            current: Map::build(docs, checked(resolution)?),
             previous: None,
             placed: Vec::new(),
             path: path.to_path_buf(),
@@ -359,7 +549,7 @@ impl Kept {
                 kept.refresh(docs);
                 Ok(kept)
             }
-            None => Kept::build(path, docs),
+            None => Kept::build(path, docs, RESOLUTION),
         }
     }
 
@@ -370,25 +560,76 @@ impl Kept {
     /// The papers no longer in `docs` taken off the map shown, and those
     /// new since it was built placed.
     pub fn refresh(&mut self, docs: &[Doc]) {
-        self.current
-            .keep(&docs.iter().map(|d| d.key.as_str()).collect());
+        self.current.keep(&keys(docs));
         self.placed = self.current.place(docs);
     }
 
     /// Put the papers placed in their themes, and keep the map; how many.
     pub fn assign(&mut self) -> anyhow::Result<usize> {
+        if self.placed.is_empty() {
+            return Ok(0);
+        }
         let placed = std::mem::take(&mut self.placed);
+        self.previous = Some(self.current.clone());
         self.current.accept(&placed);
         self.save()?;
         Ok(placed.len())
     }
 
-    /// A map of `docs` built and shown, the one shown till now kept as the
-    /// previous.
-    pub fn rebuild(&mut self, docs: &[Doc]) -> anyhow::Result<()> {
-        self.previous = Some(std::mem::replace(&mut self.current, Map::build(docs)));
-        self.placed.clear();
+    /// Theme `t` of the map shown named `name`, kept; its own words again
+    /// where `name` is blank.
+    pub fn name(&mut self, t: usize, name: &str) -> anyhow::Result<()> {
+        let theme = self.current.themes.get_mut(t).context("no such theme")?;
+        // Its own words, as they were offered, are no name of its own.
+        let name = name.trim();
+        theme.called = (!name.is_empty() && name != theme.words_name()).then(|| name.to_string());
         self.save()
+    }
+
+    /// `map` shown, with the names given to the themes of the one shown
+    /// till now, which is kept as the previous; new papers placed again.
+    fn show(&mut self, mut map: Map, docs: &[Doc]) -> anyhow::Result<()> {
+        map.carry_names(&self.current);
+        self.previous = Some(std::mem::replace(&mut self.current, map));
+        self.placed = self.current.place(docs);
+        self.save()
+    }
+
+    /// A map of `docs` built and shown at `resolution`, else the one shown
+    /// till now's, which is kept as the previous.
+    pub fn rebuild(&mut self, docs: &[Doc], resolution: Option<f64>) -> anyhow::Result<()> {
+        let resolution = checked(resolution.unwrap_or(self.current.resolution))?;
+        self.show(Map::build(docs, resolution), docs)
+    }
+
+    /// The map shown, brought up to `docs` first, gathered in themes again
+    /// at `resolution`, its layout as it was; the map as it was kept as
+    /// the previous.
+    pub fn regroup(&mut self, docs: &[Doc], resolution: f64) -> anyhow::Result<()> {
+        let resolution = checked(resolution)?;
+        self.current.keep(&keys(docs));
+        let map = self.current.regroup(docs, resolution);
+        self.show(map, docs)
+    }
+
+    /// Theme `t` of the map shown, brought up to `docs` first, split in
+    /// finer themes, the map as it was kept as the previous; the theme of
+    /// its largest part now, or none where it does not split.
+    pub fn split(
+        &mut self,
+        docs: &[Doc],
+        t: usize,
+        resolution: f64,
+    ) -> anyhow::Result<Option<usize>> {
+        let resolution = checked(resolution)?;
+        self.current.keep(&keys(docs));
+        anyhow::ensure!(t < self.current.themes.len(), "no such theme");
+        let mut map = self.current.clone();
+        let Some(largest) = map.split(docs, t, resolution) else {
+            return Ok(None);
+        };
+        self.show(map, docs)?;
+        Ok(Some(largest))
     }
 
     /// The previous map shown again, brought up to `docs`, the one shown
@@ -402,6 +643,10 @@ impl Kept {
         self.save()?;
         Ok(true)
     }
+}
+
+fn keys(docs: &[Doc]) -> HashSet<&str> {
+    docs.iter().map(|d| d.key.as_str()).collect()
 }
 
 /// Where the maps of the library whose index is at `index` are kept: beside
@@ -549,7 +794,7 @@ fn knn(
     allowed: &(dyn Fn(usize) -> bool + Sync),
 ) -> Vec<Vec<(usize, f32)>> {
     let mut postings: Vec<Vec<(u32, f32)>> = vec![Vec::new(); terms];
-    for (i, v) in vectors.iter().enumerate() {
+    for (i, v) in vectors.iter().enumerate().filter(|&(i, _)| allowed(i)) {
         for &(j, x) in v {
             postings[j as usize].push((i as u32, x));
         }
@@ -650,10 +895,10 @@ fn smooth_knn_sigma(dists: &[f32], rho: f32, target: f32) -> f32 {
 /// Pairs of papers sharing authors, weighed by how many they share against
 /// the fewer authors of the two, each paper keeping its strongest few; not
 /// through papers of more than `MAX_AUTHORS`.
-fn coauthors(docs: &[Doc]) -> HashMap<(usize, usize), f32> {
+fn coauthors(docs: &[Doc], among: &dyn Fn(usize) -> bool) -> HashMap<(usize, usize), f32> {
     let mut by_author: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, d) in docs.iter().enumerate() {
-        if d.authors.len() > MAX_AUTHORS {
+        if d.authors.len() > MAX_AUTHORS || !among(i) {
             continue;
         }
         let authors: HashSet<&str> = d.authors.iter().map(String::as_str).collect();
@@ -1086,7 +1331,7 @@ mod tests {
     #[test]
     fn gathers_papers_by_their_words_and_names_the_themes() {
         let docs = two_subjects(30);
-        let map = Map::build(&docs);
+        let map = Map::build(&docs, RESOLUTION);
         let theme_of = |key: &str| map.theme[map.keys.iter().position(|k| k == key).unwrap()];
         assert!(map.themes.len() >= 2);
         // Each subject's papers in themes of their own.
@@ -1112,9 +1357,84 @@ mod tests {
     }
 
     #[test]
+    fn gathers_the_themes_again_in_the_same_layout() {
+        let mut docs = two_subjects(20);
+        let map = Map::build(&docs, RESOLUTION);
+        // A paper new since stays off it, to be placed.
+        docs.push(doc("new", "single cell atlas marker3 cluster1", &[]));
+        let coarse = map.regroup(&docs, 0.2);
+        assert_eq!(coarse.resolution, 0.2);
+        assert_eq!(coarse.keys, map.keys);
+        assert_eq!(coarse.xy, map.xy);
+        assert!(coarse.themes.len() <= map.themes.len());
+        assert_eq!(coarse.themes.iter().map(|t| t.size).sum::<usize>(), 40);
+    }
+
+    #[test]
+    fn a_name_given_follows_its_papers() {
+        let docs = two_subjects(20);
+        let dir = tempfile::tempdir().unwrap();
+        let mut kept = Kept::open(&dir.path().join("map.json"), &docs).unwrap();
+        let cell0 =
+            |map: &Map| map.theme[map.keys.iter().position(|k| k == "cell0").unwrap()].unwrap();
+        let t = cell0(&kept.current);
+        kept.name(t, "  scRNA atlases ").unwrap();
+        assert_eq!(kept.current.themes[t].name(), "scRNA atlases");
+        // Gathered again at the same resolution, the same papers: named still.
+        kept.regroup(&docs, RESOLUTION).unwrap();
+        assert_eq!(
+            kept.current.themes[cell0(&kept.current)].name(),
+            "scRNA atlases"
+        );
+        let kept = Kept::read(&dir.path().join("map.json")).unwrap();
+        assert_eq!(
+            kept.current.themes[cell0(&kept.current)].name(),
+            "scRNA atlases"
+        );
+        // A blank name, its own words again; so are its words, as offered.
+        let mut kept = kept;
+        let t = cell0(&kept.current);
+        let words = kept.current.themes[t].words_name();
+        kept.name(t, &words).unwrap();
+        assert!(kept.current.themes[t].called.is_none());
+        kept.name(t, " ").unwrap();
+        assert!(kept.current.themes[t].called.is_none());
+        assert!(kept.name(99, "x").is_err());
+    }
+
+    #[test]
+    fn splits_a_theme_in_finer_ones() {
+        let docs = two_subjects(20);
+        let mut map = Map::build(&docs, RESOLUTION);
+        // Both subjects as one theme, as at a coarse resolution.
+        let xy = map.xy.clone();
+        for t in map.theme.iter_mut().flatten() {
+            *t = 0;
+        }
+        map.recount();
+        assert_eq!(map.themes[0].size, 40);
+        let largest = map.split(&docs, 0, RESOLUTION).expect("it splits");
+        assert!(map.themes.len() >= 2);
+        assert_eq!(map.themes[largest].size, map.themes[0].size);
+        let theme_of = |key: &str| map.theme[map.keys.iter().position(|k| k == key).unwrap()];
+        let cells: HashSet<_> = (0..20).map(|i| theme_of(&format!("cell{i}"))).collect();
+        let gwas: HashSet<_> = (0..20).map(|i| theme_of(&format!("gwas{i}"))).collect();
+        assert!(cells.is_disjoint(&gwas), "{cells:?} {gwas:?}");
+        assert_eq!(map.themes.iter().map(|t| t.size).sum::<usize>(), 40);
+        assert!(
+            map.themes
+                .iter()
+                .filter(|t| t.size > 0)
+                .all(|t| !t.words.is_empty())
+        );
+        // The papers stay where they were.
+        assert_eq!(map.xy, xy);
+    }
+
+    #[test]
     fn places_a_new_paper_with_its_nearest() {
         let mut docs = two_subjects(20);
-        let mut map = Map::build(&docs);
+        let mut map = Map::build(&docs, RESOLUTION);
         // Words of half the papers say nothing; these say which half.
         docs.push(doc(
             "new",
@@ -1156,9 +1476,12 @@ mod tests {
         assert!(kept.placed.is_empty() && kept.previous.is_none());
         let mut kept = Kept::read(&path).unwrap();
         let more = two_subjects(12);
-        kept.rebuild(&more).unwrap();
+        kept.rebuild(&more, None).unwrap();
         let mut kept = Kept::read(&path).unwrap();
         assert_eq!(kept.current.keys.len(), more.len());
+        assert_eq!(kept.previous.as_ref().unwrap().keys.len(), docs.len());
+        // Nothing to assign keeps the map before as it was.
+        assert_eq!(kept.assign().unwrap(), 0);
         assert_eq!(kept.previous.as_ref().unwrap().keys.len(), docs.len());
         assert!(kept.undo(&docs).unwrap());
         let kept = Kept::read(&path).unwrap();

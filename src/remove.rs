@@ -4,6 +4,8 @@
 //! found, but kept, and synced, until the trash is emptied by hand. Moved
 //! back, it is found again. A PDF deleted alone goes there too, and the
 //! paper stays. A collection deleted is taken off its papers, which stay.
+//! A label is put on papers here too, as a theme's, to be taken off again
+//! as any label is.
 
 use crate::index::{Hit, Index, Sort};
 use crate::library::Library;
@@ -133,15 +135,62 @@ pub fn shelf(lib: &Library, index: &mut Index, shelf: Shelf, name: &str) -> anyh
     if hits.is_empty() {
         bail!("no {} {name}", shelf.name());
     }
-    for h in &hits {
-        let mut record = crate::library::read(&lib.root.join(&h.path))?;
-        let m = &mut record.paperstack;
+    let keys: Vec<String> = hits.iter().map(|h| h.record.key.clone()).collect();
+    edit(lib, index, &keys, |m| {
         match shelf {
             Shelf::Collection => m.folders.retain(|n| !gone(n)),
             Shelf::Label => m.labels.retain(|n| !gone(n)),
         }
-        let path = lib.save(&record, Some(&h.path))?;
-        index.upsert(lib, &path, record, Some(&h.path))?;
-    }
+        true
+    })?;
     Ok(hits.len())
+}
+
+/// The label `name` put on each paper of `keys` that has not got it; how
+/// many had not.
+pub fn label(
+    lib: &Library,
+    index: &mut Index,
+    keys: &[String],
+    name: &str,
+) -> anyhow::Result<usize> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("give the label's name");
+    }
+    edit(lib, index, keys, |m| {
+        let has = m.labels.iter().any(|l| l.eq_ignore_ascii_case(name));
+        if !has {
+            m.labels.push(name.to_string());
+        }
+        !has
+    })
+}
+
+/// Each paper of `keys` changed by `change`, and written where it says it
+/// changed; how many were. Each record is read again first, as another
+/// program may have changed it; the index is brought up to them once.
+pub fn edit(
+    lib: &Library,
+    index: &mut Index,
+    keys: &[String],
+    change: impl Fn(&mut crate::record::Meta) -> bool,
+) -> anyhow::Result<usize> {
+    let mut written = Vec::new();
+    let mut each = || -> anyhow::Result<()> {
+        for key in keys {
+            let Some(h) = index.get(key)? else { continue };
+            let mut record = crate::library::read(&lib.root.join(&h.path))?;
+            if change(&mut record.paperstack) {
+                let path = lib.save(&record, Some(&h.path))?;
+                written.push((path, record, h.path));
+            }
+        }
+        Ok(())
+    };
+    // Those written before any that could not be, in the index all the same.
+    let done = each();
+    let n = written.len();
+    index.upsert_all(lib, written)?;
+    done.map(|()| n)
 }

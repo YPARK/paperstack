@@ -1829,3 +1829,86 @@ fn fits_a_long_name_to_the_sidebar() {
     assert_eq!(fit("genome wide · wide association", 20), "genome wide");
     assert_eq!(fit("a very long collection name", 10), "a very lo…");
 }
+
+#[test]
+fn gathers_the_themes_finer_and_back() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
+    assert_eq!(resolution(&app), 1.0);
+    app.key(key('+'));
+    assert_eq!(resolution(&app), 1.5);
+    // Not starred, as `s` would a paper in the list: the theme is split,
+    // and its largest part picked, or it is said that it does not split.
+    let themes = |app: &App| app.map.as_ref().unwrap().map().themes.len();
+    let before = themes(&app);
+    app.key(key('s'));
+    let m = app.map.as_ref().unwrap();
+    if app.status.contains("does not split") {
+        assert_eq!(themes(&app), before);
+    } else {
+        assert!(themes(&app) > before, "{}", app.status);
+        assert!(m.picked < m.map().named());
+    }
+    assert_eq!(resolution(&app), 1.5);
+    app.key(key('-'));
+    assert_eq!(resolution(&app), 1.0);
+}
+
+#[test]
+fn names_a_theme_and_labels_its_papers() {
+    use crate::app::{Popup, Shelf, View};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let press = |app: &mut App, code| {
+        app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    };
+    let typed = |app: &mut App, s: &str| {
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for c in s.chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    };
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    let picked = app.map.as_ref().unwrap().picked;
+    // n names the picked theme; its shelf says so.
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(app.popup, Popup::Ask(_)));
+    typed(&mut app, "perturbation");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.map.as_ref().unwrap().map().themes[picked].name(),
+        "perturbation"
+    );
+    assert!(
+        app.shelves
+            .iter()
+            .any(|(s, _)| matches!(s, Shelf::Theme(t, n) if *t == picked && n == "perturbation"))
+    );
+    // L labels its papers, in their records.
+    let size = app.map.as_ref().unwrap().map().themes[picked].size;
+    press(&mut app, KeyCode::Char('L'));
+    typed(&mut app, "theme-perturbation");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.status.starts_with(&format!("{size} papers labelled")),
+        "{}",
+        app.status
+    );
+    assert!(
+        app.shelves
+            .iter()
+            .any(|(s, n)| matches!(s, Shelf::Label(l) if l == "theme-perturbation") && *n == size)
+    );
+    // a adds a paper, as in the list; / searches, in the list.
+    press(&mut app, KeyCode::Char('a'));
+    assert!(matches!(app.popup, Popup::Add(_)));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(app.view, View::List);
+    assert!(app.searching);
+}
