@@ -369,19 +369,28 @@ which tells an agent how the library is laid out, is a resource too.
 
 ## Themes
 
-`m`, or the ◆ Map button top left, shows the library as a map: papers near one another where their
-words are alike or their authors shared, gathered into themes, each named
-by the words that set it apart. `←` / `→`, or a click, picks a theme: its
-words, its authors of most papers and its newest papers are shown beside
-it, and `enter` lists its papers, on its shelf under THEMES, where search
-narrows them further. `c` colours every theme, not the picked one alone;
+`m`, or the ◆ Map button top left, shows the library as a map: papers
+near one another where their words are alike or their authors shared,
+gathered into themes, each named by the words that set it apart. `←` /
+`→`, a click on a theme's name, or picking its shelf under THEMES, picks
+a theme; its papers are listed on its shelf, where search narrows them
+further. `c` colours every theme, not the picked one alone;
 `1` to `9` pick those themes; `?` on the map lists its keys, scrolling
 where they do not fit.
 
+`⏎`, or a theme's name clicked twice, goes into it: a map of its papers
+alone, laid out by their links among themselves and gathered in their own
+finer themes, each paper's strongest links drawn beneath. Within, `←` /
+`→` go into the next theme, a click picks a paper and says its title,
+twice opens it in ohp, and `⏎` shows the theme's card: its words, its
+authors and its papers, newest first, `⏎` opening one, `l` listing them.
+`esc` comes out to the whole map. `>` and `<` show the map closer to the
+theme picked, and further. A theme picked on the left is picked on the
+map too.
+
 A search typed in the list shows on the map too: the papers it finds,
-those new since among them, as dots over the rest in grey, and beside the
-map how many, theme by theme. A newest paper beside the map opens in ohp
-at a click, and each key in the footer, clicked, is as if pressed.
+those new since among them, as dots over the rest in grey, with how many
+above the map. Each key in the footer, clicked, is as if pressed.
 
 ```sh
 paperstack themes                 # the words most papers have, and each theme's
@@ -425,8 +434,8 @@ The map is kept on this machine, beside the index, with the one before
 the last `s`, `+`, `-`, `R`, `F` or `A`, which `u`, or `--undo`, shows
 again.
 Papers added since go to the theme their nearest papers have most, but
-only when asked: the map shows them as crosses, and `A`, or `paperstack
-themes --assign`, puts them there.
+only when asked: the map shows them as crosses, `N` lists where each
+would go, and `A`, or `paperstack themes --assign`, puts them there.
 
 ## Searching
 

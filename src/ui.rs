@@ -20,6 +20,9 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
 
+mod themes;
+use themes::{banner, card, map_canvas};
+
 /// The badge of a paper without its PDF, to get it in the browser.
 const GET_PDF: &str = " get PDF ";
 /// The badge of a paper that has its PDF. The click target is this wide.
@@ -56,32 +59,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .areas(main);
     shelves(f, app, side);
     if app.view == View::Map && app.map.is_some() {
-        let [canvas, panel] = Layout::horizontal([
-            Constraint::Min(30),
-            Constraint::Length(if wide { DETAILS } else { 0 }),
-        ])
-        .areas(Rect {
+        // The map all the way across; what a search finds, above it.
+        let mut canvas = Rect {
             width: list.width + detail.width,
             ..list
-        });
-        map_canvas(f, app, canvas);
-        if wide {
-            map_panel(f, app, panel);
-        } else if let Some(found) = &app.found {
-            // With no room beside the map, what the search finds, above it.
-            let said = format!(
-                " ● “{}” · {} in the library · esc in the list clears it ",
-                app.query.trim(),
-                found.len()
-            );
-            f.render_widget(
-                Paragraph::new(Span::styled(said, Style::new().fg(t.star).bold())),
-                Rect {
-                    height: 1,
-                    ..canvas
-                },
+        };
+        if let Some(found) = &app.found {
+            banner(
+                f,
+                &mut canvas,
+                vec![
+                    Span::styled(" ● ", Style::new().fg(t.star).bold()),
+                    Span::styled(
+                        format!("“{}” · {} in the library", app.query.trim(), found.len()),
+                        Style::new().fg(t.star).bold(),
+                    ),
+                    Span::styled("  · esc in the list clears it", Style::new().fg(t.hint)),
+                ],
+                t.page,
             );
         }
+        map_canvas(f, app, canvas);
     } else {
         papers(f, app, list);
         if wide {
@@ -94,6 +92,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
         Popup::Help(scroll) => Some(help(f, &t, app.view, *scroll)),
         Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
+        Popup::Card(_) => {
+            card(f, app);
+            None
+        }
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
         Popup::Choose(choose) => Some(chooser(f, &t, choose)),
@@ -575,351 +577,17 @@ pub(crate) fn fit(name: &str, room: usize) -> String {
     }
 }
 
-/// The papers as points on the plane: the picked theme's in its colour,
-/// over the rest in grey, or each theme in its own where all are coloured;
-/// the papers new since the map, to be asked of, as crosses. Themes are
-/// named where their names do not run into one another's, the picked
-/// one's always.
-fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
-    let t = app.theme;
-    let Some(m) = &mut app.map else { return };
-    m.canvas = area;
-    app.targets.push((area, Target::Map));
-    let map = m.map();
-    let (picked, all) = (m.picked, m.colours);
-    let bounds = m.bounds();
-    let [x0, x1, y0, y1] = bounds;
-    let mut by_theme: Vec<Vec<(f64, f64)>> = vec![Vec::new(); map.themes.len()];
-    for (p, th) in map.xy.iter().zip(&map.theme) {
-        if let Some(th) = th {
-            by_theme[*th].push((p[0] as f64, p[1] as f64));
-        }
-    }
-    let new: Vec<(f64, f64)> = m
-        .kept
-        .placed
-        .iter()
-        .map(|p| (p.xy[0] as f64, p.xy[1] as f64))
-        .collect();
-    let labels = place_labels(map, picked, area, bounds);
-    let named = map.named();
-    // What the search finds, on the map and new since, each at its own
-    // place, one to a cell of the screen, as the canvas puts it there.
-    let found: Option<Vec<(f64, f64)>> = app.found.as_ref().map(|found| {
-        let on_map = map
-            .keys
-            .iter()
-            .zip(&map.xy)
-            .zip(&map.theme)
-            .filter(|((k, _), t)| t.is_some() && found.contains(*k))
-            .map(|((_, p), _)| *p);
-        let new = m
-            .kept
-            .placed
-            .iter()
-            .filter(|p| found.contains(&p.key))
-            .map(|p| p.xy);
-        let mut cells = std::collections::HashSet::new();
-        on_map
-            .chain(new)
-            .map(|p| (p[0] as f64, p[1] as f64))
-            .filter(|&(x, y)| {
-                let col = ((x - x0) / (x1 - x0) * f64::from(area.width)).round() as i64;
-                let row = ((y1 - y) / (y1 - y0) * f64::from(area.height)).round() as i64;
-                cells.insert((col, row))
-            })
-            .collect()
-    });
-    // A theme in its colour: the picked one, or every one named where all
-    // are; none while a search is shown, over the rest in grey.
-    let colour = |i: usize| {
-        if found.is_none() && (i == picked || all && i < named) {
-            colour_of(i)
-        } else {
-            t.dim
-        }
-    };
-    let canvas = Canvas::default()
-        .background_color(t.page)
-        .marker(Marker::Braille)
-        .x_bounds([x0, x1])
-        .y_bounds([y0, y1])
-        .paint(|ctx| {
-            for (i, coords) in by_theme.iter().enumerate().filter(|(i, _)| *i != picked) {
-                ctx.draw(&Points {
-                    coords,
-                    color: colour(i),
-                });
-            }
-            ctx.layer();
-            if let Some(coords) = by_theme.get(picked) {
-                ctx.draw(&Points {
-                    coords,
-                    color: colour(picked),
-                });
-            }
-            ctx.layer();
-            // The papers found, a dot to be seen among the rest.
-            for &(x, y) in found.iter().flatten() {
-                ctx.print(x, y, Span::styled("●", Style::new().fg(t.star).bold()));
-            }
-            ctx.layer();
-            for &(x, y) in &new {
-                ctx.print(x, y, Span::styled("+", Style::new().fg(t.star).bold()));
-            }
-            for &(i, x, y) in &labels {
-                let style = if i == picked {
-                    Style::new().fg(t.on_accent).bg(colour_of(i)).bold()
-                } else if all {
-                    Style::new().fg(colour_of(i)).bold()
-                } else {
-                    Style::new().fg(t.text).bold()
-                };
-                ctx.print(
-                    x,
-                    y,
-                    Span::styled(format!(" {} ", map.themes[i].name()), style),
-                );
-            }
-        });
-    f.render_widget(canvas, area);
-}
-
-/// Where each theme's name goes, as `(theme, x, y)` on the plane: at the
-/// middle of its papers, or a row or two off it, where it runs into no
-/// name placed before it; the picked theme's first, then the largest's.
-fn place_labels(
-    map: &crate::map::Map,
-    picked: usize,
-    area: Rect,
-    [x0, x1, y0, y1]: [f64; 4],
-) -> Vec<(usize, f64, f64)> {
-    let (w, h) = (f64::from(area.width.max(1)), f64::from(area.height.max(1)));
-    let mut order: Vec<usize> = (0..map.named()).collect();
-    order.sort_by_key(|&i| (i != picked, i));
-    // Taken cells, by row, as spans of columns.
-    let mut taken: Vec<(i64, i64, i64)> = Vec::new();
-    let mut out = Vec::new();
-    for i in order {
-        let th = &map.themes[i];
-        let len = th.name().chars().count() as i64 + 2;
-        let col = ((th.centre[0] as f64 - x0) / (x1 - x0) * w) as i64 - len / 2;
-        let col = col.clamp(0, (w as i64 - len).max(0));
-        let row = ((y1 - th.centre[1] as f64) / (y1 - y0) * h) as i64;
-        let free = |r: i64| {
-            (0..h as i64).contains(&r)
-                && !taken
-                    .iter()
-                    .any(|&(tr, a, b)| tr == r && col < b + 1 && a < col + len + 1)
-        };
-        let Some(r) = [0, -1, 1, -2, 2]
-            .iter()
-            .map(|d| row + d)
-            .find(|&r| free(r) || i == picked)
-        else {
-            continue;
-        };
-        taken.push((r, col, col + len));
-        let x = x0 + (col as f64 + 0.5) / w * (x1 - x0);
-        let y = y1 - (r as f64 + 0.5) / h * (y1 - y0);
-        out.push((i, x, y));
-    }
-    out
-}
-
-/// The theme picked: its words, its authors of most papers, its newest
-/// papers, each opened by a click; what a search finds, theme by theme;
-/// and where the papers new since the map would go. A line a row, the
-/// rows known, as the clicks are.
-fn map_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let t = app.theme;
-    let newest = app.newest();
-    let Some(m) = &app.map else { return };
-    let map = m.map();
-    let Some(th) = map.themes.get(m.picked) else {
-        return;
-    };
-    let named = map.named();
-    let inner = Rect {
-        x: area.x + 3,
-        y: area.y + 1,
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(1),
-    };
-    let width = usize::from(inner.width);
-    let mut lines: Vec<(Line, Option<Target>)> = Vec::new();
-    let text = |lines: &mut Vec<(Line, Option<Target>)>, s: &str, style: Style| {
-        for l in wrapped(s, width) {
-            lines.push((Line::styled(l, style), None));
-        }
-    };
-    let blank = |lines: &mut Vec<(Line, Option<Target>)>| lines.push((Line::raw(""), None));
-    if let Some(found) = &app.found {
-        // On the map, or new since, by the theme it is placed in.
-        let mut by = vec![0usize; map.themes.len()];
-        let on_map = map
-            .keys
-            .iter()
-            .zip(&map.theme)
-            .filter_map(|(k, t)| Some((k, (*t)?)));
-        let new = m.kept.placed.iter().map(|p| (&p.key, p.theme));
-        for (k, t) in on_map.chain(new) {
-            if found.contains(k) {
-                by[t] += 1;
-            }
-        }
-        let mut order: Vec<usize> = (0..by.len()).filter(|&t| by[t] > 0).collect();
-        order.sort_by_key(|&t| (std::cmp::Reverse(by[t]), t));
-        let said = format!("● “{}” · {} in the library", app.query.trim(), found.len());
-        text(&mut lines, &said, Style::new().fg(t.star).bold());
-        let more = order.len().saturating_sub(5);
-        for th in order.into_iter().take(5) {
-            let name = fit(&map.themes[th].name(), width.saturating_sub(5));
-            lines.push((
-                Line::from(vec![
-                    Span::styled(format!("{:>4} ", by[th]), Style::new().fg(t.star)),
-                    Span::styled(name, Style::new().fg(colour_of(th))),
-                ]),
-                None,
-            ));
-        }
-        if more > 0 {
-            let more = format!("     and {more} themes more");
-            text(&mut lines, &more, Style::new().fg(t.dim));
-        }
-        text(
-            &mut lines,
-            "esc in the list clears the search",
-            Style::new().fg(t.hint),
-        );
-        blank(&mut lines);
-    }
-    lines.push((
-        Line::from(vec![
-            Span::styled("◆ ", Style::new().fg(colour_of(m.picked))),
-            Span::styled(
-                fit(&th.name(), width.saturating_sub(2)),
-                Style::new().fg(t.title).bold(),
-            ),
-        ]),
-        None,
-    ));
-    let size = format!("theme {} of {named} · {} papers", m.picked + 1, th.size);
-    text(&mut lines, &size, Style::new().fg(t.dim));
-    blank(&mut lines);
-    text(&mut lines, "WORDS", Style::new().fg(t.dim).bold());
-    text(&mut lines, &th.words.join(" · "), Style::new().fg(t.venue));
-    blank(&mut lines);
-    text(&mut lines, "AUTHORS", Style::new().fg(t.dim).bold());
-    for (a, n) in &th.authors {
-        lines.push((
-            Line::from(vec![
-                Span::styled(clip(a, width.saturating_sub(5)), Style::new().fg(t.text)),
-                Span::styled(format!(" {n}"), Style::new().fg(t.dim)),
-            ]),
-            None,
-        ));
-    }
-    blank(&mut lines);
-    text(
-        &mut lines,
-        "NEWEST · a click opens it",
-        Style::new().fg(t.dim).bold(),
-    );
-    for (i, h) in newest.iter().enumerate() {
-        let year = h
-            .record
-            .year()
-            .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
-        let title = clip(h.record.title(), width.saturating_sub(year.len() + 1));
-        lines.push((
-            Line::from(vec![
-                Span::styled(format!("{year} "), Style::new().fg(t.dim)),
-                Span::styled(title, Style::new().fg(t.text)),
-            ]),
-            Some(Target::Newest(i)),
-        ));
-    }
-    if !m.kept.placed.is_empty() {
-        blank(&mut lines);
-        let new = format!("NEW SINCE THE MAP · {}", m.kept.placed.len());
-        text(&mut lines, &new, Style::new().fg(t.star).bold());
-        for p in m.kept.placed.iter().take(6) {
-            let to = format!(" {:.0}% {}", p.share * 100.0, map.themes[p.theme].name());
-            lines.push((
-                Line::from(vec![
-                    Span::styled(clip(&p.key, width / 2), Style::new().fg(t.text)),
-                    Span::styled(
-                        clip(&to, width - width / 2),
-                        Style::new().fg(colour_of(p.theme)),
-                    ),
-                ]),
-                None,
-            ));
-        }
-        text(
-            &mut lines,
-            "A puts them there · R gathers again",
-            Style::new().fg(t.hint),
-        );
-    }
-    blank(&mut lines);
-    let built = format!("built {} · resolution {:.2}", map.built, map.resolution);
-    text(&mut lines, &built, Style::new().fg(t.dim));
-    for (row, (_, target)) in lines.iter().enumerate().take(usize::from(inner.height)) {
-        if let Some(target) = target {
-            let at = Rect {
-                y: inner.y + row as u16,
-                height: 1,
-                ..inner
-            };
-            app.targets.push((at, *target));
-        }
-    }
-    f.render_widget(
-        Paragraph::new(lines.into_iter().map(|(l, _)| l).collect::<Vec<_>>())
-            .block(
-                Block::new()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::new().fg(t.rule))
-                    .padding(Padding::new(2, 1, 1, 0)),
-            )
-            .style(Style::new().bg(t.page)),
-        area,
-    );
-}
-
-/// `s` in lines of at most `width` columns, broken at spaces, a word too
-/// long cut short.
-fn wrapped(s: &str, width: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut line = String::new();
-    for word in s.split(' ') {
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
-            out.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        out.push(line);
-    }
-    out.into_iter().map(|l| clip(&l, width.max(1))).collect()
-}
-
 /// The keys most wanted, each clickable, as if pressed; and what was said.
 fn keys(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
     // Each key as drawn, what it does, and as `paperstack screen` writes it.
     let map_keys = [
         ("→", "theme", "<right>"),
-        ("⏎", "papers", "<enter>"),
-        ("n", "name", "n"),
+        ("⏎", "into", "<enter>"),
         ("s", "split", "s"),
         ("+", "finer", "+"),
         ("-", "coarser", "-"),
+        (">", "closer", ">"),
         ("u", "undo", "u"),
         ("?", "more", "?"),
         ("m", "list", "m"),
@@ -1206,7 +874,7 @@ fn busy_dialog(f: &mut Frame, t: &Theme, busy: &Busy) -> Rect {
     }
     let keys = match busy.then {
         Then::Fetch(_) => " b the browser now · esc stop ",
-        Then::Add | Then::Map => " the screen is yours again when it is done ",
+        Then::Add | Then::Map | Then::Within => " the screen is yours again when it is done ",
     };
     let block = dialog(t, busy.title).title_bottom(Line::styled(keys, hint));
     f.render_widget(Paragraph::new(lines).block(block), area);
@@ -1347,13 +1015,23 @@ fn help(f: &mut Frame, t: &Theme, view: View, scroll: u16) -> Rect {
 const MAP_KEYS: &[(&str, &str)] = &[
     (
         "← → h l",
-        "pick a theme; ↑ ↓, tab and the wheel too; or click one",
+        "pick a theme; ↑ ↓, tab and the wheel too; or click its name",
     ),
     ("1-9", "theme 1 to 9, as `paperstack themes` numbers them"),
     (
         "⏎",
-        "its papers, on its shelf under THEMES; or click it twice",
+        "into it: its papers alone, and their links; or click its name twice",
     ),
+    (
+        "",
+        "within, ← → the next theme, a click picks a paper, twice opens it",
+    ),
+    (
+        "",
+        "⏎ its card: its papers, newest first, ⏎ opens one, l lists them",
+    ),
+    ("esc", "out of the theme, to the whole map; again, the list"),
+    ("< >", "further from the theme picked, and closer"),
     (
         "n",
         "name it; blank, its own words again; a name follows its papers",
@@ -1376,8 +1054,8 @@ const MAP_KEYS: &[(&str, &str)] = &[
     ),
     ("F", "the same, the map laid out anew"),
     (
-        "A",
-        "put the papers new since, the crosses, in the themes said",
+        "N A",
+        "where each paper new since, a cross, would go; A puts them there",
     ),
     (
         "u",

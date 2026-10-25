@@ -109,6 +109,8 @@ const COAUTHOR_KNN: usize = 10;
 const COAUTHOR_WEIGHT: f32 = 0.5;
 /// Themes of fewer papers are left unnamed on the map.
 pub const MIN_THEME: usize = 5;
+/// How many of each paper's strongest links a theme shows from within.
+const LINKS_SHOWN: usize = 3;
 /// Louvain's resolution, unless another is asked for.
 pub const RESOLUTION: f64 = 1.0;
 /// UMAP's epochs, and its first step's size, from a layout before.
@@ -288,16 +290,39 @@ impl Map {
         map
     }
 
+    /// The docs of theme `t`'s papers, by their places in `docs`.
+    pub fn theme_docs(&self, docs: &[Doc], t: usize) -> Vec<usize> {
+        let on_map = self.places(docs);
+        (0..docs.len())
+            .filter(|&d| on_map[d].is_some_and(|m| self.theme[m] == Some(t)))
+            .collect()
+    }
+
+    /// The papers of `members`, by their places in `docs`, from within: a
+    /// map of them alone, laid out by their links among themselves and
+    /// gathered in their own finer themes at `resolution`; and the links it
+    /// shows, each paper's strongest `LINKS_SHOWN`, by places on that map.
+    pub fn within(
+        docs: &[Doc],
+        members: &[usize],
+        resolution: f64,
+        say: Say,
+    ) -> (Map, Vec<(usize, usize)>) {
+        let mut links = Vec::new();
+        let map = Map::gather(docs, members, resolution, say, |edges, theme, count| {
+            links = strongest(edges, members.len(), LINKS_SHOWN);
+            layout(members.len(), edges, theme, count, None, say)
+        });
+        (map, links)
+    }
+
     /// Theme `t` split in its own themes, gathered at `resolution` among
     /// its papers alone, each linked to its nearest within it; the papers
     /// left where they are on the map, and the other themes as they were.
     /// The theme of the largest part now, or none where it does not split.
     pub fn split(&mut self, docs: &[Doc], t: usize, resolution: f64, say: Say) -> Option<usize> {
         let on_map = self.places(docs);
-        // The theme's papers, by doc; and each doc's place among them.
-        let members: Vec<usize> = (0..docs.len())
-            .filter(|&d| on_map[d].is_some_and(|m| self.theme[m] == Some(t)))
-            .collect();
+        let members = self.theme_docs(docs, t);
         let graph = Graph::among(docs, &members, say);
         say(&format!(
             "gathering {} papers in finer themes at resolution {resolution:.2}",
@@ -456,12 +481,11 @@ impl Map {
         big.max(self.themes.len().min(NAMED_AT_LEAST))
     }
 
-    /// The paper of a named theme nearest `at` on the map.
-    pub fn nearest(&self, at: [f32; 2]) -> Option<usize> {
+    /// The paper nearest `at` on the map of a theme `keep` keeps.
+    pub fn nearest_where(&self, at: [f32; 2], keep: impl Fn(usize) -> bool) -> Option<usize> {
         let d = |p: &[f32; 2]| (p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2);
-        let named = self.named();
         (0..self.xy.len())
-            .filter(|&i| self.theme[i].is_some_and(|t| t < named))
+            .filter(|&i| self.theme[i].is_some_and(&keep))
             .min_by(|&a, &b| d(&self.xy[a]).total_cmp(&d(&self.xy[b])))
     }
 
@@ -1193,6 +1217,27 @@ fn spread(xy: &[[f32; 2]]) -> f32 {
         / n
 }
 
+/// Of `edges` among `n` nodes, each node's strongest `k`, each edge once.
+fn strongest(edges: &[(usize, usize, f32)], n: usize, k: usize) -> Vec<(usize, usize)> {
+    let mut by: Vec<Vec<(f32, usize)>> = vec![Vec::new(); n];
+    for (e, &(i, j, w)) in edges.iter().enumerate() {
+        by[i].push((w, e));
+        by[j].push((w, e));
+    }
+    let mut shown = vec![false; edges.len()];
+    for mut of in by {
+        of.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, e) in of.into_iter().take(k) {
+            shown[e] = true;
+        }
+    }
+    edges
+        .iter()
+        .zip(shown)
+        .filter_map(|(&(i, j, _), shown)| shown.then_some((i, j)))
+        .collect()
+}
+
 /// The middle of each theme's places, of those given with their themes;
 /// none for a theme given none.
 fn middles(
@@ -1663,20 +1708,23 @@ mod tests {
         let docs = two_subjects(30);
         let dir = tempfile::tempdir().unwrap();
         let mut kept = Kept::open(&dir.path().join("map.json"), &docs, &|_| {}).unwrap();
-        let moved = |kept: &Kept| {
-            let (a, b) = (&kept.previous.as_ref().unwrap().xy, &kept.current.xy);
-            a.iter()
-                .zip(b)
-                .map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
-                .sum::<f32>()
-                / spread(a)
-                / a.len() as f32
+        // The map before made a thousand times larger: built again from it,
+        // as large; laid out anew, as large as any layout anew.
+        let blown = |kept: &mut Kept| {
+            for p in &mut kept.current.xy {
+                p[0] *= 1000.0;
+                p[1] *= 1000.0;
+            }
+            spread(&kept.current.xy)
         };
+        let big = blown(&mut kept);
         kept.rebuild(&docs, None, false, &|_| {}).unwrap();
-        let warm = moved(&kept);
+        let warm = spread(&kept.current.xy);
+        assert!((warm - big).abs() < 0.1 * big, "warm {warm}, from {big}");
+        blown(&mut kept);
         kept.rebuild(&docs, None, true, &|_| {}).unwrap();
-        let fresh = moved(&kept);
-        assert!(warm < fresh, "warm moved {warm}, fresh {fresh}");
+        let fresh = spread(&kept.current.xy);
+        assert!(fresh < 0.01 * big, "fresh {fresh}, from {big}");
     }
 
     #[test]
