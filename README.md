@@ -375,8 +375,13 @@ by the words that set it apart. `←` / `→`, or a click, picks a theme: its
 words, its authors of most papers and its newest papers are shown beside
 it, and `enter` lists its papers, on its shelf under THEMES, where search
 narrows them further. `c` colours every theme, not the picked one alone;
-`1` to `9` pick those themes; `?` on the map lists its keys, scrolling where
-they do not fit.
+`1` to `9` pick those themes; `?` on the map lists its keys, scrolling
+where they do not fit.
+
+A search typed in the list shows on the map too: the papers it finds,
+those new since among them, as dots over the rest in grey, and beside the
+map how many, theme by theme. A newest paper beside the map opens in ohp
+at a click, and each key in the footer, clicked, is as if pressed.
 
 ```sh
 paperstack themes                 # the words most papers have, and each theme's
