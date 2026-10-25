@@ -35,9 +35,17 @@ const BROWSER: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebK
                        (KHTML, like Gecko) Chrome/141.0 Safari/537.36";
 /// The largest PDF downloaded.
 const PDF_LIMIT: u64 = 200 << 20;
+/// The largest page read.
+const PAGE_LIMIT: u64 = 20 << 20;
 /// How long a PDF's server is waited for, before the first of its bytes: a
 /// copy that does not come is soon given up, for the next.
 const PDF_WAIT: Duration = Duration::from_secs(10);
+/// How often a PDF's server that asks for fewer requests is asked again,
+/// and how long it is waited for first, doubled each time, at most.
+/// A server that asks for a longer wait is not waited for.
+const PDF_RETRIES: u32 = 2;
+const PDF_BACKOFF: Duration = Duration::from_secs(5);
+const PDF_BACKOFF_MOST: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 pub struct Net {
@@ -186,40 +194,203 @@ impl Net {
             at,
             resp.body_mut()
                 .with_config()
-                .limit(20 << 20)
+                .limit(PAGE_LIMIT)
                 .read_to_string()?,
         ))
     }
 
-    /// A PDF; anything else, as a page asking to sign in, is an error,
-    /// told by its type before it is read, where it says it is a page.
+    /// A PDF; anything else, as a page asking to sign in, is a [`Refused`].
     pub fn pdf(&self, url: &str) -> anyhow::Result<Vec<u8>> {
-        #[cfg(test)]
-        if let Some(bytes) = self.answer("pdf", url) {
-            return Ok(bytes?.into_bytes());
+        self.pdf_at(url).map(|(bytes, _)| bytes)
+    }
+
+    /// A PDF, as [`Net::pdf`], and where it came from at last.
+    fn pdf_at(&self, url: &str) -> anyhow::Result<(Vec<u8>, String)> {
+        match self.pdf_or_page(url, false)? {
+            Got::Pdf(bytes, at) => Ok((bytes, at)),
+            Got::Page(..) => Err(refused(url, Why::Page)),
         }
-        let mut resp = self
-            .agent
-            .get(url)
-            .config()
-            .timeout_connect(Some(PDF_WAIT))
-            .timeout_recv_response(Some(PDF_WAIT))
-            .build()
-            .header("User-Agent", BROWSER)
-            .header("Accept", "application/pdf,*/*;q=0.5")
-            .call()
-            .with_context(|| format!("cannot download {url}"))?;
-        if resp.body().mime_type() == Some("text/html") {
-            bail!("{url} gave a page, not a PDF");
+    }
+
+    /// A PDF, as [`Net::pdf`], or, given a page that names its PDF, as a
+    /// repository's does by `citation_pdf_url`, that PDF, if `wanted`; and
+    /// where it came from at last, after redirects.
+    pub fn pdf_via_page(
+        &self,
+        url: &str,
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> anyhow::Result<(Vec<u8>, String)> {
+        match self.pdf_or_page(url, true)? {
+            Got::Pdf(bytes, at) => Ok((bytes, at)),
+            Got::Page(html, at) => {
+                let named = crate::resolve::page_pdf(&crate::resolve::metas(&html), &at)
+                    .filter(|next| *next != url && *next != at)
+                    .ok_or_else(|| refused(url, Why::Page))?;
+                if !wanted(&named) {
+                    anyhow::bail!("{named}, which {url} names, was had already");
+                }
+                self.pdf_at(&named)
+            }
+        }
+    }
+
+    /// A PDF, or the page given in its place, read only if `read_page`;
+    /// each with where it came from at last. A server that asks for fewer
+    /// requests, as bioRxiv's, is asked again after the time it says, or a
+    /// while; one that asks for longer is let be for that long.
+    fn pdf_or_page(&self, url: &str, read_page: bool) -> anyhow::Result<Got> {
+        #[cfg(test)]
+        if let Some(answer) = self.answer("pdf", url) {
+            let answer = answer?;
+            let at = url.to_string();
+            if let Some(code) = answer.strip_prefix("!status ") {
+                return Err(refused(url, Why::Status(code.parse()?)));
+            }
+            if answer.starts_with('<') {
+                return Ok(Got::Page(answer, at));
+            }
+            return Ok(Got::Pdf(answer.into_bytes(), at));
+        }
+        let host = crate::source::host(url).map(|(h, _)| h).unwrap_or_default();
+        if resting(&host) {
+            return Err(refused(url, Why::Status(429)));
+        }
+        let mut attempt = 0;
+        let mut resp = loop {
+            let resp = self
+                .agent
+                .get(url)
+                .config()
+                .timeout_connect(Some(PDF_WAIT))
+                .timeout_recv_response(Some(PDF_WAIT))
+                .http_status_as_error(false)
+                .build()
+                .header("User-Agent", BROWSER)
+                .header("Accept", "application/pdf,*/*;q=0.5")
+                .call()
+                .map_err(|e| refused(url, Why::Network(e.to_string())))?;
+            let status = resp.status().as_u16();
+            if status == 429 && attempt < PDF_RETRIES {
+                let said = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok())
+                    .map(Duration::from_secs);
+                let wait = said.unwrap_or(PDF_BACKOFF * 2u32.pow(attempt));
+                if wait <= PDF_BACKOFF_MOST {
+                    std::thread::sleep(wait);
+                    attempt += 1;
+                    continue;
+                }
+                rest(&host, wait);
+            }
+            if status >= 400 {
+                return Err(refused(url, Why::Status(status)));
+            }
+            break resp;
+        };
+        let at = resp.get_uri().to_string();
+        let page = resp.body().mime_type() == Some("text/html");
+        if page && !read_page {
+            return Ok(Got::Page(String::new(), at));
         }
         let bytes = resp
             .body_mut()
             .with_config()
-            .limit(PDF_LIMIT)
-            .read_to_vec()?;
-        if !bytes.starts_with(b"%PDF") {
-            bail!("{url} gave no PDF");
+            .limit(if page { PAGE_LIMIT } else { PDF_LIMIT })
+            .read_to_vec()
+            .map_err(|e| refused(url, Why::Network(e.to_string())))?;
+        if bytes.starts_with(b"%PDF") {
+            Ok(Got::Pdf(bytes, at))
+        } else if page || bytes.trim_ascii_start().starts_with(b"<") {
+            // As its bytes: a page need not be in UTF-8.
+            let html = if read_page {
+                String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+            } else {
+                String::new()
+            };
+            Ok(Got::Page(html, at))
+        } else {
+            Err(refused(url, Why::NotPdf))
         }
-        Ok(bytes)
     }
 }
+
+/// What a PDF's address gave, and where it came from at last.
+enum Got {
+    Pdf(Vec<u8>, String),
+    Page(String, String),
+}
+
+fn refused(url: &str, why: Why) -> anyhow::Error {
+    Refused {
+        url: url.to_string(),
+        why,
+    }
+    .into()
+}
+
+/// Hosts that asked for a longer wait than is waited, and until when.
+static RESTING: Mutex<Option<std::collections::HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Ask `host` nothing more for `wait`.
+fn rest(host: &str, wait: Duration) {
+    let mut resting = RESTING.lock().unwrap_or_else(|e| e.into_inner());
+    resting
+        .get_or_insert_with(Default::default)
+        .insert(host.to_string(), Instant::now() + wait);
+}
+
+/// Whether `host` asked to be asked nothing for now.
+fn resting(host: &str) -> bool {
+    let resting = RESTING.lock().unwrap_or_else(|e| e.into_inner());
+    resting
+        .as_ref()
+        .and_then(|r| r.get(host))
+        .is_some_and(|until| Instant::now() < *until)
+}
+
+/// A PDF not had from where it was asked for, and why.
+#[derive(Debug)]
+pub struct Refused {
+    pub url: String,
+    pub why: Why,
+}
+
+#[derive(Debug)]
+pub enum Why {
+    /// Its HTTP status, as 403 for a paywall or 429 for too many requests.
+    Status(u16),
+    /// A page, as one asking to sign in, or a bot check.
+    Page,
+    NotPdf,
+    Network(String),
+}
+
+impl Why {
+    /// What an agent reads of it: `http-403`, `html-page`, `not-a-pdf`, `network`.
+    pub fn reason(&self) -> String {
+        match self {
+            Why::Status(n) => format!("http-{n}"),
+            Why::Page => "html-page".to_string(),
+            Why::NotPdf => "not-a-pdf".to_string(),
+            Why::Network(_) => "network".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = &self.url;
+        match &self.why {
+            Why::Status(429) => write!(f, "{url} turned paperstack away: too many requests"),
+            Why::Status(n) => write!(f, "{url} answered {n}"),
+            Why::Page => write!(f, "{url} gave a page, not a PDF"),
+            Why::NotPdf => write!(f, "{url} gave no PDF"),
+            Why::Network(e) => write!(f, "cannot download {url}: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Refused {}

@@ -40,6 +40,7 @@ paperstack add 'A paper title, in full'                      # a title: added on
 paperstack inbox                                             # file the PDFs saved to inbox/
 paperstack import library-export.json --dry-run              # another library, its keys kept
 paperstack attach KEY ~/Downloads/paper.pdf                  # give a paper the PDF it lacks
+paperstack attach --query 'collection:"X"' --no-browser --json  # open copies, each paper's outcome
 ```
 
 A paper already here is not added again. Given only a title that several
@@ -69,7 +70,10 @@ paperstack find 'QUERY' --keys                # [@a; @b], to cite them
 paperstack get KEY --bib                      # one entry
 ```
 
-Cite only keys that `paperstack` gives; never make one up.
+Cite only keys that `paperstack` gives; never make one up. A key merged
+into another paper's, as after an import, still finds it. Over MCP,
+`check_keys` says which keys a manuscript cites are here, merged, or
+missing, and `cite` gives a merged key's entry under the key asked for.
 
 An agent whose program speaks MCP, as Cursor or Claude Code, may instead be
 given `paperstack mcp`: the same, as tools, and `read_paper` for a paper's

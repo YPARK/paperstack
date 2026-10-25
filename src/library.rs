@@ -68,7 +68,16 @@ impl Library {
     /// from the root, as before its name or year was corrected, its record
     /// and PDF are moved there first. Returns its path from the root.
     pub fn save(&self, r: &Record, was: Option<&Path>) -> anyhow::Result<PathBuf> {
-        let rel = layout::record(r);
+        let mut rel = layout::record(r);
+        // A name that differs from where it was only as the file system
+        // does not tell apart, in case or in how its accents are stored, is
+        // the same file: it is written where it was, and nothing is taken
+        // away.
+        if let Some(was) =
+            was.filter(|w| *w != rel && same_file(&self.root.join(w), &self.root.join(&rel)))
+        {
+            rel = was.to_path_buf();
+        }
         let path = self.root.join(&rel);
         fs::create_dir_all(path.parent().expect("filed in a folder"))?;
         let moved = was.filter(|w| *w != rel);
@@ -93,14 +102,27 @@ impl Library {
             if let Some(old) = old_pdf.filter(|p| p.exists()) {
                 fs::rename(&old, &new_pdf)?;
             }
-            match fs::remove_file(self.root.join(was)) {
+            let old = self.root.join(was);
+            match fs::remove_file(&old) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                     return Err(e).context("cannot take away the record where it was");
                 }
-                _ => {}
+                _ => self.prune(&old),
             }
         }
         Ok(rel)
+    }
+
+    /// The folders `file` was in, from its own up, as far as they are left
+    /// empty.
+    pub fn prune(&self, file: &Path) {
+        let mut dir = file.parent();
+        while let Some(d) = dir.filter(|d| *d != self.root) {
+            if fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
     }
 
     /// Every record and PDF under the root, but in the inbox and in hidden
@@ -161,6 +183,22 @@ pub fn copy(src: &Path, dest: &Path) -> anyhow::Result<()> {
     let tmp = dest.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     fs::copy(src, &tmp).with_context(|| format!("cannot copy {}", src.display()))?;
     fs::rename(&tmp, dest).with_context(|| format!("cannot write {}", dest.display()))
+}
+
+/// Whether `a` and `b` are one file that exists.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(a), fs::metadata(b)) {
+            (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+    }
 }
 
 /// A file's time and size, as a refresh tells by them whether it changed.

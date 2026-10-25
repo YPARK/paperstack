@@ -122,15 +122,8 @@ pub fn print_added(
         let all: Vec<Value> = done
             .iter()
             .map(|(given, r)| match r {
-                Ok(a) => json!({
-                    "given": given,
-                    "key": a.key,
-                    "outcome": a.outcome,
-                    "how": a.how,
-                    "record": lib.root.join(&a.path),
-                    "pdf": a.has_pdf.then(|| lib.root.join(&a.path).with_extension("pdf")),
-                }),
-                Err(e) => json!({ "given": given, "error": format!("{e:#}") }),
+                Ok(a) => added_json(lib, a, given),
+                Err(e) => failed_json(e, given),
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&all)?);
@@ -147,6 +140,35 @@ pub fn print_added(
         anyhow::bail!("{failed} of {} not added", done.len());
     }
     Ok(())
+}
+
+/// What was added, for an agent: as `print_added` gives it.
+pub fn added_json(lib: &Library, a: &Added, given: &str) -> Value {
+    let record = lib.root.join(&a.path);
+    json!({
+        "given": given,
+        "key": a.key,
+        "outcome": a.outcome,
+        "how": a.how,
+        "record": record,
+        "pdf": a.has_pdf.then(|| record.with_extension("pdf")),
+        "pdf_version": a.pdf_version,
+    })
+}
+
+/// What could not be added, and why, for an agent: as `reason` names it,
+/// and, of a PDF not had, each copy tried and why it was not taken.
+pub fn failed_json(e: &anyhow::Error, given: &str) -> Value {
+    let mut v = json!({
+        "given": given,
+        "outcome": "failed",
+        "reason": crate::add::reason(e).unwrap_or_else(|| "error".to_string()),
+        "error": format!("{e:#}"),
+    });
+    if let Some(none) = e.downcast_ref::<crate::add::NoOpenCopy>() {
+        v["tried"] = json!(none.tried);
+    }
+    v
 }
 
 pub fn json(lib: &Library, h: &Hit) -> Value {
@@ -167,6 +189,7 @@ pub fn json(lib: &Library, h: &Hit) -> Value {
         "starred": m.starred,
         "has_abstract": r.abstract_text().is_some(),
         "pdf": h.has_pdf.then(|| record.with_extension("pdf")),
+        "pdf_version": h.has_pdf.then_some(m.pdf_version).flatten(),
         "record": record,
         "score": h.score,
     })

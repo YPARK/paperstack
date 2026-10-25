@@ -91,6 +91,22 @@ pub struct Hit {
     pub score: f64,
 }
 
+/// Papers asked for, as [`Index::choose`] gives them; and the keys no
+/// paper has.
+#[derive(Default)]
+pub struct Chosen {
+    pub papers: Vec<Picked>,
+    pub missing: Vec<String>,
+}
+
+pub struct Picked {
+    /// The key it was asked by, as a manuscript cites it, or its own.
+    pub asked: String,
+    /// Asked for by its key, not found by a query.
+    pub named: bool,
+    pub hit: Hit,
+}
+
 /// What a refresh did.
 #[derive(Debug, Default)]
 pub struct Refresh {
@@ -598,6 +614,50 @@ impl Index {
             .by_key
             .get(&key.to_lowercase())
             .map(|&i| self.papers[i].hit(0.0)))
+    }
+
+    /// The papers asked for: by `keys`, each once, with the key it was
+    /// asked by, as a manuscript cites it; then those `query` finds, but
+    /// those named already. And the keys no paper has.
+    pub fn choose<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+        query: Option<&str>,
+    ) -> anyhow::Result<Chosen> {
+        let mut chosen = Chosen::default();
+        let mut seen = HashSet::new();
+        for key in keys {
+            if !seen.insert(key.to_string()) {
+                continue;
+            }
+            match self.get(key)? {
+                Some(hit) => chosen.papers.push(Picked {
+                    asked: key.to_string(),
+                    named: true,
+                    hit,
+                }),
+                None => chosen.missing.push(key.to_string()),
+            }
+        }
+        if let Some(q) = query {
+            let named: HashSet<String> = chosen
+                .papers
+                .iter()
+                .map(|p| p.hit.record.key.clone())
+                .collect();
+            let found = self.search(&Query::parse(q), Sort::Relevance, false, None)?;
+            chosen.papers.extend(
+                found
+                    .into_iter()
+                    .filter(|h| !named.contains(&h.record.key))
+                    .map(|hit| Picked {
+                        asked: hit.record.key.clone(),
+                        named: false,
+                        hit,
+                    }),
+            );
+        }
+        Ok(chosen)
     }
 
     pub fn by_doi(&self, doi: &str) -> anyhow::Result<Option<Hit>> {

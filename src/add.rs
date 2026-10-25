@@ -8,7 +8,7 @@ use crate::index::{Hit, Index};
 use crate::library::{self, Library};
 use crate::net::Net;
 use crate::pdf;
-use crate::record::{Meta, Record, UNRESOLVED, new_key};
+use crate::record::{Meta, Record, UNRESOLVED, Version, new_key};
 use crate::resolve::{self, Found};
 use crate::source::Source;
 use anyhow::{Context, bail};
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// Open copies of a PDF tried before giving up on one.
 const PDF_TRIES: usize = 4;
 /// Open copies tried for a paper already here, before the browser.
-const OPEN_TRIES: usize = 6;
+const OPEN_TRIES: usize = 8;
 /// Ids named in a PDF tried before searching for it.
 const ID_TRIES: usize = 6;
 
@@ -119,6 +119,8 @@ pub struct Added {
     pub outcome: Outcome,
     /// How it was told which paper it is.
     pub how: String,
+    /// Which version its PDF is, where that is known.
+    pub pdf_version: Option<Version>,
 }
 
 /// What the browser extension sends of the page it was clicked on.
@@ -189,22 +191,51 @@ pub fn attach(
     from: &str,
     named: bool,
 ) -> anyhow::Result<Added> {
+    let take = Take {
+        named,
+        ..Take::default()
+    };
+    attach_as(lib, index, key, bytes, from, take)
+}
+
+/// How [`attach_as`] takes a PDF.
+#[derive(Clone, Copy, Default)]
+struct Take {
+    /// Named by the person, as [`attach`] says.
+    named: bool,
+    /// Its version, where its address and text do not tell.
+    version: Option<Version>,
+    /// Only one not a preprint, taking the place of a preprint's, which
+    /// goes to the trash.
+    published: bool,
+}
+
+/// [`attach`], as `take` says.
+fn attach_as(
+    lib: &Library,
+    index: &mut Index,
+    key: &str,
+    bytes: &[u8],
+    from: &str,
+    take: Take,
+) -> anyhow::Result<Added> {
+    let Take {
+        named,
+        version,
+        published,
+    } = take;
     let hit = index
         .get(key)?
         .with_context(|| format!("no paper with the key {key}"))?;
-    if hit.has_pdf {
+    if hit.has_pdf && !published {
         bail!("{key} has its PDF already");
     }
     if !bytes.starts_with(b"%PDF") {
         bail!("{from} is not a PDF");
     }
     let r = &hit.record;
-    let shown = shows(
-        &pdf::read(bytes)?,
-        r.title(),
-        r.doi(),
-        r.paperstack.arxiv.as_deref(),
-    );
+    let reading = pdf::read(bytes)?;
+    let shown = shows(&reading, r.title(), r.doi(), r.paperstack.arxiv.as_deref());
     let how = match shown {
         Some(true) => from.to_string(),
         // An unresolved paper's title is but its DOI or address: a PDF
@@ -221,8 +252,25 @@ pub fn attach(
              attach it by its path, as `paperstack attach {key} <file>`"
         ),
     };
+    let version = version_of(&r.csl, from, pdf::first_page(&reading), version);
+    if published && version == Some(Version::Preprint) {
+        return Err(IsPreprint(from.to_string()).into());
+    }
+    // A preprint's PDF in the way is kept in the trash, and the new one
+    // written over it, whole or not at all.
+    if hit.has_pdf {
+        let pdf = lib.root.join(&hit.path).with_extension("pdf");
+        let kept = lib
+            .root
+            .join(crate::remove::TRASH)
+            .join(&hit.path)
+            .with_extension("pdf");
+        std::fs::create_dir_all(kept.parent().expect("filed in a folder"))?;
+        library::copy(&pdf, &kept)?;
+    }
     let mut record = Record::clone(&hit.record);
     record.paperstack.pdf_sha256 = Some(sha256(bytes));
+    record.paperstack.pdf_version = version;
     let path = lib.save(&record, Some(&hit.path))?;
     library::write(&lib.root.join(&path).with_extension("pdf"), bytes)?;
     index.upsert(lib, &path, record.clone(), Some(&hit.path))?;
@@ -232,61 +280,315 @@ pub fn attach(
         has_pdf: true,
         outcome: Outcome::PdfAttached,
         how,
+        pdf_version: version,
     })
+}
+
+/// Which version a PDF from `from` is, its first page `text`: a preprint
+/// where its address or its stamp says so; else as `given`, as OpenAlex
+/// says; else a preprint where the paper, `csl`, is filed as one.
+fn version_of(csl: &Value, from: &str, text: &str, given: Option<Version>) -> Option<Version> {
+    if on_preprint_server(from) || pdf::preprint_stamp(text) {
+        return Some(Version::Preprint);
+    }
+    given.or_else(|| is_preprint(csl).then_some(Version::Preprint))
+}
+
+/// Whether `url` is a preprint server's.
+fn on_preprint_server(url: &str) -> bool {
+    const SERVERS: &[&str] = &[
+        "arxiv.org",
+        "biorxiv.org",
+        "medrxiv.org",
+        "researchsquare.com",
+        "ssrn.com",
+        "preprints.org",
+        "osf.io",
+    ];
+    let Some((host, _)) = crate::source::host(url) else {
+        return false;
+    };
+    SERVERS
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
+/// The version of the PDF `hit` has: as its record says, else as its text.
+pub fn pdf_version(lib: &Library, hit: &Hit) -> Option<Version> {
+    hit.record.paperstack.pdf_version.or_else(|| {
+        let bytes = std::fs::read(lib.root.join(&hit.path).with_extension("pdf")).ok()?;
+        version_of(&hit.record.csl, "", &first_page_of(&bytes), None)
+    })
+}
+
+/// The text of the first page of the PDF `bytes`, alone read.
+fn first_page_of(bytes: &[u8]) -> String {
+    pdf::pages(bytes, 1, 1)
+        .ok()
+        .and_then(|(pages, _)| pages.into_iter().next())
+        .unwrap_or_default()
+}
+
+/// A paper's PDF, not known to be a preprint's, where the published
+/// version was asked for in its place.
+#[derive(Debug)]
+pub struct NotPreprint(String);
+
+impl std::fmt::Display for NotPreprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} has its PDF already, and it is not known to be a preprint's",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotPreprint {}
+
+/// A preprint, where the published version was asked for.
+#[derive(Debug)]
+pub struct IsPreprint(String);
+
+impl std::fmt::Display for IsPreprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is a preprint", self.0)
+    }
+}
+
+impl std::error::Error for IsPreprint {}
+
+/// No open copy of a paper's PDF to be had, and what was tried.
+#[derive(Debug)]
+pub struct NoOpenCopy {
+    pub key: String,
+    pub tried: Vec<Tried>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Tried {
+    pub url: String,
+    /// As [`reason`] gives it.
+    pub reason: String,
+    pub why: String,
+}
+
+impl std::fmt::Display for NoOpenCopy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let key = &self.key;
+        if self.tried.is_empty() {
+            return write!(f, "no open copy of {key}'s PDF is known");
+        }
+        let tried: Vec<String> = self
+            .tried
+            .iter()
+            .map(|t| format!("{} ({})", t.url, t.reason))
+            .collect();
+        write!(f, "no open copy of {key}'s PDF: tried {}", tried.join(", "))
+    }
+}
+
+impl std::error::Error for NoOpenCopy {}
+
+/// Why a PDF was not had, for an agent to read, where it is told: an HTTP
+/// status, as `http-429`, `html-page`, `not-a-pdf`, `network`,
+/// `preprint` or `no-open-copy`.
+pub fn reason(e: &anyhow::Error) -> Option<String> {
+    if let Some(r) = e.downcast_ref::<crate::net::Refused>() {
+        Some(r.why.reason())
+    } else if e.is::<IsPreprint>() {
+        Some("preprint".to_string())
+    } else if e.is::<NoOpenCopy>() {
+        Some("no-open-copy".to_string())
+    } else {
+        None
+    }
 }
 
 /// Give `hit`, a paper without its PDF, an open copy of it, downloaded:
 /// the first that is that paper's, by [`attach`], of the open publisher's
-/// own, then OpenAlex's, asked only if those fail, then arXiv's. An error,
-/// saying why, where none is to be had. Each step is told to `say`, which
-/// answers whether to go on.
+/// own, then OpenAlex's, asked only if those fail, then arXiv's; published
+/// versions before accepted ones, and preprints last. Where `published`,
+/// no preprint, and a paper whose PDF is a preprint's is given the
+/// published one in its place. A [`NoOpenCopy`], saying what was tried,
+/// where none is to be had. Each step is told to `say`, which answers
+/// whether to go on.
 pub fn open_copy(
     lib: &Library,
     index: &mut Index,
     net: &Net,
     hit: &Hit,
+    published: bool,
     say: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<Added> {
     let r = &hit.record;
     let key = &r.key;
+    if hit.has_pdf && !published {
+        bail!("{key} has its PDF already");
+    }
+    if published && is_preprint(&r.csl) {
+        bail!(
+            "{key} is filed as a preprint: add its published DOI, as \
+             `paperstack add DOI`, for its published copy to be had"
+        );
+    }
+    if hit.has_pdf && pdf_version(lib, hit) != Some(Version::Preprint) {
+        return Err(NotPreprint(key.clone()).into());
+    }
     let arxiv = r
         .paperstack
         .arxiv
         .as_deref()
         .or_else(|| r.doi().and_then(crate::source::arxiv_of_doi));
     let doi = r.doi().filter(|d| crate::source::arxiv_of_doi(d).is_none());
-    let urls = doi
+    // The publisher's own is as published; a preprint server's, as
+    // submitted, whatever OpenAlex says.
+    let copy = |url: String, version, landing| {
+        let version = if on_preprint_server(&url) {
+            Some(Version::Preprint)
+        } else {
+            version
+        };
+        resolve::OpenCopy {
+            url,
+            version,
+            landing,
+        }
+    };
+    let publishers: Vec<resolve::OpenCopy> = doi
         .map(resolve::publisher_pdfs)
         .unwrap_or_default()
         .into_iter()
-        .chain(doi.into_iter().flat_map(|d| {
+        .map(|u| copy(u, Some(Version::Published), false))
+        .collect();
+    // OpenAlex, and arXiv, are asked only once the publisher's fail.
+    let others = || {
+        let mut copies: Vec<resolve::OpenCopy> = Vec::new();
+        if let Some(d) = doi {
             say("asking OpenAlex where open copies are");
-            resolve::openalex_pdfs(net, d)
-        }))
-        .chain(arxiv.map(resolve::arxiv_pdf));
+            copies.extend(
+                resolve::openalex_pdfs(net, d)
+                    .into_iter()
+                    .map(|c| copy(c.url, c.version, c.landing)),
+            );
+        }
+        if let Some(id) = arxiv {
+            copies.push(copy(resolve::arxiv_pdf(id), Some(Version::Preprint), false));
+        }
+        // A version not said is between the accepted and the preprint.
+        copies.sort_by_key(|c| match c.version {
+            Some(Version::Published) => 0,
+            Some(Version::Accepted) => 1,
+            None => 2,
+            Some(Version::Preprint) => 3,
+        });
+        copies
+    };
     let mut seen = std::collections::HashSet::new();
-    let mut why = anyhow::anyhow!("no open copy of {key}'s PDF is known");
-    for url in urls.filter(|u| seen.insert(u.clone())).take(OPEN_TRIES) {
-        if !say(&format!("downloading {url}")) {
+    let mut tried = Vec::new();
+    let mut copies = publishers
+        .into_iter()
+        .chain(std::iter::once_with(others).flatten());
+    let mut downloads = 0;
+    // The cap is minded before the next is had: OpenAlex is asked only for one.
+    while downloads < OPEN_TRIES {
+        let Some(c) = copies.next() else { break };
+        if !seen.insert(c.url.clone()) {
+            continue;
+        }
+        // A preprint, where the published version is asked for, is passed
+        // over, and said to be.
+        if published && c.version == Some(Version::Preprint) {
+            tried.push(Tried {
+                why: format!("{} is a preprint", c.url),
+                url: c.url,
+                reason: "preprint".to_string(),
+            });
+            continue;
+        }
+        downloads += 1;
+        if !say(&format!("downloading {}", c.url)) {
             bail!("stopped");
         }
-        match net
-            .pdf(&url)
-            .and_then(|bytes| attach(lib, index, key, &bytes, &url, false))
-        {
+        // A page followed to its PDF: that PDF is told by its own address,
+        // and is not had again.
+        let got = if c.landing {
+            net.pdf_via_page(&c.url, &|named| !seen.contains(named))
+        } else {
+            net.pdf(&c.url).map(|bytes| (bytes, c.url.clone()))
+        };
+        let done = got.and_then(|(bytes, at)| {
+            seen.insert(at.clone());
+            let take = Take {
+                version: c.version,
+                published,
+                ..Take::default()
+            };
+            attach_as(lib, index, key, &bytes, &at, take)
+        });
+        match done {
             Ok(added) => return Ok(added),
             Err(e) => {
                 say(&format!("  not it: {}", one_line(&e)));
-                why = e;
+                let reason = reason(&e).unwrap_or_else(|| "not-the-paper".to_string());
+                tried.push(Tried {
+                    url: c.url,
+                    reason,
+                    why: one_line(&e),
+                });
             }
         }
     }
-    Err(why)
+    Err(NoOpenCopy {
+        key: key.clone(),
+        tried,
+    }
+    .into())
+}
+
+/// [`open_copy`] for each paper chosen that wants one: each named, and
+/// of those a query found, those without a PDF, or, where `published`,
+/// those whose PDF is a preprint's. Each with what came of it.
+pub fn open_copies(
+    lib: &Library,
+    index: &mut Index,
+    net: &Net,
+    papers: Vec<crate::index::Picked>,
+    published: bool,
+    say: &dyn Fn(&str) -> bool,
+) -> Vec<(String, anyhow::Result<Added>)> {
+    let mut done = Vec::new();
+    for p in papers {
+        if !(p.named || !p.hit.has_pdf || published) {
+            continue;
+        }
+        let got = open_copy(lib, index, net, &p.hit, published, say);
+        if !p.named && matches!(&got, Err(e) if e.is::<NotPreprint>()) {
+            continue;
+        }
+        done.push((p.asked, got));
+    }
+    done
 }
 
 /// An error, its causes after it, on one line.
 pub fn one_line(e: &anyhow::Error) -> String {
     format!("{e:#}").replace('\n', " ")
+}
+
+/// A PDF had, and where from, if it was downloaded.
+struct Download<'b> {
+    bytes: std::borrow::Cow<'b, [u8]>,
+    from: String,
+}
+
+impl Download<'_> {
+    /// Put in `r`: its hash, and its version where that is told.
+    fn stamp(&self, r: &mut Record) {
+        r.paperstack.pdf_sha256 = Some(sha256(&self.bytes));
+        let text = first_page_of(&self.bytes);
+        r.paperstack.pdf_version = version_of(&r.csl, &self.from, &text, None);
+    }
 }
 
 pub struct Adder<'a> {
@@ -367,6 +669,7 @@ impl Adder<'_> {
                 resolve::enrich(self.net, &mut found);
                 // Tried here, they are not again when it is filed.
                 self.download(&std::mem::take(&mut found.pdfs))
+                    .map(|d| d.bytes.into_owned())
             }
             Some(d) => {
                 found.csl["DOI"] = json!(d);
@@ -617,7 +920,7 @@ impl Adder<'_> {
         if papers.is_empty() {
             return papers;
         }
-        let page = reading.pages.first().map(String::as_str).unwrap_or("");
+        let page = pdf::first_page(reading);
         for heading in pdf::title_lines(page) {
             if papers.iter().any(|f| agrees(f.title(), &heading)) {
                 continue;
@@ -683,14 +986,15 @@ impl Adder<'_> {
         });
         let bytes = self.pdf_bytes(pdf, &found.pdfs);
         if let Some(b) = &bytes {
-            record.paperstack.pdf_sha256 = Some(sha256(b));
+            b.stamp(&mut record);
         }
         let path = self.lib.save(&record, None)?;
         if let Some(b) = &bytes {
-            library::write(&self.lib.root.join(&path).with_extension("pdf"), b)?;
+            library::write(&self.lib.root.join(&path).with_extension("pdf"), &b.bytes)?;
         }
         self.index.upsert(self.lib, &path, record.clone(), None)?;
         Ok(Added {
+            pdf_version: record.paperstack.pdf_version,
             key: record.key,
             path,
             has_pdf: bytes.is_some(),
@@ -759,7 +1063,7 @@ impl Adder<'_> {
             self.pdf_bytes(pdf, &found.pdfs)
         };
         if let Some(b) = &bytes {
-            record.paperstack.pdf_sha256 = Some(sha256(b));
+            b.stamp(&mut record);
             changed = true;
             if outcome == Outcome::Known {
                 outcome = Outcome::PdfAttached;
@@ -782,13 +1086,14 @@ impl Adder<'_> {
             hit.path.clone()
         };
         if let Some(b) = &bytes {
-            library::write(&self.lib.root.join(&path).with_extension("pdf"), b)?;
+            library::write(&self.lib.root.join(&path).with_extension("pdf"), &b.bytes)?;
         }
         if changed {
             self.index
                 .upsert(self.lib, &path, record.clone(), Some(&hit.path))?;
         }
         Ok(Added {
+            pdf_version: record.paperstack.pdf_version,
             key: record.key,
             path,
             has_pdf: hit.has_pdf || bytes.is_some(),
@@ -798,22 +1103,25 @@ impl Adder<'_> {
     }
 
     /// The PDF given, else, if asked for, an open copy downloaded.
-    fn pdf_bytes<'b>(
-        &self,
-        given: Option<&'b [u8]>,
-        urls: &[String],
-    ) -> Option<std::borrow::Cow<'b, [u8]>> {
+    fn pdf_bytes<'b>(&self, given: Option<&'b [u8]>, urls: &[String]) -> Option<Download<'b>> {
         match given {
-            Some(b) => Some(std::borrow::Cow::Borrowed(b)),
-            None if self.options.pdf => self.download(urls).map(std::borrow::Cow::Owned),
+            Some(b) => Some(Download {
+                bytes: std::borrow::Cow::Borrowed(b),
+                from: String::new(),
+            }),
+            None if self.options.pdf => self.download(urls),
             None => None,
         }
     }
 
-    fn download(&self, urls: &[String]) -> Option<Vec<u8>> {
-        urls.iter()
-            .take(PDF_TRIES)
-            .find_map(|url| self.net.pdf(url).ok())
+    fn download(&self, urls: &[String]) -> Option<Download<'static>> {
+        urls.iter().take(PDF_TRIES).find_map(|url| {
+            let bytes = self.net.pdf(url).ok()?;
+            Some(Download {
+                bytes: std::borrow::Cow::Owned(bytes),
+                from: url.clone(),
+            })
+        })
     }
 
     /// File each PDF in the inbox, taking it out of the inbox once filed.

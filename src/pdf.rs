@@ -85,7 +85,7 @@ fn embedded_dois(bytes: &[u8]) -> Vec<String> {
 /// The ids a PDF names, best first.
 pub fn ids(r: &Reading) -> Vec<Source> {
     let mut out: Vec<Source> = r.embedded.iter().cloned().map(Source::Doi).collect();
-    let first = r.pages.first().map(String::as_str).unwrap_or("");
+    let first = first_page(r);
     let rest = r.pages.get(1..).unwrap_or(&[]).join("\n");
     out.extend(source::dois(first).into_iter().map(Source::Doi));
     out.extend(source::arxiv_ids(first).into_iter().map(Source::Arxiv));
@@ -110,7 +110,7 @@ pub fn article_info_dois(r: &Reading) -> Vec<String> {
     });
     static REFERENCE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"^\d+\.\s").unwrap());
-    let page = r.pages.first().map(String::as_str).unwrap_or("");
+    let page = first_page(r);
     let mut out: Vec<String> = Vec::new();
     let mut previous = "";
     for line in page.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -328,7 +328,7 @@ pub fn has_title(title: &str, text: &str) -> bool {
 /// is mostly the title, below a running head if there is one; and its
 /// longest early lines.
 pub fn queries(r: &Reading) -> Vec<String> {
-    let page = r.pages.first().map(String::as_str).unwrap_or("");
+    let page = first_page(r);
     let mut out = Vec::new();
     let start = squash(page);
     let start: String = start.chars().take(400).collect();
@@ -353,4 +353,22 @@ pub fn queries(r: &Reading) -> Vec<String> {
     lines.sort_by_key(|l| std::cmp::Reverse(l.len()));
     out.extend(lines.into_iter().take(2).map(str::to_string));
     out
+}
+
+/// The text of a PDF's first page.
+pub fn first_page(reading: &Reading) -> &str {
+    reading.pages.first().map_or("", String::as_str)
+}
+
+/// Whether a PDF's first page bears a preprint server's stamp, as
+/// bioRxiv's `bioRxiv preprint doi: …` or arXiv's margin, `arXiv:2101.00001v2
+/// [cs.LG] 3 Jan 2021`: not a mention of one, as a published paper's.
+pub fn preprint_stamp(text: &str) -> bool {
+    static STAMP: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(bioRxiv|medRxiv) preprint doi:|arXiv:\d{4}\.\d{4,5}v\d+\s*\[[\w.-]+\]\s*\d{1,2}\s*[A-Z][a-z]{2}\s*\d{4}",
+        )
+        .unwrap()
+    });
+    STAMP.is_match(text)
 }

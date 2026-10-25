@@ -7,6 +7,7 @@
 //! knows where open copies of the PDF are.
 
 use crate::net::Net;
+use crate::record::Version;
 use crate::source::{self, Source};
 use anyhow::{Context, bail};
 use regex::Regex;
@@ -89,7 +90,7 @@ pub fn by_doi_at(net: &Net, doi: &str, page: Option<&str>) -> anyhow::Result<Fou
         let found = tagged(&metas, &at, &doi).with_context(|| {
             format!("doi.org does not know {doi}, nor does {url} name the paper in its tags")
         })?;
-        Ok(with_page_pdf(found, &metas))
+        Ok(with_page_pdf(found, &metas, &at))
     })
 }
 
@@ -305,15 +306,53 @@ pub fn by_page(net: &Net, url: &str) -> anyhow::Result<Found> {
             )
         })?,
     };
-    Ok(with_page_pdf(found, &metas))
+    Ok(with_page_pdf(found, &metas, &at))
 }
 
-/// `found`, the PDF its page's tags name first.
-fn with_page_pdf(mut found: Found, metas: &[(String, String)]) -> Found {
-    if let Some((_, pdf)) = metas.iter().find(|(k, _)| k == "citation_pdf_url") {
-        found.pdfs.insert(0, pdf.clone());
+/// `found`, the PDF its page's tags name first; the page at `at`.
+fn with_page_pdf(mut found: Found, metas: &[(String, String)], at: &str) -> Found {
+    if let Some(pdf) = page_pdf(metas, at) {
+        found.pdfs.insert(0, pdf);
     }
     found
+}
+
+/// The PDF a page's tags name, `citation_pdf_url`, as an address whole:
+/// the page's, after redirects, `at`.
+pub fn page_pdf(metas: &[(String, String)], at: &str) -> Option<String> {
+    let (_, named) = metas.iter().find(|(k, _)| k == "citation_pdf_url")?;
+    absolute(named.trim(), at)
+}
+
+/// `href`, as a page at `base` names it, as an address whole.
+pub fn absolute(href: &str, base: &str) -> Option<String> {
+    if href.starts_with("http://") || href.starts_with("https://") {
+        return Some(href.to_string());
+    }
+    let (scheme, _) = base.split_once("://")?;
+    if let Some(elsewhere) = href.strip_prefix("//") {
+        return Some(format!("{scheme}://{elsewhere}"));
+    }
+    let (host, page) = source::host(base)?;
+    let path = if href.starts_with('/') {
+        href.to_string()
+    } else {
+        let page = page.split(['?', '#']).next().unwrap_or("");
+        let folder = page.rfind('/').map_or("/", |i| &page[..=i]);
+        format!("{folder}{href}")
+    };
+    // Its `.` and `..` read, as a browser reads them.
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/').skip(1) {
+        match part {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    Some(format!("{scheme}://{host}/{}", parts.join("/")))
 }
 
 /// The paper a page's Highwire tags describe, `citation_title`,
@@ -506,25 +545,65 @@ pub fn enrich(net: &Net, found: &mut Found) {
     {
         found.csl["abstract"] = json!(text);
     }
-    for url in located(&work) {
-        if !found.pdfs.contains(&url) {
-            found.pdfs.push(url);
+    for copy in located(&work) {
+        if !found.pdfs.contains(&copy.url) {
+            found.pdfs.push(copy.url);
         }
     }
 }
 
-/// Where OpenAlex's work says open copies of its PDF are, the best first.
-fn located(work: &Value) -> Vec<String> {
+/// Where an open copy of a paper's PDF is, and which version it is, where
+/// that is said.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenCopy {
+    pub url: String,
+    pub version: Option<Version>,
+    /// Where it may be a page that names its PDF, as a repository's is,
+    /// though OpenAlex gives it as the PDF's address.
+    pub landing: bool,
+}
+
+/// Where OpenAlex's work says open copies of its PDF are, the best first;
+/// then the pages of repositories' open copies without a PDF's address,
+/// whose PDF the page names. Not the publisher's page, by its DOI, nor PubMed's,
+/// with none, nor PubMed Central's, behind a check for robots.
+fn located(work: &Value) -> Vec<OpenCopy> {
+    const NO_PDF: &[&str] = &["doi.org", "ncbi.nlm.nih.gov"];
     let best = work.get("best_oa_location").into_iter();
     let all = work
         .get("locations")
         .and_then(Value::as_array)
         .into_iter()
         .flatten();
-    best.chain(all)
-        .filter_map(|loc| loc.get("pdf_url").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect()
+    let locations: Vec<&Value> = best.chain(all).collect();
+    let copy = |loc: &Value, landing_page: bool| {
+        let field = if landing_page {
+            "landing_page_url"
+        } else {
+            "pdf_url"
+        };
+        Some(OpenCopy {
+            url: loc.get(field)?.as_str()?.to_string(),
+            version: loc
+                .get("version")
+                .and_then(Value::as_str)
+                .and_then(Version::of_openalex),
+            landing: true,
+        })
+    };
+    let pdfs = locations.iter().filter_map(|loc| copy(loc, false));
+    let pages = locations
+        .iter()
+        .filter(|loc| copy(loc, false).is_none())
+        .filter(|loc| loc.get("is_oa").and_then(Value::as_bool) == Some(true))
+        .filter_map(|loc| copy(loc, true))
+        .filter(|c| {
+            let host = source::host(&c.url).map(|(h, _)| h).unwrap_or_default();
+            !NO_PDF
+                .iter()
+                .any(|n| host == *n || host.ends_with(&format!(".{n}")))
+        });
+    pdfs.chain(pages).collect()
 }
 
 /// OpenAlex's work of `doi`, its fields `select`.
@@ -541,7 +620,7 @@ fn openalex_work(net: &Net, doi: &str, select: &str) -> Option<Value> {
 
 /// Where OpenAlex knows open copies of the PDF of `doi` to be, the best
 /// first.
-pub fn openalex_pdfs(net: &Net, doi: &str) -> Vec<String> {
+pub fn openalex_pdfs(net: &Net, doi: &str) -> Vec<OpenCopy> {
     openalex_work(net, doi, "best_oa_location,locations")
         .map(|w| located(&w))
         .unwrap_or_default()
@@ -886,7 +965,7 @@ pub fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn unescape(s: &str) -> String {
+pub fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")

@@ -1653,7 +1653,7 @@ impl App {
             "Looking for an open copy",
             what,
             Then::Fetch(h, back),
-            move |lib, index, net, say| open_copy(lib, index, net, &hit, say),
+            move |lib, index, net, say| open_copy(lib, index, net, &hit, false, say),
         );
     }
 
@@ -1714,7 +1714,7 @@ impl App {
         };
         let bytes = if line.starts_with("http://") || line.starts_with("https://") {
             match &self.net {
-                Some(net) => net.pdf(line),
+                Some(net) => net.pdf_via_page(line, &|_| true).map(|(bytes, _)| bytes),
                 None => Err(anyhow::anyhow!("cannot download here")),
             }
         } else {
