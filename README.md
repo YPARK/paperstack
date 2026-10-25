@@ -126,7 +126,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
-| `ctrl-g`, `m` | the map of themes, and back to the list; `ctrl-g` while typing a search too |
+| `m`, `⌘G` | the map of themes, and back to the list, as the ◆ Map button top left does; `⌘G` (super+g, the Windows key on Linux) while typing a search too, in a terminal that passes it on, as kitty does |
 | `n` | on a theme's shelf, name the theme |
 | `L` | label the papers marked, else all shown |
 | `q` | quit |
@@ -369,13 +369,14 @@ which tells an agent how the library is laid out, is a resource too.
 
 ## Themes
 
-`ctrl-g` shows the library as a map: papers near one another where their
+`m`, or the ◆ Map button top left, shows the library as a map: papers near one another where their
 words are alike or their authors shared, gathered into themes, each named
 by the words that set it apart. `←` / `→`, or a click, picks a theme: its
 words, its authors of most papers and its newest papers are shown beside
 it, and `enter` lists its papers, on its shelf under THEMES, where search
 narrows them further. `c` colours every theme, not the picked one alone;
-`?` on the map lists its keys.
+`1` to `9` pick those themes; `?` on the map lists its keys, scrolling where
+they do not fit.
 
 ```sh
 paperstack themes                 # the words most papers have, and each theme's
@@ -411,8 +412,9 @@ lays it out anew whenever asked.
 name follows its papers when the themes are gathered again, as long as
 they stay together, at least half of them. `L` puts a label on the
 picked theme's papers, in their records, synced as any label; in the list,
-on the papers marked, else on all shown. A label put on too many is taken
-off again by `d` on it under LABELS.
+on the papers marked, else on all shown; for 200 papers or more, the
+label is typed out, not offered. A label put on too many is taken off
+again by `d` on it under LABELS.
 
 The map is kept on this machine, beside the index, with the one before
 the last `s`, `+`, `-`, `R`, `F` or `A`, which `u`, or `--undo`, shows

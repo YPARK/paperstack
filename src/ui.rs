@@ -78,7 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let popup = match &app.popup {
         Popup::Add(line) => Some(add(f, &t, line)),
         Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
-        Popup::Help => Some(help(f, &t, app.view)),
+        Popup::Help(scroll) => Some(help(f, &t, app.view, *scroll)),
         Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
@@ -116,23 +116,43 @@ fn search(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(52),
     ])
     .areas(area);
-    let (name, button) = (" ▤ paperstack ", " + Add ");
+    // The name; and the buttons, to add a paper and to the map, or back.
+    let view = if app.view == View::Map {
+        " ▤ List "
+    } else {
+        " ◆ Map "
+    };
+    let button = |bg| Style::new().fg(t.on_accent).bg(bg).bold();
+    let parts = [
+        (" ▤ paperstack ", Style::new().fg(t.title).bold(), None),
+        (" + Add ", button(t.add), Some(Target::Add)),
+        (" ", Style::new(), None),
+        (view, button(t.accent), Some(Target::View)),
+    ];
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(name, Style::new().fg(t.title).bold()),
-            Span::styled(button, Style::new().fg(t.on_accent).bg(t.add).bold()),
-        ])),
+        Paragraph::new(Line::from(
+            parts
+                .iter()
+                .map(|&(label, style, _)| Span::styled(label, style))
+                .collect::<Vec<_>>(),
+        )),
         brand,
     );
-    let at = name.chars().count() as u16;
-    app.targets.push((
-        Rect {
-            x: brand.x + at,
-            width: (button.len() as u16).min(brand.width.saturating_sub(at)),
-            ..brand
-        },
-        Target::Add,
-    ));
+    let mut at = brand.x;
+    for (label, _, target) in parts {
+        let width = (label.chars().count() as u16).min((brand.x + brand.width).saturating_sub(at));
+        if let Some(target) = target {
+            app.targets.push((
+                Rect {
+                    x: at,
+                    width,
+                    ..brand
+                },
+                target,
+            ));
+        }
+        at += width;
+    }
     let mut field = vec![Span::raw(" ⌕ ")];
     if app.query.is_empty() && !app.searching {
         field.push(Span::styled("Search library", Style::new().fg(t.dim)));
@@ -770,7 +790,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
         ("+-", "finer"),
         ("u", "undo"),
         ("?", "more"),
-        ("^G", "list"),
+        ("m", "list"),
     ];
     let list_keys = [
         ("/", "search"),
@@ -783,7 +803,7 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
         ("y", "yank [@key]"),
         ("s", "star"),
         ("a", "add"),
-        ("^G", "map"),
+        ("m", "map"),
         ("?", "help"),
         ("q", "quit"),
     ];
@@ -884,7 +904,15 @@ fn ask_dialog(f: &mut Frame, t: &Theme, ask: &Ask) -> Rect {
         ),
     };
     let keys = format!(" ⏎ {verb} · ctrl-u clear · esc cancel ");
-    let lines = vec![Line::raw(""), Line::styled(what, hint), field(t, &ask.line)];
+    let mut lines = vec![Line::raw(""), Line::styled(what, hint), field(t, &ask.line)];
+    if let Asked::Label(papers) = &ask.what
+        && papers.len() >= crate::app::MANY_LABELLED
+    {
+        lines.push(Line::styled(
+            "so many papers: type the label out to go on, or mark fewer first",
+            Style::new().fg(t.star).bold(),
+        ));
+    }
     let block = dialog(t, title).title_bottom(Line::styled(keys, hint));
     f.render_widget(Paragraph::new(lines).block(block), area);
     area
@@ -1106,8 +1134,8 @@ fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     area
 }
 
-/// The keys of the view shown.
-fn help(f: &mut Frame, t: &Theme, view: View) -> Rect {
+/// The keys of the view shown, scrolled by `scroll` where they do not fit.
+fn help(f: &mut Frame, t: &Theme, view: View, scroll: u16) -> Rect {
     let rows = if view == View::Map {
         MAP_KEYS
     } else {
@@ -1124,7 +1152,21 @@ fn help(f: &mut Frame, t: &Theme, view: View) -> Rect {
             ])
         })
         .collect();
-    f.render_widget(Paragraph::new(lines).block(dialog(t, "Keys")), area);
+    let shown = area.height.saturating_sub(2);
+    let more = (rows.len() as u16).saturating_sub(shown);
+    let mut block = dialog(t, "Keys");
+    if more > 0 {
+        block = block.title_bottom(Line::styled(
+            " j k scroll · any other key closes ",
+            Style::new().fg(t.hint),
+        ));
+    }
+    f.render_widget(
+        Paragraph::new(lines)
+            .scroll((scroll.min(more), 0))
+            .block(block),
+        area,
+    );
     area
 }
 
@@ -1133,6 +1175,7 @@ const MAP_KEYS: &[(&str, &str)] = &[
         "← → h l",
         "pick a theme; ↑ ↓, tab and the wheel too; or click one",
     ),
+    ("1-9", "theme 1 to 9, as `paperstack themes` numbers them"),
     (
         "⏎",
         "its papers, on its shelf under THEMES; or click it twice",
@@ -1169,7 +1212,7 @@ const MAP_KEYS: &[(&str, &str)] = &[
     ("c", "every theme in its colour, not the picked one alone"),
     ("/", "search, in the list"),
     ("a", "add a paper"),
-    ("^G m esc", "the list"),
+    ("m esc ⌘G", "the list; or click ▤ List, top left"),
     ("q", "quit"),
 ];
 
@@ -1210,8 +1253,8 @@ const LIST_KEYS: &[(&str, &str)] = &[
         "delete the PDF picked, or those marked, to .trash/; papers stay",
     ),
     (
-        "^G m",
-        "the map of the library's themes, and back; ? there for its keys",
+        "m ⌘G",
+        "the library's themes as a map, and back; or click ◆ Map; ? there for its keys",
     ),
     (
         "space",

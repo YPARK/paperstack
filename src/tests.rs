@@ -1794,8 +1794,7 @@ fn toggles_the_map_and_shows_a_themes_papers() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let (dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
-    let ctrl_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
-    app.key(ctrl_g);
+    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     // Built on a thread of its own, the popup saying how it goes.
     assert!(matches!(app.popup, Popup::Busy(_)));
     app.wait_for_map();
@@ -1817,11 +1816,20 @@ fn toggles_the_map_and_shows_a_themes_papers() {
             .iter()
             .all(|h| of.contains(&h.record.key.as_str()))
     );
-    // Typed into the search, ctrl-g still toggles.
+    // Typed into the search, ⌘G, or super+g, still toggles; ctrl-g, which
+    // a terminal may take for itself, no longer does.
     app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    app.key(ctrl_g);
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert_eq!(app.view, View::List);
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SUPER));
     assert_eq!(app.view, View::Map);
     app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    assert_eq!(app.view, View::List);
+    // The button top left, clicked, does too: ◆ Map, then ▤ List, after
+    // the ▤ of paperstack's name.
+    click(&mut app, "◆", 0, true);
+    assert_eq!(app.view, View::Map);
+    click(&mut app, "▤", 1, true);
     assert_eq!(app.view, View::List);
 }
 
@@ -1839,7 +1847,7 @@ fn gathers_the_themes_finer_and_back() {
     let (_dir, lib, index) = library();
     let mut app = App::new(lib, index).unwrap();
     let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     app.wait_for_map();
     let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
     assert_eq!(resolution(&app), 1.0);
@@ -1880,7 +1888,7 @@ fn names_a_theme_and_labels_its_papers() {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
     };
-    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     app.wait_for_map();
     let picked = app.map.as_ref().unwrap().picked;
     // n names the picked theme; its shelf says so.
@@ -1919,4 +1927,68 @@ fn names_a_theme_and_labels_its_papers() {
     press(&mut app, KeyCode::Char('/'));
     assert_eq!(app.view, View::List);
     assert!(app.searching);
+}
+
+#[test]
+fn takes_a_small_letter_shifted_as_its_capital() {
+    use crate::app::View;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let sort = app.sort;
+    // As a terminal saying keys with their modifiers may send `S`.
+    app.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::SHIFT));
+    assert_ne!(app.sort, sort, "sorted, not starred");
+    assert_eq!(app.view, View::List);
+}
+
+#[test]
+fn takes_keys_as_terminals_say_them_with_all_their_modifiers() {
+    use crate::app::Popup;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let key = |code, m| KeyEvent::new(code, m);
+    app.key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    let at = app.list.selected();
+    let starred = app.current().unwrap().record.paperstack.starred;
+    // ⌘S is the system's, not a star; ctrl-g, the old map key, nothing.
+    app.key(key(KeyCode::Char('s'), KeyModifiers::SUPER));
+    assert_eq!(app.current().unwrap().record.paperstack.starred, starred);
+    app.key(key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert_eq!(app.list.selected(), at, "not to the first paper");
+    // ctrl-m is Enter, as terminals send it otherwise.
+    app.key(key(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert!(app.searching);
+    app.key(key(KeyCode::Char('m'), KeyModifiers::CONTROL));
+    assert!(!app.searching);
+    // The keys, on a small screen, scroll; any other key closes them.
+    app.key(key(KeyCode::Char('?'), KeyModifiers::NONE));
+    let s = screen(&mut app, 80, 24);
+    assert!(s.contains("j k scroll"), "{s}");
+    app.key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(matches!(app.popup, Popup::Help(1)));
+    app.key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(matches!(app.popup, Popup::None));
+}
+
+#[test]
+fn picks_a_theme_by_its_number_and_asks_a_label_for_many_typed_out() {
+    use crate::app::{Ask, Asked, Popup};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.wait_for_map();
+    app.key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_eq!(app.map.as_ref().unwrap().picked, 1);
+    app.key(KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE));
+    let m = app.map.as_ref().unwrap();
+    assert!(m.picked < m.map().named(), "no theme 9: picked as it was");
+    app.popup = Popup::Ask(Box::new(Ask {
+        what: Asked::Label(vec!["x".to_string(); crate::app::MANY_LABELLED]),
+        line: String::new(),
+    }));
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("so many papers"), "{s}");
 }
