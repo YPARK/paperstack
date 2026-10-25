@@ -279,6 +279,20 @@ pub const KEYS: &[Key] = &[
     ),
     key(
         Map,
+        "shift-←→↑↓",
+        "move what is shown closer; the wheel sideways, or with shift, too",
+        &["<s-right>", "<s-left>", "<s-up>", "<s-down>"],
+        &[],
+    ),
+    key(
+        Map,
+        "g",
+        "the map laid out, papers near where alike; again, the mosaic, as at first",
+        &["g"],
+        &[("g", "view", "g")],
+    ),
+    key(
+        Map,
         "R",
         "gather the themes again from all papers, the map keeping its shape",
         &["R"],
@@ -302,7 +316,7 @@ pub const KEYS: &[Key] = &[
     key(
         Map,
         "c",
-        "every theme in its colour, not the picked one alone",
+        "every theme in its colour, or the picked one alone, as shown at first",
         &["c"],
         &[],
     ),

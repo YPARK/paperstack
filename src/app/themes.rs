@@ -17,7 +17,9 @@ pub struct MapView {
     pub kept: map::Kept,
     /// What is picked on the whole map, and how close it is shown.
     pub lens: Lens,
-    /// Every theme in its colour, rather than the picked one alone.
+    /// The other way about from how the view shows them at first: as
+    /// laid out, every theme in its colour, not the picked one alone; as a
+    /// mosaic, the picked one alone.
     pub colours: bool,
     /// Where the map was last drawn.
     pub canvas: Rect,
@@ -27,6 +29,39 @@ pub struct MapView {
     pub within: HashMap<usize, Inside>,
     /// The papers the map was last brought up to, placed or not.
     pub(super) seen: HashSet<String>,
+    /// Shown as a mosaic, rather than as laid out; and the mosaic last
+    /// drawn.
+    pub mosaic: bool,
+    pub(super) tiled: Option<Tiled>,
+}
+
+/// The map shown closer: the middle of what it is closer to, and how wide
+/// and high what is shown is.
+type Closer = ([f64; 2], f64, f64);
+
+/// The map shown, as a mosaic for a canvas of a size: what it was made
+/// of, so a map changed since makes it anew.
+pub(super) struct Tiled {
+    mosaic: map::Mosaic,
+    inside: Option<usize>,
+    size: (u16, u16),
+    from: Vec<[f32; 2]>,
+}
+
+impl Tiled {
+    /// Whether it is the mosaic of `plain`, the map shown from `inside`.
+    fn of(&self, plain: &map::Map, inside: Option<usize>) -> bool {
+        self.inside == inside
+            && self.from == plain.xy
+            && self.mosaic.map.theme == plain.theme
+            && self
+                .mosaic
+                .map
+                .themes
+                .iter()
+                .map(|t| &t.called)
+                .eq(plain.themes.iter().map(|t| &t.called))
+    }
 }
 
 /// What is picked on a map, the whole or a theme's from within: a theme,
@@ -36,6 +71,10 @@ pub struct Lens {
     pub picked: usize,
     pub paper: Option<usize>,
     pub zoom: i32,
+    /// Shown closer, how far from what it is closer to, across and up, in
+    /// what is shown; with that, the theme picked when moved, so another
+    /// picked is shown as it is.
+    pub pan: Option<(usize, [f64; 2])>,
 }
 
 /// A theme from within: a map of its papers alone, in their own finer
@@ -62,9 +101,49 @@ impl MapView {
         self.within.get_mut(&self.inside?)
     }
 
-    /// The map shown: the theme gone into's, else the whole.
+    /// The map shown: the theme gone into's, else the whole; as a mosaic,
+    /// where it is one.
     pub fn shown(&self) -> &map::Map {
+        self.current().map_or(self.laid_out(), |t| &t.mosaic.map)
+    }
+
+    /// The blocks of the mosaic shown, if one is.
+    pub fn blocks(&self) -> Option<&map::Blocks> {
+        self.current().map(|t| &t.mosaic.blocks)
+    }
+
+    /// The mosaic last made, if one is shown and it is of the map shown.
+    fn current(&self) -> Option<&Tiled> {
+        self.tiled
+            .as_ref()
+            .filter(|t| self.mosaic && t.of(self.laid_out(), self.inside))
+    }
+
+    /// The map shown, as laid out.
+    fn laid_out(&self) -> &map::Map {
         self.within().map_or(self.map(), |w| &w.map)
+    }
+
+    /// The mosaic, where one is shown, made for a canvas as large as
+    /// `area` if the one last made is not: a paper to a half of a cell,
+    /// as square as a terminal's cells halved are.
+    pub fn tile(&mut self, area: Rect) {
+        if !self.mosaic {
+            self.tiled = None;
+            return;
+        }
+        let size = (area.width, area.height);
+        if self.current().is_some_and(|t| t.size == size) {
+            return;
+        }
+        let plain = self.laid_out();
+        let aspect = f32::from(size.0.max(1)) / (2.0 * f32::from(size.1.max(1)));
+        self.tiled = Some(Tiled {
+            mosaic: plain.mosaic(aspect),
+            inside: self.inside,
+            size,
+            from: plain.xy.clone(),
+        });
     }
 
     /// What is picked on the map shown.
@@ -94,29 +173,69 @@ impl MapView {
     /// The part of the plane shown, `[x0, x1, y0, y1]`: the papers', and a
     /// little more; closer to the theme picked, as zoomed.
     pub fn bounds(&self) -> [f64; 4] {
-        let [x0, x1, y0, y1] = self.shown().bounds();
-        let (px, py) = ((x1 - x0) * 0.04, (y1 - y0) * 0.04);
-        let [x0, x1, y0, y1] = [x0 - px, x1 + px, y0 - py, y1 + py];
-        let lens = self.top();
-        if lens.zoom == 0 {
-            return [x0, x1, y0, y1];
-        }
-        let k = f64::from(1u32 << lens.zoom);
-        let (w, h) = ((x1 - x0) / k, (y1 - y0) / k);
-        let middle = self.within().is_some_and(|w| !w.chosen);
-        let c = self
-            .shown()
-            .themes
-            .get(lens.picked)
-            .filter(|_| !middle)
-            .map_or([(x0 + x1) / 2.0, (y0 + y1) / 2.0], |t| {
-                [f64::from(t.centre[0]), f64::from(t.centre[1])]
-            });
+        let (whole, closer) = self.view();
+        let Some((c, w, h)) = closer else {
+            return whole;
+        };
+        let c = Self::moved(whole, c, w, h, self.panned());
         [
             c[0] - w / 2.0,
             c[0] + w / 2.0,
             c[1] - h / 2.0,
             c[1] + h / 2.0,
+        ]
+    }
+
+    /// The part of the plane of the whole map shown, and a little more;
+    /// and, shown closer, the middle of what it is closer to, and how wide
+    /// and high what is shown is.
+    fn view(&self) -> ([f64; 4], Option<Closer>) {
+        let [x0, x1, y0, y1] = self.shown().bounds();
+        let (px, py) = ((x1 - x0) * 0.04, (y1 - y0) * 0.04);
+        let whole = [x0 - px, x1 + px, y0 - py, y1 + py];
+        let [x0, x1, y0, y1] = whole;
+        let lens = self.top();
+        if lens.zoom == 0 {
+            return (whole, None);
+        }
+        let k = f64::from(1u32 << lens.zoom);
+        let c = self
+            .closer_to()
+            .and_then(|t| self.shown().themes.get(t))
+            .map_or([(x0 + x1) / 2.0, (y0 + y1) / 2.0], |t| {
+                [f64::from(t.centre[0]), f64::from(t.centre[1])]
+            });
+        (whole, Some((c, (x1 - x0) / k, (y1 - y0) / k)))
+    }
+
+    /// What the map is shown closer to: the theme picked; within a theme
+    /// with no finer one chosen, its middle.
+    fn closer_to(&self) -> Option<usize> {
+        let middle = self.within().is_some_and(|w| !w.chosen);
+        (!middle).then_some(self.top().picked)
+    }
+
+    /// How far the map shown closer is moved, if for what it is closer to.
+    fn panned(&self) -> [f64; 2] {
+        match self.top().pan {
+            Some((to, by)) if to == self.closer_to().unwrap_or(usize::MAX) => by,
+            _ => [0.0, 0.0],
+        }
+    }
+
+    /// The middle `c` of what is shown, `w` by `h`, moved `by` of it, as far
+    /// as the edge of the `whole` map.
+    fn moved([x0, x1, y0, y1]: [f64; 4], c: [f64; 2], w: f64, h: f64, by: [f64; 2]) -> [f64; 2] {
+        let clamp = |v: f64, lo: f64, hi: f64| {
+            if lo < hi {
+                v.clamp(lo, hi)
+            } else {
+                (lo + hi) / 2.0
+            }
+        };
+        [
+            clamp(c[0] + by[0] * w, x0 + w / 2.0, x1 - w / 2.0),
+            clamp(c[1] + by[1] * h, y0 + h / 2.0, y1 - h / 2.0),
         ]
     }
 
@@ -423,6 +542,7 @@ impl App {
                 m.kept = kept;
                 m.within.clear();
                 m.inside = None;
+                m.lens.pan = None;
             }
             None => {
                 self.map = Some(MapView {
@@ -433,6 +553,8 @@ impl App {
                     inside: None,
                     within: HashMap::new(),
                     seen: HashSet::new(),
+                    mosaic: true,
+                    tiled: None,
                 })
             }
         }
@@ -476,7 +598,13 @@ impl App {
         }
         let Some(m) = &self.map else { return false };
         let (inside, chosen) = (m.inside.is_some(), m.within().is_some_and(|w| w.chosen));
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
+            // Shown closer, moved; shift and an arrow.
+            KeyCode::Right if shift => self.pan(1, 0),
+            KeyCode::Left if shift => self.pan(-1, 0),
+            KeyCode::Up if shift => self.pan(0, 1),
+            KeyCode::Down if shift => self.pan(0, -1),
             KeyCode::Right | KeyCode::Char('l' | 'j') | KeyCode::Down | KeyCode::Tab => {
                 self.next_theme(1)
             }
@@ -521,6 +649,17 @@ impl App {
             KeyCode::Char('+' | '=') => self.regroup(1),
             KeyCode::Char('-') => self.regroup(-1),
             KeyCode::Char('u') => self.undo_map(),
+            KeyCode::Char('g') => {
+                if let Some(m) = &mut self.map {
+                    m.mosaic = !m.mosaic;
+                    self.status = if m.mosaic {
+                        "the mosaic: each paper a cell of its own, each theme a block by those it lies by; g as laid out"
+                    } else {
+                        "the map as laid out: papers near where alike; g the mosaic"
+                    }
+                    .to_string();
+                }
+            }
             KeyCode::Char('c') => {
                 if let Some(m) = &mut self.map {
                     m.colours = !m.colours;
@@ -620,7 +759,13 @@ impl App {
         let shown = m.shown();
         // On the whole map, a paper of a theme named; within, any.
         let named = shown.named();
-        let i = shown.nearest_where([x as f32, y as f32], |t| inside || t < named)?;
+        let at = [x as f32, y as f32];
+        // As a mosaic, a paper of the block clicked, if one is.
+        let block = m.blocks().map(|b| b.at(at));
+        let i = shown.nearest_where(at, |t| match block {
+            Some(b) => b == Some(t) && (inside || t < named),
+            None => inside || t < named,
+        })?;
         let t = shown.theme[i]?;
         let key = shown.keys[i].clone();
         let lens = m.top_mut();
@@ -709,13 +854,36 @@ impl App {
         }
     }
 
+    /// The map shown closer moved a quarter of what is shown, `dx` across
+    /// and `dy` up, no further than its edge; the whole map, shown closer
+    /// first.
+    pub(super) fn pan(&mut self, dx: i32, dy: i32) {
+        if self.map.as_ref().is_some_and(|m| m.top().zoom == 0) {
+            self.zoom(1);
+        }
+        let Some(m) = &mut self.map else { return };
+        let (whole, Some((c, w, h))) = m.view() else {
+            return;
+        };
+        // Kept as far as it is moved, the edge reached, so back is at once.
+        let by = m.panned();
+        let by = [by[0] + 0.25 * f64::from(dx), by[1] + 0.25 * f64::from(dy)];
+        let at = MapView::moved(whole, c, w, h, by);
+        let to = m.closer_to().unwrap_or(usize::MAX);
+        m.top_mut().pan = Some((to, [(at[0] - c[0]) / w, (at[1] - c[1]) / h]));
+    }
+
     /// The map `by` steps closer to the theme picked, or further, from
     /// all of it to an eighth of it.
     pub(super) fn zoom(&mut self, by: i32) {
         let Some(m) = &mut self.map else { return };
         let lens = m.top_mut();
-        lens.zoom = (lens.zoom + by).clamp(0, ZOOMS);
-        let zoom = lens.zoom;
+        let zoom = (lens.zoom + by).clamp(0, ZOOMS);
+        // Closer or further, about what it is closer to again.
+        if zoom != lens.zoom {
+            lens.pan = None;
+        }
+        lens.zoom = zoom;
         // What it is closer to: the theme picked, or within one with none
         // chosen, its middle.
         let to = match m.within() {

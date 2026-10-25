@@ -376,7 +376,7 @@ papers near one another where their words are alike or their authors
 shared, gathered into themes, each named by the words that set it apart;
 `m` or `esc` again shows the list. `←` / `→`, `h` / `l`, a click on a
 theme's name, or picking its shelf under THEMES, picks a theme; its papers are listed on its shelf, where search narrows them
-further. `c` colours every theme, not the picked one alone;
+further. `c` colours the picked theme alone, or every theme again;
 `1` to `9` pick those themes; `?` or `F1` on the map lists its keys,
 scrolling where they do not fit. `/` searches and `a` adds a paper, as in
 the list; `q` quits.
@@ -388,7 +388,16 @@ finer themes, each paper's strongest links drawn beneath. Within, `←` /
 twice opens it in ohp, and `⏎` shows the theme's card: its words, its
 authors and its papers, newest first, `⏎` opening one, `l` listing them.
 `esc`, or `ctrl-g`, comes out to the whole map. `>` and `<` show the map closer to the
-theme picked, and further. A theme picked on the left is picked on the
+theme picked, and further; `shift-←→↑↓`, or the wheel sideways or with
+shift, move what is shown closer.
+
+The map is shown first as a mosaic: each paper a cell of its own, none
+hiding another, and each theme a block, boxed, beside the themes it lies
+by, as recursive bisection partitions a graph: the themes split in two by
+where they lie as laid out, the cells in two as many as each half has
+papers, and again, till each theme has its block, then its papers alike.
+Within a theme, its finer themes are blocks. `g` shows the map as laid
+out, each paper a dot near those alike, and again the mosaic. A theme picked on the left is picked on the
 map too.
 
 A search typed in the list shows on the map too: the papers it finds,
