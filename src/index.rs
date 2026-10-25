@@ -368,6 +368,41 @@ impl Index {
         Ok(done)
     }
 
+    /// The cache's file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Every paper's key.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.papers.iter().map(|p| p.record().key.as_str())
+    }
+
+    /// Every paper as the map reads it.
+    pub fn docs(&self) -> Vec<crate::map::Doc> {
+        self.papers
+            .iter()
+            .map(|p| {
+                let mut body = p.words[ABSTRACT].clone();
+                body.extend(p.words[KEYWORDS].iter().cloned());
+                crate::map::Doc {
+                    key: p.record().key.clone(),
+                    title: p.words[TITLE].clone(),
+                    body,
+                    authors: p
+                        .record()
+                        .authors()
+                        .iter()
+                        .map(|n| match n.given.chars().next() {
+                            Some(g) => format!("{} {g}", n.family),
+                            None => n.family.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+
     /// Put in the record just written at `rel`, from the library's root,
     /// in place of the one at `was`, if it moved: as `refresh` would, but
     /// without looking at every other file. Says what `refresh` would of

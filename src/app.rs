@@ -9,6 +9,7 @@ use crate::bibtex;
 use crate::browser::{self, Arrivals};
 use crate::index::{Hit, Index, Shelves, Sort};
 use crate::library::Library;
+use crate::map;
 use crate::net::Net;
 use crate::query::Query;
 use crate::source::Source;
@@ -23,7 +24,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Modifier;
 use ratatui::widgets::ListState;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -56,13 +57,15 @@ pub enum Shelf {
     NoAbstract,
     Folder(String),
     Label(String),
+    /// A theme of the map, by its place in the map's themes, and its name.
+    Theme(usize, String),
 }
 
 impl Shelf {
     pub fn query(&self) -> Query {
         let quoted = |field: &str, name: &str| format!("{field}:\"{name}\"");
         Query::parse(&match self {
-            Shelf::Heading(_) | Shelf::All => String::new(),
+            Shelf::Heading(_) | Shelf::All | Shelf::Theme(..) => String::new(),
             Shelf::Starred => "is:starred".to_string(),
             Shelf::NoPdf => "-has:pdf".to_string(),
             Shelf::NoAbstract => "-has:abstract".to_string(),
@@ -78,7 +81,7 @@ impl Shelf {
             Shelf::Starred => "Starred",
             Shelf::NoPdf => "No PDF",
             Shelf::NoAbstract => "No abstract",
-            Shelf::Folder(n) | Shelf::Label(n) => n,
+            Shelf::Folder(n) | Shelf::Label(n) | Shelf::Theme(_, n) => n,
         }
     }
 }
@@ -116,6 +119,61 @@ pub enum Target {
     /// one the paper has.
     GetPdf(usize),
     Popup,
+    /// The map of themes.
+    Map,
+}
+
+/// What the page shows: the papers, or the map of their themes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum View {
+    List,
+    Map,
+}
+
+/// The map of themes, as kept on this machine, and what is picked on it.
+pub struct MapView {
+    pub kept: map::Kept,
+    /// The theme picked, by its place in the map's themes.
+    pub picked: usize,
+    /// Every theme in its colour, rather than the picked one alone.
+    pub colours: bool,
+    /// Where the map was last drawn.
+    pub canvas: Rect,
+    /// The papers the map was last brought up to, placed or not.
+    seen: HashSet<String>,
+}
+
+impl MapView {
+    pub fn map(&self) -> &map::Map {
+        &self.kept.current
+    }
+
+    /// The part of the plane shown, `[x0, x1, y0, y1]`: the papers', and a
+    /// little more.
+    pub fn bounds(&self) -> [f64; 4] {
+        let [x0, x1, y0, y1] = self.map().bounds();
+        let (px, py) = ((x1 - x0) * 0.04, (y1 - y0) * 0.04);
+        [x0 - px, x1 + px, y0 - py, y1 + py]
+    }
+
+    /// A theme picked that the map has.
+    fn settle(&mut self) {
+        if self.picked >= self.map().themes.len() {
+            self.picked = 0;
+        }
+    }
+
+    /// Whether the papers are those the map was last brought up to.
+    fn has(&self, keys: impl Iterator<Item = impl AsRef<str>>) -> bool {
+        let mut n = 0;
+        for k in keys {
+            if !self.seen.contains(k.as_ref()) {
+                return false;
+            }
+            n += 1;
+        }
+        n == self.seen.len()
+    }
 }
 
 /// A PDF awaited from the browser, for the paper `key`.
@@ -217,6 +275,9 @@ pub struct App {
     /// By key.
     pub marked: BTreeSet<String>,
     pub popup: Popup,
+    pub view: View,
+    /// Read when first shown.
+    pub map: Option<MapView>,
     pub status: String,
     /// Where each thing clicked on was drawn; the last drawn over the rest.
     pub targets: Vec<(Rect, Target)>,
@@ -307,6 +368,8 @@ impl App {
             list: ListState::default(),
             marked: BTreeSet::new(),
             popup: Popup::None,
+            view: View::List,
+            map: None,
             status: String::new(),
             targets: Vec::new(),
             clicked: None,
@@ -339,6 +402,17 @@ impl App {
         shelves.extend(folders.into_iter().map(|(f, n)| (Shelf::Folder(f), n)));
         shelves.push((Shelf::Heading("LABELS"), 0));
         shelves.extend(labels.into_iter().map(|(l, n)| (Shelf::Label(l), n)));
+        if let Some(m) = &self.map {
+            shelves.push((Shelf::Heading("THEMES"), 0));
+            shelves.extend(
+                m.map()
+                    .themes
+                    .iter()
+                    .take(m.map().named())
+                    .enumerate()
+                    .map(|(i, t)| (Shelf::Theme(i, t.name()), t.size)),
+            );
+        }
         self.shelves = shelves;
         self.shelf = picked
             .and_then(|p| self.shelves.iter().position(|(s, _)| *s == p))
@@ -377,6 +451,10 @@ impl App {
         match self.index.search(&query, self.sort, false, None) {
             Ok(hits) => self.shown = hits,
             Err(e) => self.status = format!("{e:#}"),
+        }
+        if let (Shelf::Theme(t, _), Some(m)) = (&self.shelves[self.shelf].0, &mut self.map) {
+            let of: HashSet<&str> = m.map().members(*t).map(|(_, k)| k).collect();
+            self.shown.retain(|h| of.contains(h.record.key.as_str()));
         }
         let at = key
             .and_then(|k| self.shown.iter().position(|h| h.record.key == k))
@@ -531,6 +609,18 @@ impl App {
             }
             Popup::None => {}
         }
+        if ctrl && key.code == KeyCode::Char('g') {
+            self.searching = false;
+            self.toggle_view();
+            return None;
+        }
+        // On the map, the list's keys would act on papers not shown.
+        if self.view == View::Map
+            && !self.searching
+            && (self.map_key(key) || !matches!(key.code, KeyCode::Char('q' | '?' | '/')))
+        {
+            return None;
+        }
         if ctrl && key.code == KeyCode::Char('e') {
             self.searching = false;
             let picked = self.picked();
@@ -586,6 +676,7 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => self.step(isize::MIN),
             KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX),
             KeyCode::Char('S') => self.resort(),
+            KeyCode::Char('m') => self.toggle_view(),
             KeyCode::Char('a') => {
                 let clip = paste();
                 let clip = clip.trim();
@@ -661,6 +752,12 @@ impl App {
             .find(|(r, _)| r.contains(Position::new(m.column, m.row)))
             .map(|&(_, t)| t);
         let by = match m.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if at == Some(Target::Map) && matches!(self.popup, Popup::None) =>
+            {
+                self.map_click(m.column, m.row);
+                return None;
+            }
             MouseEventKind::Down(MouseButton::Left) => return self.click(at),
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
@@ -668,6 +765,7 @@ impl App {
         };
         match (&mut self.popup, at) {
             (Popup::Cite(_, scroll), _) => *scroll = scroll.saturating_add_signed(by as i16),
+            (Popup::None, Some(Target::Map)) => self.next_theme(by),
             (Popup::None, Some(Target::Side | Target::Shelf(_))) => {
                 self.focus = Focus::Side;
                 self.step(by);
@@ -714,7 +812,7 @@ impl App {
                     self.narrow();
                 }
             }
-            Target::List | Target::Popup => self.focus = Focus::List,
+            Target::List | Target::Popup | Target::Map => self.focus = Focus::List,
             Target::Paper(i) => {
                 self.focus = Focus::List;
                 self.list.select(Some(i));
@@ -754,6 +852,188 @@ impl App {
             }
         }
         None
+    }
+
+    /// The map, if shown, else the papers; the map read, or built, when
+    /// first shown, and the papers new since placed, to be asked of.
+    fn toggle_view(&mut self) {
+        if self.view == View::Map {
+            self.view = View::List;
+            return;
+        }
+        match &mut self.map {
+            Some(m) if m.has(self.index.keys()) => {}
+            Some(m) => {
+                m.kept.refresh(&self.index.docs());
+                m.seen = self.index.keys().map(str::to_string).collect();
+                m.settle();
+                self.reshelve();
+            }
+            None => {
+                let path = map::default_path(self.index.path());
+                match map::Kept::open(&path, &self.index.docs()) {
+                    Ok(kept) => {
+                        self.map = Some(MapView {
+                            kept,
+                            picked: 0,
+                            colours: false,
+                            canvas: Rect::default(),
+                            seen: self.index.keys().map(str::to_string).collect(),
+                        });
+                        self.reshelve();
+                    }
+                    Err(e) => {
+                        self.status = one_line(&e);
+                        return;
+                    }
+                }
+            }
+        }
+        self.view = View::Map;
+        let shelf = &self.shelves[self.shelf].0;
+        let Some(m) = &mut self.map else { return };
+        // The theme whose papers are listed, picked.
+        if let Shelf::Theme(t, _) = shelf {
+            m.picked = *t;
+        }
+        let new = m.kept.placed.len();
+        if new > 0 {
+            self.status = format!(
+                "{new} papers new since the map: a puts them in the themes said, R gathers the themes again"
+            );
+        }
+    }
+
+    /// The shelves again, the map's themes among them, keeping to the one
+    /// picked.
+    fn reshelve(&mut self) {
+        if let Err(e) = self.restock() {
+            self.status = one_line(&e);
+        }
+        self.narrow();
+    }
+
+    /// Take `key` on the map; whether it was the map's.
+    fn map_key(&mut self, key: KeyEvent) -> bool {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        match key.code {
+            KeyCode::Right | KeyCode::Char('l' | 'j') | KeyCode::Down | KeyCode::Tab => {
+                self.next_theme(1)
+            }
+            KeyCode::Left | KeyCode::Char('h' | 'k') | KeyCode::Up | KeyCode::BackTab => {
+                self.next_theme(-1)
+            }
+            KeyCode::Enter => self.show_theme(),
+            KeyCode::Esc | KeyCode::Char('m') => self.view = View::List,
+            KeyCode::Char('a') => self.assign(),
+            KeyCode::Char('R') => self.rebuild(),
+            KeyCode::Char('u') => self.undo_map(),
+            KeyCode::Char('c') => {
+                if let Some(m) = &mut self.map {
+                    m.colours = !m.colours;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Pick the theme `by` on from the one picked, of those named.
+    fn next_theme(&mut self, by: isize) {
+        let Some(m) = &mut self.map else { return };
+        let named = m.map().named().max(1);
+        m.picked = (m.picked as isize + by).rem_euclid(named as isize) as usize;
+    }
+
+    /// The papers of the theme picked, on its shelf.
+    fn show_theme(&mut self) {
+        let Some(m) = &self.map else { return };
+        let picked = m.picked;
+        if let Some(i) = self
+            .shelves
+            .iter()
+            .position(|(s, _)| matches!(s, Shelf::Theme(t, _) if *t == picked))
+        {
+            self.shelf = i;
+            self.list.select(Some(0));
+        }
+        self.view = View::List;
+        self.focus = Focus::List;
+        self.narrow();
+    }
+
+    /// Pick the theme of the paper nearest a click on the map; again, show
+    /// its papers.
+    fn map_click(&mut self, column: u16, row: u16) {
+        self.searching = false;
+        let Some(m) = &mut self.map else { return };
+        let (r, [x0, x1, y0, y1]) = (m.canvas, m.bounds());
+        if r.width == 0 || r.height == 0 {
+            return;
+        }
+        let x = x0 + (f64::from(column - r.x) + 0.5) / f64::from(r.width) * (x1 - x0);
+        let y = y1 - (f64::from(row - r.y) + 0.5) / f64::from(r.height) * (y1 - y0);
+        let Some(i) = m.map().nearest([x as f32, y as f32]) else {
+            return;
+        };
+        let Some(t) = m.map().theme[i] else { return };
+        let again = m.picked == t
+            && self
+                .clicked
+                .is_some_and(|(when, _)| when.elapsed() < DOUBLE_CLICK);
+        m.picked = t;
+        self.clicked = (!again).then(|| (Instant::now(), usize::MAX));
+        if again {
+            self.show_theme();
+        }
+    }
+
+    /// Put the papers new since the map in the themes said, and keep it.
+    fn assign(&mut self) {
+        let Some(m) = &mut self.map else { return };
+        if m.kept.placed.is_empty() {
+            self.status = "no papers new since the map".to_string();
+            return;
+        }
+        self.status = match m.kept.assign() {
+            Ok(n) => format!("{n} papers put in their themes"),
+            Err(e) => one_line(&e),
+        };
+        self.reshelve();
+    }
+
+    /// Gather the themes again from all papers, the map till now kept as
+    /// the previous.
+    fn rebuild(&mut self) {
+        let Some(m) = &mut self.map else { return };
+        let started = Instant::now();
+        self.status = match m.kept.rebuild(&self.index.docs()) {
+            Ok(()) => format!(
+                "{} themes gathered in {:.1}s; u shows the previous again",
+                m.map().named(),
+                started.elapsed().as_secs_f32()
+            ),
+            Err(e) => one_line(&e),
+        };
+        m.settle();
+        self.reshelve();
+    }
+
+    /// The previous map shown again, the one till now kept as its previous.
+    fn undo_map(&mut self) {
+        let Some(m) = &mut self.map else { return };
+        self.status = match m.kept.undo(&self.index.docs()) {
+            Ok(false) => "no previous map kept".to_string(),
+            Ok(true) => format!("the map of {} shown again; u for the other", m.map().built),
+            Err(e) => one_line(&e),
+        };
+        m.settle();
+        self.reshelve();
     }
 
     /// Sort by the next of [`Sort::ALL`] that orders the papers otherwise,

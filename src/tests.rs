@@ -1787,3 +1787,45 @@ fn tells_why_a_pdf_is_not_an_unresolved_papers() {
     let err = crate::add::attach(&lib, &mut index, &key, &pdf, "x.pdf", false).unwrap_err();
     assert!(err.to_string().contains("does not name"), "{err}");
 }
+
+#[test]
+fn toggles_the_map_and_shows_a_themes_papers() {
+    use crate::app::View;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let ctrl_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.key(ctrl_g);
+    assert_eq!(app.view, View::Map);
+    // Kept beside the index, not in the user's cache.
+    assert!(dir.path().join("map.json").is_file());
+    let m = app.map.as_ref().unwrap();
+    let picked = m.picked;
+    let size = m.map().themes[picked].size;
+    let text = screen(&mut app, 160, 44);
+    assert!(text.contains("THEMES"), "{text}");
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.view, View::List);
+    assert_eq!(app.shown.len(), size);
+    let map = app.map.as_ref().unwrap().map();
+    let of: Vec<&str> = map.members(picked).map(|(_, k)| k).collect();
+    assert!(
+        app.shown
+            .iter()
+            .all(|h| of.contains(&h.record.key.as_str()))
+    );
+    // Typed into the search, ctrl-g still toggles.
+    app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    app.key(ctrl_g);
+    assert_eq!(app.view, View::Map);
+    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    assert_eq!(app.view, View::List);
+}
+
+#[test]
+fn fits_a_long_name_to_the_sidebar() {
+    use crate::ui::fit;
+    assert_eq!(fit("cancer · tumor", 20), "cancer · tumor");
+    assert_eq!(fit("genome wide · wide association", 20), "genome wide");
+    assert_eq!(fit("a very long collection name", 10), "a very lo…");
+}

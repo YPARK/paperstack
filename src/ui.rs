@@ -3,15 +3,17 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then};
+use crate::app::{App, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View};
 use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::canvas::{Canvas, Points};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap,
 };
@@ -51,9 +53,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ])
     .areas(main);
     shelves(f, app, side);
-    papers(f, app, list);
-    if wide {
-        details(f, app, detail);
+    if app.view == View::Map && app.map.is_some() {
+        let [canvas, panel] = Layout::horizontal([
+            Constraint::Min(30),
+            Constraint::Length(if wide { DETAILS } else { 0 }),
+        ])
+        .areas(Rect {
+            width: list.width + detail.width,
+            ..list
+        });
+        map_canvas(f, app, canvas);
+        if wide {
+            map_panel(f, app, panel);
+        }
+    } else {
+        papers(f, app, list);
+        if wide {
+            details(f, app, detail);
+        }
     }
     keys(f, app, foot);
     let popup = match &app.popup {
@@ -183,9 +200,10 @@ fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
                 Shelf::NoAbstract => ("¶", t.dim),
                 Shelf::Folder(_) => ("▸", t.collection),
                 Shelf::Label(_) => ("●", t.dim),
+                Shelf::Theme(i, _) => ("◆", colour_of(*i)),
             };
             let room = (area.width as usize).saturating_sub(n.to_string().len() + 6);
-            let name: String = shelf.name().chars().take(room).collect();
+            let name = fit(shelf.name(), room);
             ListItem::new(Line::from(vec![
                 Span::styled(format!(" {icon} "), Style::new().fg(colour)),
                 Span::styled(name, Style::new().fg(t.text).bold()),
@@ -500,10 +518,258 @@ fn details(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Themes' colours, told apart on a light page and a dark one alike.
+const PALETTE: [Color; 12] = [
+    Color::Rgb(31, 119, 180),
+    Color::Rgb(214, 96, 39),
+    Color::Rgb(44, 160, 44),
+    Color::Rgb(200, 45, 60),
+    Color::Rgb(148, 103, 189),
+    Color::Rgb(140, 86, 75),
+    Color::Rgb(219, 97, 176),
+    Color::Rgb(110, 110, 110),
+    Color::Rgb(170, 160, 20),
+    Color::Rgb(23, 170, 190),
+    Color::Rgb(90, 70, 200),
+    Color::Rgb(60, 130, 90),
+];
+
+fn colour_of(theme: usize) -> Color {
+    PALETTE[theme % PALETTE.len()]
+}
+
+/// `name` in `room` columns: a theme's first words alone where all do not
+/// fit, else cut short with an ellipsis.
+pub(crate) fn fit(name: &str, room: usize) -> String {
+    if name.chars().count() <= room {
+        return name.to_string();
+    }
+    match name.split_once(" · ") {
+        Some((first, _)) if first.chars().count() <= room => first.to_string(),
+        _ => {
+            let mut cut: String = name.chars().take(room.saturating_sub(1)).collect();
+            cut.push('…');
+            cut
+        }
+    }
+}
+
+/// The papers as points on the plane: the picked theme's in its colour,
+/// over the rest in grey, or each theme in its own where all are coloured;
+/// the papers new since the map, to be asked of, as crosses. Themes are
+/// named where their names do not run into one another's, the picked
+/// one's always.
+fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme;
+    let Some(m) = &mut app.map else { return };
+    m.canvas = area;
+    app.targets.push((area, Target::Map));
+    let map = m.map();
+    let (picked, all) = (m.picked, m.colours);
+    let bounds = m.bounds();
+    let [x0, x1, y0, y1] = bounds;
+    let mut by_theme: Vec<Vec<(f64, f64)>> = vec![Vec::new(); map.themes.len()];
+    for (p, th) in map.xy.iter().zip(&map.theme) {
+        if let Some(th) = th {
+            by_theme[*th].push((p[0] as f64, p[1] as f64));
+        }
+    }
+    let new: Vec<(f64, f64)> = m
+        .kept
+        .placed
+        .iter()
+        .map(|p| (p.xy[0] as f64, p.xy[1] as f64))
+        .collect();
+    let labels = place_labels(map, picked, area, bounds);
+    let named = map.named();
+    let canvas = Canvas::default()
+        .background_color(t.page)
+        .marker(Marker::Braille)
+        .x_bounds([x0, x1])
+        .y_bounds([y0, y1])
+        .paint(|ctx| {
+            for (i, coords) in by_theme.iter().enumerate().filter(|(i, _)| *i != picked) {
+                let color = if all && i < named {
+                    colour_of(i)
+                } else {
+                    t.dim
+                };
+                ctx.draw(&Points { coords, color });
+            }
+            ctx.layer();
+            if let Some(coords) = by_theme.get(picked) {
+                ctx.draw(&Points {
+                    coords,
+                    color: colour_of(picked),
+                });
+            }
+            ctx.layer();
+            for &(x, y) in &new {
+                ctx.print(x, y, Span::styled("+", Style::new().fg(t.star).bold()));
+            }
+            for &(i, x, y) in &labels {
+                let style = if i == picked {
+                    Style::new().fg(t.on_accent).bg(colour_of(i)).bold()
+                } else if all {
+                    Style::new().fg(colour_of(i)).bold()
+                } else {
+                    Style::new().fg(t.text).bold()
+                };
+                ctx.print(
+                    x,
+                    y,
+                    Span::styled(format!(" {} ", map.themes[i].name()), style),
+                );
+            }
+        });
+    f.render_widget(canvas, area);
+}
+
+/// Where each theme's name goes, as `(theme, x, y)` on the plane: at the
+/// middle of its papers, or a row or two off it, where it runs into no
+/// name placed before it; the picked theme's first, then the largest's.
+fn place_labels(
+    map: &crate::map::Map,
+    picked: usize,
+    area: Rect,
+    [x0, x1, y0, y1]: [f64; 4],
+) -> Vec<(usize, f64, f64)> {
+    let (w, h) = (f64::from(area.width.max(1)), f64::from(area.height.max(1)));
+    let mut order: Vec<usize> = (0..map.named()).collect();
+    order.sort_by_key(|&i| (i != picked, i));
+    // Taken cells, by row, as spans of columns.
+    let mut taken: Vec<(i64, i64, i64)> = Vec::new();
+    let mut out = Vec::new();
+    for i in order {
+        let th = &map.themes[i];
+        let len = th.name().chars().count() as i64 + 2;
+        let col = ((th.centre[0] as f64 - x0) / (x1 - x0) * w) as i64 - len / 2;
+        let col = col.clamp(0, (w as i64 - len).max(0));
+        let row = ((y1 - th.centre[1] as f64) / (y1 - y0) * h) as i64;
+        let free = |r: i64| {
+            (0..h as i64).contains(&r)
+                && !taken
+                    .iter()
+                    .any(|&(tr, a, b)| tr == r && col < b + 1 && a < col + len + 1)
+        };
+        let Some(r) = [0, -1, 1, -2, 2]
+            .iter()
+            .map(|d| row + d)
+            .find(|&r| free(r) || i == picked)
+        else {
+            continue;
+        };
+        taken.push((r, col, col + len));
+        let x = x0 + (col as f64 + 0.5) / w * (x1 - x0);
+        let y = y1 - (r as f64 + 0.5) / h * (y1 - y0);
+        out.push((i, x, y));
+    }
+    out
+}
+
+/// The theme picked: its words, its authors of most papers, its newest
+/// papers; and where the papers new since the map would go.
+fn map_panel(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let Some(m) = &app.map else { return };
+    let map = m.map();
+    let Some(th) = map.themes.get(m.picked) else {
+        return;
+    };
+    let named = map.named();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("◆ ", Style::new().fg(colour_of(m.picked))),
+            Span::styled(th.name(), Style::new().fg(t.title).bold()),
+        ]),
+        Line::styled(
+            format!("theme {} of {named} · {} papers", m.picked + 1, th.size),
+            Style::new().fg(t.dim),
+        ),
+        Line::raw(""),
+        Line::styled("WORDS", Style::new().fg(t.dim).bold()),
+        Line::styled(th.words.join(" · "), Style::new().fg(t.venue)),
+        Line::raw(""),
+        Line::styled("AUTHORS", Style::new().fg(t.dim).bold()),
+    ];
+    for (a, n) in &th.authors {
+        lines.push(Line::from(vec![
+            Span::styled(a.clone(), Style::new().fg(t.text)),
+            Span::styled(format!(" {n}"), Style::new().fg(t.dim)),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("NEWEST", Style::new().fg(t.dim).bold()));
+    let mut papers: Vec<_> = map
+        .members(m.picked)
+        .filter_map(|(_, k)| app.index.get(k).ok().flatten())
+        .collect();
+    papers.sort_by_key(|h| std::cmp::Reverse(h.record.year()));
+    for h in papers.iter().take(8) {
+        let year = h
+            .record
+            .year()
+            .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
+        lines.push(Line::from(vec![
+            Span::styled(format!("{year} "), Style::new().fg(t.dim)),
+            Span::styled(h.record.title().to_string(), Style::new().fg(t.text)),
+        ]));
+    }
+    if !m.kept.placed.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("NEW SINCE THE MAP · {}", m.kept.placed.len()),
+            Style::new().fg(t.star).bold(),
+        ));
+        for p in m.kept.placed.iter().take(6) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} → ", p.key), Style::new().fg(t.text)),
+                Span::styled(
+                    map.themes[p.theme].name(),
+                    Style::new().fg(colour_of(p.theme)),
+                ),
+                Span::styled(format!(" {:.0}%", p.share * 100.0), Style::new().fg(t.dim)),
+            ]));
+        }
+        lines.push(Line::styled(
+            "a assigns them · R gathers again",
+            Style::new().fg(t.hint),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        format!("built {}", map.built),
+        Style::new().fg(t.dim),
+    ));
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::new()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::new().fg(t.rule))
+                    .padding(Padding::new(2, 1, 1, 0)),
+            )
+            .style(Style::new().bg(t.page)),
+        area,
+    );
+}
+
 fn keys(f: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
     let mut spans = Vec::new();
-    for (k, what) in [
+    let map_keys = [
+        ("← →", "theme"),
+        ("⏎", "its papers"),
+        ("a", "assign new"),
+        ("c", "colours"),
+        ("R", "rebuild"),
+        ("u", "previous"),
+        ("^G m", "list"),
+        ("?", "help"),
+        ("q", "quit"),
+    ];
+    let list_keys = [
         ("/", "search"),
         ("S", "sort"),
         ("⏎", "open in ohp"),
@@ -514,9 +780,16 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
         ("y", "yank [@key]"),
         ("s", "star"),
         ("a", "add"),
+        ("^G", "map"),
         ("?", "help"),
         ("q", "quit"),
-    ] {
+    ];
+    let shown: &[(&str, &str)] = if app.view == View::Map {
+        &map_keys
+    } else {
+        &list_keys
+    };
+    for &(k, what) in shown {
         spans.push(Span::styled(
             format!(" {k} "),
             Style::new().fg(t.title).bold(),
@@ -840,6 +1113,10 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
         (
             "x",
             "delete the PDF picked, or those marked, to .trash/; papers stay",
+        ),
+        (
+            "^G m",
+            "the map of themes, and back; ← → a theme, ⏎ its papers, a R u",
         ),
         (
             "space",

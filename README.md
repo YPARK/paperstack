@@ -126,6 +126,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
+| `ctrl-g`, `m` | the map of themes, and back to the list; `ctrl-g` while typing a search too |
 | `q` | quit |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
@@ -363,6 +364,34 @@ The first five are marked read-only, so a program may let the agent use them
 without asking; it asks before the other five, and the last two are marked
 destructive. The library's `AGENTS.md`,
 which tells an agent how the library is laid out, is a resource too.
+
+## Themes
+
+`ctrl-g` shows the library as a map: papers near one another where their
+words are alike or their authors shared, gathered into themes, each named
+by the words that set it apart. `←` / `→`, or a click, picks a theme: its
+words, its authors of most papers and its newest papers are shown beside
+it, and `enter` lists its papers, on its shelf under THEMES, where search
+narrows them further. `c` colours every theme, not the picked one alone.
+
+```sh
+paperstack themes             # the words most papers have, and each theme's
+paperstack themes --json      # with each theme's keys, for an agent
+paperstack themes --rebuild   # gather the themes again from all papers
+paperstack themes --undo      # the themes before, shown again
+```
+
+Each paper's title, abstract and keywords, with pairs of words as "single
+cell", are weighed by TF-IDF; its nearest by cosine, weighed as UMAP weighs
+them, and papers sharing authors, but not through a consortium's hundreds,
+make a graph. Its communities, by Louvain's moves, are the themes; UMAP lays
+it out. Five thousand papers take a second or two.
+
+The map is kept on this machine, beside the index, with the one before the
+last rebuild. Papers added since go to the theme their nearest papers have
+most, but only when asked: the map shows them as crosses, and `a`, or
+`paperstack themes --assign`, puts them there; `R`, or `--rebuild`, gathers
+the themes again instead, and `u`, or `--undo`, shows the map before.
 
 ## Searching
 
