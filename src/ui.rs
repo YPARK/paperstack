@@ -1155,13 +1155,17 @@ const MAP_KEYS: &[(&str, &str)] = &[
     ),
     (
         "R",
-        "gather the themes again from all papers, laid out anew",
+        "gather the themes again from all papers, the map keeping its shape",
     ),
+    ("F", "the same, the map laid out anew"),
     (
         "A",
         "put the papers new since, the crosses, in the themes said",
     ),
-    ("u", "the map before the last s, + -, R or A; again, back"),
+    (
+        "u",
+        "the map before the last s, + -, R, F or A; again, back",
+    ),
     ("c", "every theme in its colour, not the picked one alone"),
     ("/", "search, in the list"),
     ("a", "add a paper"),

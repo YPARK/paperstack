@@ -383,6 +383,7 @@ paperstack themes --json          # with each theme's keys, for an agent; number
 paperstack themes --split 3       # theme 3 in finer themes of its own
 paperstack themes --resolution 2  # every theme finer, the papers where they are
 paperstack themes --rebuild       # gather the themes again from all papers
+paperstack themes --rebuild --fresh  # and lay the map out anew
 paperstack themes --undo          # the themes before, shown again
 paperstack themes --name 3 "VAEs and flows"  # a name of your own for theme 3
 paperstack themes --label 3 vae   # the label vae on each of theme 3's papers
@@ -400,7 +401,11 @@ nearest within the theme, the rest of the map as it was. `+` and `-`
 gather every theme again finer or coarser, by Louvain's resolution, 1 at
 first, in steps of half again; `--resolution` gives one. Neither moves a
 paper on the map; `R`, or `--rebuild`, gathers the themes again from all
-papers and lays them out anew.
+papers, and lays them out from where they are, so the map keeps its
+shape and its size: a paper new since starts among its nearest, as the
+crosses show it, a theme all new off at the map's edge, and where most
+papers are new, the map is laid out anew. `F`, or `--rebuild --fresh`,
+lays it out anew whenever asked.
 
 `n`, on the map or on a theme's shelf, names a theme as you would: the
 name follows its papers when the themes are gathered again, as long as
@@ -410,7 +415,8 @@ on the papers marked, else on all shown. A label put on too many is taken
 off again by `d` on it under LABELS.
 
 The map is kept on this machine, beside the index, with the one before
-the last `s`, `+`, `-`, `R` or `A`, which `u`, or `--undo`, shows again.
+the last `s`, `+`, `-`, `R`, `F` or `A`, which `u`, or `--undo`, shows
+again.
 Papers added since go to the theme their nearest papers have most, but
 only when asked: the map shows them as crosses, and `A`, or `paperstack
 themes --assign`, puts them there.
