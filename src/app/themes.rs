@@ -537,6 +537,8 @@ impl App {
             picked,
             status,
         } = mapped;
+        // A finer theme's papers listed, of a map no longer.
+        self.group = None;
         match &mut self.map {
             Some(m) => {
                 m.kept = kept;
@@ -595,6 +597,11 @@ impl App {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return false;
+        }
+        // Few enough papers, in the list to read.
+        if key.code == KeyCode::Enter && self.few() {
+            self.read_few(None);
+            return true;
         }
         let Some(m) = &self.map else { return false };
         let (inside, chosen) = (m.inside.is_some(), m.within().is_some_and(|w| w.chosen));
@@ -693,7 +700,7 @@ impl App {
         if m.within.contains_key(&t) {
             m.inside = Some(t);
             self.status = format!(
-                "within {name}: a click picks a finer theme, or a paper, twice opens it; ⏎ the card; esc out"
+                "within {name}: a click picks a finer theme, or a paper, twice opens it, or lists a few; ⏎ the card; esc out"
             );
             return;
         }
@@ -727,21 +734,54 @@ impl App {
         self.status.clear();
     }
 
-    /// The papers of the theme picked, on its shelf.
-    pub(super) fn show_theme(&mut self) {
+    /// The papers in view on the map, few enough, in the list to read,
+    /// the paper `pick` picked, if one is: a theme's on its shelf, a finer
+    /// theme's there alone.
+    pub(super) fn read_few(&mut self, pick: Option<&str>) {
         let Some(m) = &self.map else { return };
-        let picked = m.lens.picked;
+        let (map, t) = m.group();
+        let name = map.themes.get(t).map(map::Theme::name).unwrap_or_default();
+        let keys: HashSet<String> = map.member_keys(t).into_iter().collect();
+        let n = keys.len();
+        let finer = m.within().is_some_and(|w| w.chosen);
+        self.show_papers(finer.then(|| (name.clone(), keys)), pick);
+        self.status = format!("{n} papers of {name}, to read; ⏎ opens one");
+    }
+
+    /// Whether the papers in view on the map are few enough to read.
+    pub(super) fn few(&self) -> bool {
+        self.map.as_ref().is_some_and(|m| {
+            let (map, t) = m.group();
+            (1..self.to_read).contains(&map.members(t).count())
+        })
+    }
+
+    /// The papers of the theme picked on the whole map in the list, on its
+    /// shelf: all of them, or a finer theme's, by its name, alone; the
+    /// search let go, so none is left out; `pick` picked, else the first.
+    pub(super) fn show_papers(
+        &mut self,
+        finer: Option<(String, HashSet<String>)>,
+        pick: Option<&str>,
+    ) {
+        let Some(m) = &self.map else { return };
+        let theme = m.lens.picked;
         if let Some(i) = self
             .shelves
             .iter()
-            .position(|(s, _)| matches!(s, Shelf::Theme(t, _) if *t == picked))
+            .position(|(s, _)| matches!(s, Shelf::Theme(t, _) if *t == theme))
         {
             self.shelf = i;
-            self.list.select(Some(0));
         }
+        self.group = finer.map(|(name, keys)| crate::app::Group { theme, name, keys });
+        self.query.clear();
+        self.searching = false;
         self.view = View::List;
         self.focus = Focus::List;
         self.narrow();
+        let at = pick.and_then(|k| self.shown.iter().position(|h| h.record.key == k));
+        self.list
+            .select((!self.shown.is_empty()).then_some(at.unwrap_or(0)));
     }
 
     /// A click on the map: the paper nearest it picked, and its theme; the
@@ -776,12 +816,20 @@ impl App {
         }
         let again = self.twice(Clicked::Dot(i));
         if !inside {
-            if again {
+            if again && self.few() {
+                self.read_few(Some(&key));
+            } else if again {
                 self.go_in(t);
             }
             return None;
         }
         let hit = self.index.get(&key).ok().flatten()?;
+        // Twice, among few enough, in the list with them, picked, to read;
+        // else opened.
+        if again && self.few() {
+            self.read_few(Some(&key));
+            return None;
+        }
         if again {
             return Some(Action::Open(Some(Box::new(hit))));
         }
@@ -789,7 +837,12 @@ impl App {
             .record
             .year()
             .map_or_else(|| "n.d.".to_string(), |y| y.to_string());
-        self.status = format!("{year} {} · twice opens it", hit.record.title());
+        let twice = if self.few() {
+            "twice, with its theme in the list"
+        } else {
+            "twice opens it"
+        };
+        self.status = format!("{year} {} · {twice}", hit.record.title());
         None
     }
 
@@ -810,9 +863,18 @@ impl App {
             w.chosen = true;
         }
         if inside {
-            self.status = format!("{said}; ⏎ its card");
+            let then = if self.few() {
+                "to read in the list"
+            } else {
+                "its card"
+            };
+            self.status = format!("{said}; ⏎ {then}");
         }
         if !clicked || !self.twice(Clicked::Name(t)) {
+            return;
+        }
+        if self.few() {
+            self.read_few(None);
             return;
         }
         if inside {
@@ -1031,6 +1093,8 @@ mod tests {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let (dir, lib, index) = library();
         let mut app = App::new(lib, index).unwrap();
+        // The demo library's themes are each few: into them, not to the list.
+        app.to_read = 0;
         app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         // Built on a thread of its own, the popup saying how it goes.
         assert!(matches!(app.popup, Popup::Busy(_)));
@@ -1193,6 +1257,8 @@ mod tests {
         };
         let (_dir, lib, index) = library();
         let mut app = App::new(lib, index).unwrap();
+        // The demo library's themes are each few: into them, not to the list.
+        app.to_read = 0;
         let press = |app: &mut App, c| {
             app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         };
@@ -1329,6 +1395,8 @@ mod tests {
         };
         let (_dir, lib, index) = library();
         let mut app = App::new(lib, index).unwrap();
+        // The demo library's themes are each few: into them, not to the list.
+        app.to_read = 0;
         app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         app.wait_for_map();
         // Into the largest theme, of finer themes of its own.
@@ -1400,6 +1468,8 @@ mod tests {
         };
         let (_dir, lib, index) = library();
         let mut app = App::new(lib, index).unwrap();
+        // The demo library's themes are each few: into them, not to the list.
+        app.to_read = 0;
         app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         app.wait_for_map();
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1427,5 +1497,128 @@ mod tests {
         app.narrow();
         app.wait_for_map();
         assert_eq!(app.map.as_ref().unwrap().inside, Some(1));
+    }
+
+    #[test]
+    fn sends_a_few_papers_from_the_map_to_the_list_to_read() {
+        use crate::app::{Shelf, View};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_dir, lib, index) = library();
+        let mut app = App::new(lib, index).unwrap();
+        let press = |app: &mut App, code| {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE));
+            app.wait_for_map();
+        };
+        press(&mut app, KeyCode::Char('m'));
+        // A theme of fewer than ten, ⏎: its papers in the list, its shelf.
+        let (t, size) = {
+            let m = app.map.as_ref().unwrap();
+            (m.lens.picked, m.map().members(m.lens.picked).count())
+        };
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.view, View::List);
+        assert!(matches!(app.shelves[app.shelf].0, Shelf::Theme(s, _) if s == t));
+        assert_eq!(app.shown.len(), size);
+        // Within a theme, a finer one: its papers alone, on that shelf;
+        // esc, all of the shelf again.
+        press(&mut app, KeyCode::Char('m'));
+        app.to_read = 0;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.map.as_ref().unwrap().inside.is_some());
+        press(&mut app, KeyCode::Char('1'));
+        let finer = {
+            let (map, t) = app.map.as_ref().unwrap().group();
+            map.member_keys(t)
+        };
+        app.to_read = 10;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.view, View::List);
+        let mut shown: Vec<String> = app.shown.iter().map(|h| h.record.key.clone()).collect();
+        shown.sort();
+        let mut finer = finer;
+        finer.sort();
+        assert_eq!(shown, finer);
+        assert!(screen(&mut app, 160, 44).contains("esc all of it"));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.group.is_none());
+        assert_eq!(app.shown.len(), size);
+        // Sent again, then the whole theme asked for, from its card: all
+        // of it, the finer theme's let go.
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.group.is_some());
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        app.to_read = 0;
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        assert!(app.group.is_none());
+        assert_eq!(app.shown.len(), size);
+        // A search let go when papers are sent, so all are listed.
+        app.to_read = 10;
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('/'));
+        for c in "zzz".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.view, View::List);
+        assert!(app.query.is_empty());
+        assert_eq!(app.shown.len(), size);
+    }
+
+    #[test]
+    fn widens_the_pane_of_the_paper_picked_by_keys_and_by_its_edge_dragged() {
+        use ratatui::crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        let (_dir, lib, index) = library();
+        let mut app = App::new(lib, index).unwrap();
+        screen(&mut app, 160, 44);
+        let was = app.pane;
+        app.key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::NONE));
+        assert_eq!(app.pane, was + 4);
+        app.key(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE));
+        assert_eq!(app.pane, was);
+        // Its edge caught, dragged ten columns left, let go.
+        screen(&mut app, 160, 44);
+        let (at, _) = *app
+            .targets
+            .iter()
+            .find(|(_, t)| matches!(t, crate::app::Target::Edge(_)))
+            .expect("the pane's edge");
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: at.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        let edge = at.x + 1;
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), edge));
+        assert!(app.dragging.is_some());
+        app.mouse(mouse(MouseEventKind::Drag(MouseButton::Left), edge - 10));
+        app.mouse(mouse(MouseEventKind::Up(MouseButton::Left), edge - 10));
+        assert!(app.dragging.is_none());
+        assert_eq!(app.pane, was + 10);
+        // No narrower than it may be, nor wider.
+        for _ in 0..100 {
+            app.key(KeyEvent::new(KeyCode::Char('>'), KeyModifiers::NONE));
+        }
+        assert_eq!(app.pane, crate::ui::NARROWEST);
+        for _ in 0..100 {
+            app.key(KeyEvent::new(KeyCode::Char('<'), KeyModifiers::NONE));
+        }
+        let widest = 160 - crate::ui::SIDEBAR - crate::ui::LIST_NARROWEST;
+        assert_eq!(app.pane, widest);
+        // A narrower screen for a while, the width asked kept.
+        screen(&mut app, 140, 44);
+        screen(&mut app, 160, 44);
+        assert_eq!(app.pane, widest);
+        // A drag whose release went unheard let go at the next click.
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), edge));
+        app.mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5));
+        assert!(app.dragging.is_none());
     }
 }

@@ -147,6 +147,9 @@ pub enum Target {
     Button(KeyEvent),
     /// A theme's name on the map.
     Label(usize),
+    /// The edge of the pane of the paper picked, to drag; and where the
+    /// pane's right is.
+    Edge(u16),
     /// A paper on a theme's card, by its place there.
     CardPaper(usize),
 }
@@ -269,6 +272,14 @@ pub enum Doomed {
     Shelf(crate::remove::Shelf, String, usize),
 }
 
+/// Papers from the map, a finer theme's, by its name, on the shelf of
+/// the theme it is in, by its number.
+pub struct Group {
+    pub theme: usize,
+    pub name: String,
+    pub keys: HashSet<String>,
+}
+
 pub struct App {
     pub lib: Library,
     pub index: Index,
@@ -278,6 +289,12 @@ pub struct App {
     /// The shelves, and how many papers each holds.
     pub shelves: Vec<(Shelf, usize)>,
     pub shelf: usize,
+    /// Papers sent from the map to read, shown alone on their shelf.
+    pub group: Option<Group>,
+    /// Fewer papers than this in view on the map, ⏎ or a double click
+    /// sends them to the list to read, rather than further in; 0, never,
+    /// as tests on the demo library's few papers ask.
+    pub to_read: usize,
     pub focus: Focus,
     pub query: String,
     /// What the query finds in the whole library, for the map to show:
@@ -289,6 +306,12 @@ pub struct App {
     pub sort: Sort,
     pub shown: Vec<Hit>,
     pub list: ListState,
+    /// How wide the pane of the paper picked is, at the right; and, its
+    /// edge being dragged, where its right is.
+    pub pane: u16,
+    pub dragging: Option<u16>,
+    /// How wide the pane may be, as last drawn.
+    pub pane_room: u16,
     /// By key.
     pub marked: BTreeSet<String>,
     pub popup: Popup,
@@ -329,14 +352,16 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
                 continue;
             }
             let event = event::read()?;
-            stale = !matches!(
-                event,
-                Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::Moved | MouseEventKind::Drag(_),
-                    ..
-                }) | Event::FocusGained
-                    | Event::FocusLost
-            );
+            // A drag drawn only while it moves the pane's edge.
+            stale = app.dragging.is_some()
+                || !matches!(
+                    event,
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Moved | MouseEventKind::Drag(_),
+                        ..
+                    }) | Event::FocusGained
+                        | Event::FocusLost
+                );
             let action = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key),
                 Event::Mouse(m) => app.mouse(m),
@@ -403,6 +428,8 @@ impl App {
             theme: Theme::of(theme::Name::default()),
             shelves: Vec::new(),
             shelf: 1,
+            group: None,
+            to_read: 10,
             focus: Focus::List,
             query: String::new(),
             found: None,
@@ -412,6 +439,9 @@ impl App {
             sort: Sort::Relevance,
             shown: Vec::new(),
             list: ListState::default(),
+            pane: crate::ui::DETAILS,
+            dragging: None,
+            pane_room: u16::MAX,
             marked: BTreeSet::new(),
             popup: Popup::None,
             view: View::List,
@@ -515,6 +545,13 @@ impl App {
             let of: HashSet<&str> = m.map().members(*t).map(|(_, k)| k).collect();
             self.shown.retain(|h| of.contains(h.record.key.as_str()));
         }
+        // Papers from the map, alone, while their shelf is shown.
+        let shelf = &self.shelves[self.shelf].0;
+        self.group
+            .take_if(|g| !matches!(shelf, Shelf::Theme(t, _) if *t == g.theme));
+        if let Some(g) = &self.group {
+            self.shown.retain(|h| g.keys.contains(&h.record.key));
+        }
         // Its shelf picked, the theme is picked on the map too.
         if let Shelf::Theme(t, _) = self.shelves[self.shelf].0 {
             self.pick_theme(t);
@@ -609,10 +646,15 @@ impl App {
                     // The next theme's card, or the one before.
                     KeyCode::Right => self.next_card(1),
                     KeyCode::Left | KeyCode::Char('h') => self.next_card(-1),
-                    // The theme's papers in the list; a finer theme's are here.
-                    KeyCode::Char('l') if !card.finer => {
+                    // The theme's papers in the list; a finer theme's there
+                    // alone.
+                    KeyCode::Char('l') => {
+                        let finer = card.finer.then(|| {
+                            let keys = card.papers.iter().map(|h| h.record.key.clone());
+                            (card.name.clone(), keys.collect())
+                        });
                         self.popup = Popup::None;
-                        self.show_theme();
+                        self.show_papers(finer, None);
                     }
                     KeyCode::Esc | KeyCode::Char('q') => self.popup = Popup::None,
                     _ => {}
@@ -769,6 +811,11 @@ impl App {
                 self.query.clear();
                 self.narrow();
             }
+            // Papers from the map, back among all of their shelf.
+            KeyCode::Esc if self.group.is_some() => {
+                self.group = None;
+                self.narrow();
+            }
             KeyCode::Esc => self.marked.clear(),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = match self.focus {
@@ -788,6 +835,9 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX),
             KeyCode::Char('S') => self.resort(),
             KeyCode::Char('n') => match &self.shelves[self.shelf].0 {
+                _ if self.group.is_some() => {
+                    self.status = "n names a finer theme on the map, within its theme".to_string();
+                }
                 Shelf::Theme(t, _) => self.ask_name(*t),
                 _ => self.status = "n names a theme: pick one under THEMES first".to_string(),
             },
@@ -797,13 +847,17 @@ impl App {
                 } else {
                     self.marked.iter().cloned().collect()
                 };
-                let name = match &self.shelves[self.shelf].0 {
-                    Shelf::Theme(_, name) => name.clone(),
+                let name = match (&self.group, &self.shelves[self.shelf].0) {
+                    (Some(g), _) => g.name.clone(),
+                    (None, Shelf::Theme(_, name)) => name.clone(),
                     _ => String::new(),
                 };
                 self.ask_label(keys, name);
             }
             KeyCode::Char('m') => self.toggle_view(),
+            // The pane's edge further left, the pane wider; or right.
+            KeyCode::Char('<') => self.widen(4),
+            KeyCode::Char('>') => self.widen(-4),
             KeyCode::Char('a') => {
                 let clip = paste();
                 let clip = clip.trim();
@@ -870,6 +924,17 @@ impl App {
         None
     }
 
+    /// The pane of the paper picked `by` columns wider, or narrower, as
+    /// wide as it may be.
+    fn widen(&mut self, by: i16) {
+        self.set_pane(self.pane.saturating_add_signed(by));
+    }
+
+    fn set_pane(&mut self, width: u16) {
+        let room = self.pane_room.max(crate::ui::NARROWEST);
+        self.pane = width.clamp(crate::ui::NARROWEST, room);
+    }
+
     /// Take a click or a turn of the wheel at where it lands.
     pub fn mouse(&mut self, m: MouseEvent) -> Option<Action> {
         let at = self
@@ -878,6 +943,18 @@ impl App {
             .rev()
             .find(|(r, _)| r.contains(Position::new(m.column, m.row)))
             .map(|&(_, t)| t);
+        // The pane's edge, caught, follows the pointer till let go; at
+        // anything but a drag, let go, as where the release went unheard.
+        if let Some(right) = self.dragging {
+            if m.kind == MouseEventKind::Drag(MouseButton::Left) {
+                self.set_pane(right.saturating_sub(m.column));
+                return None;
+            }
+            self.dragging = None;
+            if matches!(m.kind, MouseEventKind::Up(_)) {
+                return None;
+            }
+        }
         // Over the map, a name on it too, the wheel sideways, or with
         // shift, moves it, once shown closer: a trackpad's stray sideways
         // turn leaves the whole map as it is.
@@ -973,6 +1050,7 @@ impl App {
                 return self.key(key);
             }
             Target::Label(t) => self.pick_name(t, true),
+            Target::Edge(right) => self.dragging = Some(right),
             Target::CardPaper(_) => {}
             // A button, pressed where it is.
             Target::Button(key) => return self.key(key),

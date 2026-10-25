@@ -30,8 +30,11 @@ const GET_PDF: &str = " get PDF ";
 const HAS_PDF: &str = " PDF ";
 /// Authors listed before `… n more`.
 const AUTHORS_SHOWN: usize = 5;
-const SIDEBAR: u16 = 30;
-const DETAILS: u16 = 54;
+pub(crate) const SIDEBAR: u16 = 30;
+pub(crate) const DETAILS: u16 = 54;
+/// How narrow the pane of the paper picked, and the list beside it, may be.
+pub(crate) const NARROWEST: u16 = 24;
+pub(crate) const LIST_NARROWEST: u16 = 40;
 /// The narrowest screen the details are shown on.
 const WIDE: u16 = 130;
 
@@ -52,10 +55,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(Block::new().style(Style::new().bg(t.side)), gap);
     search(f, app, top);
     let wide = main.width >= WIDE;
+    // The pane as wide as asked, room left for the list.
+    let room = main.width.saturating_sub(SIDEBAR + LIST_NARROWEST);
+    // As wide as asked, or as there is room for; the width asked kept,
+    // for a wider screen again.
+    let pane = app.pane.max(NARROWEST).min(room);
+    if wide {
+        app.pane_room = room;
+    }
     let [side, list, detail] = Layout::horizontal([
         Constraint::Length(SIDEBAR),
-        Constraint::Min(40),
-        Constraint::Length(if wide { DETAILS } else { 0 }),
+        Constraint::Min(LIST_NARROWEST),
+        Constraint::Length(if wide { pane } else { 0 }),
     ])
     .areas(main);
     shelves(f, app, side);
@@ -97,6 +108,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         papers(f, app, list);
         if wide {
             details(f, app, detail);
+            // Its edge, three columns wide, to be caught, dragged.
+            app.targets.push((
+                Rect {
+                    x: detail.x.saturating_sub(1),
+                    width: 3,
+                    ..detail
+                },
+                Target::Edge(detail.right()),
+            ));
         }
     }
     keys(f, app, foot);
@@ -366,7 +386,10 @@ fn papers(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .unzip();
     let focused = app.focus == Focus::List;
-    let shelf = app.shelves[app.shelf].0.name().to_string();
+    let mut shelf = app.shelves[app.shelf].0.name().to_string();
+    if let Some(g) = &app.group {
+        shelf = format!("{shelf} › ◆ {} · esc all of it", g.name);
+    }
     let block = Block::new()
         .title(Line::styled(
             format!(" {shelf}"),
@@ -463,9 +486,15 @@ fn empty(f: &mut Frame, t: &Theme, area: Rect) {
 
 fn details(f: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
+    // Its edge, while dragged, in the accent.
+    let edge = if app.dragging.is_some() {
+        t.accent
+    } else {
+        t.rule
+    };
     let block = Block::new()
         .borders(Borders::LEFT)
-        .border_style(Style::new().fg(t.rule))
+        .border_style(Style::new().fg(edge))
         .padding(Padding::horizontal(1))
         .style(Style::new().bg(t.page));
     let Some(h) = app.current() else {

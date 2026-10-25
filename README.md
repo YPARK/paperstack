@@ -129,8 +129,9 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `m`, `⌘G` | the map of themes, and back to the list, as the ◆ Map button top left does; `⌘G` (super+g, the Windows key on Linux) while typing a search too, in a terminal that passes it on, as kitty does |
 | `n` | on a theme's shelf, name the theme |
 | `L` | label the papers marked, else all shown |
-| `esc`, `ctrl-g` | clear the search; `esc` again, unmark all; either closes a dialog, as `ctrl-g` cancels in Emacs |
+| `esc`, `ctrl-g` | clear the search; `esc` again, papers sent from the map among all of their shelf; again, unmark all; either closes a dialog, as `ctrl-g` cancels in Emacs |
 | `?`, `F1` | the keys, of the list or of the map; `F1` while typing a search too |
+| `<`, `>` | the pane of the paper picked, on the right, wider or narrower; or drag its edge |
 | `q` | quit |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
@@ -387,7 +388,10 @@ finer themes, each paper's strongest links drawn beneath. Within, `←` /
 `→` go into the next theme, a click picks a paper and says its title,
 twice opens it in ohp, and `⏎` shows the theme's card: its words, its
 authors and its papers, newest first, `⏎` opening one, `l` listing them.
-`esc`, or `ctrl-g`, comes out to the whole map. `>` and `<` show the map closer to the
+`esc`, or `ctrl-g`, comes out to the whole map. Fewer than ten papers in
+view, a theme's or a finer theme's, `⏎` or a double click lists them to
+read instead, the paper clicked picked, a finer theme's alone on its
+theme's shelf till `esc`. `>` and `<` show the map closer to the
 theme picked, and further; `shift-←→↑↓`, or the wheel sideways or with
 shift, move what is shown closer.
 
