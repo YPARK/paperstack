@@ -1821,3 +1821,11 @@ fn toggles_the_map_and_shows_a_themes_papers() {
     app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     assert_eq!(app.view, View::List);
 }
+
+#[test]
+fn fits_a_long_name_to_the_sidebar() {
+    use crate::ui::fit;
+    assert_eq!(fit("cancer · tumor", 20), "cancer · tumor");
+    assert_eq!(fit("genome wide · wide association", 20), "genome wide");
+    assert_eq!(fit("a very long collection name", 10), "a very lo…");
+}

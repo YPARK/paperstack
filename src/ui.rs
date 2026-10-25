@@ -203,7 +203,7 @@ fn shelves(f: &mut Frame, app: &mut App, area: Rect) {
                 Shelf::Theme(i, _) => ("◆", colour_of(*i)),
             };
             let room = (area.width as usize).saturating_sub(n.to_string().len() + 6);
-            let name: String = shelf.name().chars().take(room).collect();
+            let name = fit(shelf.name(), room);
             ListItem::new(Line::from(vec![
                 Span::styled(format!(" {icon} "), Style::new().fg(colour)),
                 Span::styled(name, Style::new().fg(t.text).bold()),
@@ -536,6 +536,22 @@ const PALETTE: [Color; 12] = [
 
 fn colour_of(theme: usize) -> Color {
     PALETTE[theme % PALETTE.len()]
+}
+
+/// `name` in `room` columns: a theme's first words alone where all do not
+/// fit, else cut short with an ellipsis.
+pub(crate) fn fit(name: &str, room: usize) -> String {
+    if name.chars().count() <= room {
+        return name.to_string();
+    }
+    match name.split_once(" · ") {
+        Some((first, _)) if first.chars().count() <= room => first.to_string(),
+        _ => {
+            let mut cut: String = name.chars().take(room.saturating_sub(1)).collect();
+            cut.push('…');
+            cut
+        }
+    }
 }
 
 /// The papers as points on the plane: the picked theme's in its colour,
