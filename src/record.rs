@@ -15,7 +15,7 @@ pub struct Record {
     pub paperstack: Meta,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
     /// When it was added, RFC 3339; newest first sorts by it.
     #[serde(default)]
@@ -31,12 +31,39 @@ pub struct Meta {
     pub arxiv: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pdf_sha256: Option<String>,
+    /// Which version of the paper its PDF is, where that is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_version: Option<Version>,
     /// Keys of papers merged into this one, which still cite it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
     /// Where the metadata came from, as `doi.org`, or `import`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// A version of a paper, as OpenAlex tells them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Version {
+    /// As the journal published it.
+    Published,
+    /// The authors' copy, as accepted, before the journal's typesetting.
+    Accepted,
+    /// As submitted, as to a preprint server.
+    Preprint,
+}
+
+impl Version {
+    /// OpenAlex's name of a location's version, as `publishedVersion`.
+    pub fn of_openalex(name: &str) -> Option<Version> {
+        match name {
+            "publishedVersion" => Some(Version::Published),
+            "acceptedVersion" => Some(Version::Accepted),
+            "submittedVersion" => Some(Version::Preprint),
+            _ => None,
+        }
+    }
 }
 
 /// A person's name, or an organisation's, as `family` alone.
@@ -64,8 +91,9 @@ impl Record {
         }
     }
 
+    /// The title, not braced whole, as BibTeX imported may have it.
     pub fn title(&self) -> &str {
-        self.text("title").unwrap_or("(untitled)")
+        self.text("title").map_or("(untitled)", unbraced)
     }
 
     pub fn venue(&self) -> &str {
@@ -118,9 +146,42 @@ impl Record {
         let mut item = self.csl.clone();
         if let Value::Object(map) = &mut item {
             map.insert("id".to_string(), Value::String(self.key.clone()));
+            if let Some(Value::String(t)) = map.get_mut("title") {
+                *t = unbraced(t).to_string();
+            }
         }
         item
     }
+}
+
+/// `s` without the braces around it whole, where they are one group.
+pub fn unbraced(s: &str) -> &str {
+    if braced_len(s) == Some(s.len()) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// The length of the braced group `s` starts with, its braces with it.
+pub fn braced_len(s: &str) -> Option<usize> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The authors of a CSL record, a particle with the family name.

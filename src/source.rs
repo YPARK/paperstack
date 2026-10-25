@@ -285,14 +285,19 @@ impl Source {
     }
 }
 
-/// The paper an address names, where its form says.
-fn from_address(url: &str) -> Option<Source> {
+/// An address's host, lowercase, and its path.
+pub fn host(url: &str) -> Option<(String, &str)> {
     let after = url.split_once("://")?.1;
     let (host, path) = match after.find('/') {
         Some(at) => (&after[..at], &after[at..]),
         None => (after, ""),
     };
-    let host = host.to_lowercase();
+    Some((host.to_lowercase(), path))
+}
+
+/// The paper an address names, where its form says.
+fn from_address(url: &str) -> Option<Source> {
+    let (host, path) = host(url)?;
     if host.ends_with("arxiv.org") {
         let id = path
             .trim_start_matches(['/'])

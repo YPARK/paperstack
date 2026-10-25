@@ -7,15 +7,19 @@
 //! The index is brought up to the library at each call, so what the TUI,
 //! `paperstack serve` or another machine added meanwhile is found.
 
-use crate::add::{Adder, Options, attach, one_line};
+use crate::add::{Adder, Options, attach, one_line, open_copies};
 use crate::bibtex;
-use crate::index::{Hit, Index, Sort};
+use crate::index::{Chosen, Hit, Index, Picked, Sort};
 use crate::library::Library;
 use crate::net::Net;
 use crate::query::Query;
+use crate::record::Record;
 use anyhow::{Context, bail};
+use regex::Regex;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::io::{BufRead, Write};
+use std::sync::LazyLock;
 
 /// The protocol's version answered when the client's is not one known.
 const PROTOCOL: &str = "2025-06-18";
@@ -23,6 +27,11 @@ const KNOWN: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 /// The most pages `read_paper` gives at once, and characters of them.
 const PAGES_AT_ONCE: u32 = 20;
 const TEXT_LIMIT: usize = 200_000;
+/// Authors listed of a paper found, before their count stands for the rest.
+const AUTHORS_SHOWN: usize = 10;
+/// Where a tool's result is text, as a bibliography, with data about it:
+/// the text, given first, and the data after it.
+const TEXT: &str = "__text";
 
 pub struct Server {
     pub lib: Library,
@@ -102,13 +111,18 @@ impl Server {
             .and_then(|_| self.tool(name, &args));
         let _ = self.index.flush();
         match done {
-            Ok(data) => {
-                let text = match &data {
-                    Value::String(s) => s.clone(),
-                    other => serde_json::to_string_pretty(other).unwrap_or_default(),
+            Ok(mut data) => {
+                let given = data.as_object_mut().and_then(|m| m.remove(TEXT));
+                let pretty = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_default();
+                let content = match (&data, given) {
+                    (Value::String(s), _) => vec![json!({ "type": "text", "text": s })],
+                    (other, Some(text)) => vec![
+                        json!({ "type": "text", "text": text }),
+                        json!({ "type": "text", "text": pretty(other) }),
+                    ],
+                    (other, None) => vec![json!({ "type": "text", "text": pretty(other) })],
                 };
-                let mut result =
-                    json!({ "content": [{ "type": "text", "text": text }], "isError": false });
+                let mut result = json!({ "content": content, "isError": false });
                 if data.is_object() {
                     result["structuredContent"] = data;
                 }
@@ -162,27 +176,30 @@ impl Server {
                 }
             }
             "cite" => {
-                let mut hits: Vec<Hit> = Vec::new();
-                for key in list("keys") {
-                    hits.push(self.hit(&key)?);
-                }
-                if let Some(q) = text("query") {
-                    hits.extend(self.index.search(
-                        &Query::parse(&q),
-                        Sort::Relevance,
-                        false,
-                        None,
-                    )?);
-                }
-                if hits.is_empty() {
+                let Chosen { papers, missing } = self.chosen(args)?;
+                if papers.is_empty() && missing.is_empty() {
                     bail!("give keys, or a query, of the papers to cite");
                 }
-                let records: Vec<_> = hits.iter().map(|h| h.record.as_ref()).collect();
-                Ok(Value::String(match text("format").as_deref() {
-                    Some("csl") => serde_json::to_string_pretty(
+                // Each under the key it is cited by, though merged since.
+                let records: Vec<Cow<Record>> = papers
+                    .iter()
+                    .map(|p| {
+                        if p.asked == p.hit.record.key {
+                            Cow::Borrowed(p.hit.record.as_ref())
+                        } else {
+                            Cow::Owned(Record {
+                                key: p.asked.clone(),
+                                ..Record::clone(&p.hit.record)
+                            })
+                        }
+                    })
+                    .collect();
+                let format = text("format").unwrap_or_else(|| "bibtex".to_string());
+                let out = match format.as_str() {
+                    "csl" => serde_json::to_string_pretty(
                         &records.iter().map(|r| r.item()).collect::<Vec<_>>(),
                     )?,
-                    Some("keys") => format!(
+                    "keys" => format!(
                         "[{}]",
                         records
                             .iter()
@@ -190,8 +207,58 @@ impl Server {
                             .collect::<Vec<_>>()
                             .join("; ")
                     ),
-                    _ => bibtex::entries(&records),
-                }))
+                    _ => bibtex::entries(&records.iter().map(AsRef::as_ref).collect::<Vec<_>>()),
+                };
+                let mut said = json!({
+                    "entries": records.len(),
+                    "missing": missing,
+                    "merged": merged(&papers),
+                });
+                if let Some(path) = text("output") {
+                    if !missing.is_empty() {
+                        bail!(
+                            "not written, as no paper has {}: add them, or cite without them",
+                            missing.join(", ")
+                        );
+                    }
+                    if papers.is_empty() {
+                        bail!("not written: the query finds no paper");
+                    }
+                    let path = std::path::PathBuf::from(path);
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let fits = match format.as_str() {
+                        "csl" => ext.eq_ignore_ascii_case("json"),
+                        "keys" => false,
+                        _ => ext.eq_ignore_ascii_case("bib"),
+                    };
+                    if !fits {
+                        bail!("a bibliography is written to a .bib file, or, as csl, a .json one");
+                    }
+                    crate::library::write(&path, out.as_bytes())?;
+                    said["output"] = json!(path);
+                    return Ok(said);
+                }
+                said[TEXT] = json!(out);
+                Ok(said)
+            }
+            "check_keys" => {
+                let mut cited = list("keys");
+                if let Some(path) = text("path") {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {path}"))?;
+                    cited.extend(cited_keys(&text));
+                }
+                if cited.is_empty() {
+                    bail!("give the keys cited, or the path of the text that cites them");
+                }
+                let Chosen { papers, missing } =
+                    self.index.choose(cited.iter().map(String::as_str), None)?;
+                let found: Vec<&str> = papers
+                    .iter()
+                    .filter(|p| p.asked == p.hit.record.key)
+                    .map(|p| p.asked.as_str())
+                    .collect();
+                Ok(json!({ "found": found, "merged": merged(&papers), "missing": missing }))
             }
             "read_paper" => {
                 let hit = self.hit(&text("key").context("give the paper's key")?)?;
@@ -269,47 +336,106 @@ impl Server {
                 Ok(json!({ "outcome": added.summary(), "paper": self.paper(&hit, false) }))
             }
             "attach_pdf" => {
-                let key = text("key").context("give the paper's key")?;
-                let path = crate::browser::dropped(&text("path").context("give the PDF's path")?);
-                let bytes = std::fs::read(&path)
-                    .with_context(|| format!("cannot read {}", path.display()))?;
-                let added = attach(
+                if let Some(path) = text("path") {
+                    let key = text("key").context("give the paper's key, with the PDF's path")?;
+                    let path = crate::browser::dropped(&path);
+                    let bytes = std::fs::read(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?;
+                    let added = attach(
+                        &self.lib,
+                        &mut self.index,
+                        &key,
+                        &bytes,
+                        &path.display().to_string(),
+                        false,
+                    )?;
+                    return Ok(json!({ "outcome": added.summary(), "key": added.key }));
+                }
+                let published = args
+                    .get("published")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let Chosen { papers, missing } = self.chosen(args)?;
+                let done = open_copies(
                     &self.lib,
                     &mut self.index,
-                    &key,
-                    &bytes,
-                    &path.display().to_string(),
-                    false,
-                )?;
-                Ok(json!({ "outcome": added.summary(), "key": added.key }))
+                    &self.net,
+                    papers,
+                    published,
+                    &|_| true,
+                );
+                let done: Vec<Value> = done
+                    .into_iter()
+                    .map(|(key, got)| {
+                        let mut v = match got {
+                            Ok(a) => crate::cli::added_json(&self.lib, &a, &key),
+                            Err(e) => crate::cli::failed_json(&e, &key),
+                        };
+                        v["key"] = json!(key);
+                        v
+                    })
+                    .collect();
+                Ok(json!({ "papers": done, "missing": missing }))
             }
             "update_paper" => {
-                let hit = self.hit(&text("key").context("give the paper's key")?)?;
-                let mut record = crate::library::read(&self.lib.root.join(&hit.path))?;
-                let m = &mut record.paperstack;
-                for (have, add, remove) in [
-                    (
-                        &mut m.folders,
-                        list("add_collections"),
-                        list("remove_collections"),
-                    ),
-                    (&mut m.labels, list("add_labels"), list("remove_labels")),
-                ] {
-                    have.retain(|h| !remove.iter().any(|r| r.eq_ignore_ascii_case(h)));
-                    for a in add {
-                        if !have.iter().any(|h| h.eq_ignore_ascii_case(&a)) {
-                            have.push(a);
-                        }
+                let Chosen { papers, missing } = self.chosen(args)?;
+                let one = args.get("key").is_some() && args.get("keys").is_none();
+                if papers.is_empty() && missing.is_empty() {
+                    bail!("give the paper's key, or keys, or a query");
+                }
+                let aliases = list("add_aliases");
+                if !aliases.is_empty() && papers.len() != 1 {
+                    bail!("aliases are given to one paper, by its key");
+                }
+                for alias in &aliases {
+                    if let Some(other) = self.index.get(alias)?
+                        && other.record.key != papers[0].hit.record.key
+                    {
+                        bail!("{alias} is {}'s key already", other.record.key);
                     }
                 }
-                if let Some(star) = args.get("starred").and_then(Value::as_bool) {
-                    m.starred = star;
+                let mut updated = Vec::new();
+                for Picked { hit, .. } in &papers {
+                    let mut record = crate::library::read(&self.lib.root.join(&hit.path))?;
+                    let before = record.paperstack.clone();
+                    let m = &mut record.paperstack;
+                    for (have, add, remove) in [
+                        (
+                            &mut m.folders,
+                            list("add_collections"),
+                            list("remove_collections"),
+                        ),
+                        (&mut m.labels, list("add_labels"), list("remove_labels")),
+                        (&mut m.aliases, aliases.clone(), Vec::new()),
+                    ] {
+                        have.retain(|h| !remove.iter().any(|r| r.eq_ignore_ascii_case(h)));
+                        for a in add {
+                            if !have.iter().any(|h| h.eq_ignore_ascii_case(&a)) {
+                                have.push(a);
+                            }
+                        }
+                    }
+                    m.aliases.retain(|a| !a.eq_ignore_ascii_case(&record.key));
+                    if let Some(star) = args.get("starred").and_then(Value::as_bool) {
+                        m.starred = star;
+                    }
+                    if record.paperstack == before {
+                        continue;
+                    }
+                    let path = self.lib.save(&record, Some(&hit.path))?;
+                    updated.push(record.key.clone());
+                    self.index
+                        .upsert(&self.lib, &path, record, Some(&hit.path))?;
                 }
-                let path = self.lib.save(&record, Some(&hit.path))?;
-                self.index
-                    .upsert(&self.lib, &path, record, Some(&hit.path))?;
-                let hit = self.hit(&hit.record.key)?;
-                Ok(self.paper(&hit, false))
+                if one {
+                    return Ok(self.paper(&self.hit(&text("key").unwrap_or_default())?, false));
+                }
+                Ok(json!({
+                    "updated": updated.len(),
+                    "keys": updated,
+                    "unchanged": papers.len() - updated.len(),
+                    "missing": missing,
+                }))
             }
             "delete_papers" => {
                 let keys = list("keys");
@@ -342,12 +468,37 @@ impl Server {
             .with_context(|| format!("no paper with the key {key}: search_papers finds keys"))
     }
 
-    /// A paper as the agent is given it; with its abstract if `whole`.
+    /// The papers `args` names: by `key`, `keys`, or a `query`.
+    fn chosen(&self, args: &Value) -> anyhow::Result<Chosen> {
+        let keys = args
+            .get("key")
+            .into_iter()
+            .chain(
+                args.get("keys")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter_map(Value::as_str);
+        self.index
+            .choose(keys, args.get("query").and_then(Value::as_str))
+    }
+
+    /// A paper as the agent is given it; with its abstract, and all its
+    /// authors, if `whole`.
     fn paper(&self, h: &Hit, whole: bool) -> Value {
         let mut v = crate::cli::json(&self.lib, h);
         if let Value::Object(map) = &mut v {
             if let Some(f) = map.remove("folders") {
                 map.insert("collections".to_string(), f);
+            }
+            if !whole
+                && let Some(Value::Array(authors)) = map.get_mut("authors")
+                && authors.len() > AUTHORS_SHOWN
+            {
+                let total = authors.len();
+                authors.truncate(AUTHORS_SHOWN);
+                map.insert("authors_total".to_string(), json!(total));
             }
             if whole {
                 map.insert("abstract".to_string(), json!(h.record.abstract_text()));
@@ -356,6 +507,59 @@ impl Server {
         }
         v
     }
+}
+
+/// Of the papers asked for, those asked by a key merged into another's,
+/// or written otherwise, as pandoc, which tells keys by their case, would
+/// not find.
+fn merged(papers: &[Picked]) -> Vec<Value> {
+    papers
+        .iter()
+        .filter(|p| p.asked != p.hit.record.key)
+        .map(|p| json!({ "key": p.asked, "into": p.hit.record.key }))
+        .collect()
+}
+
+/// The keys a text cites, in order, once each: pandoc's `@key` and
+/// `[@key]`, and LaTeX's `\cite{key,key}`; not an address's `@`, nor
+/// a cross-reference, as `\@ref(fig:a)` or `@fig-a`.
+pub fn cited_keys(text: &str) -> Vec<String> {
+    static PANDOC: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:^|[^\w\\@])@(?:\{([^}]+)\}|([\w][\w:.#$%&\-+?<>~/]*))").unwrap()
+    });
+    static LATEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{([^}]*)\}").unwrap()
+    });
+    const REFS: &[&str] = &["fig", "tbl", "sec", "eq", "lst", "tab", "thm"];
+    let mut keys: Vec<(usize, String)> = Vec::new();
+    for c in PANDOC.captures_iter(text) {
+        let m = c.get(1).or_else(|| c.get(2)).expect("one or the other");
+        let key = m.as_str().trim_end_matches(['.', ':', ',', ';', '?', '!']);
+        let is_ref = REFS.iter().any(|r| {
+            key.strip_prefix(r)
+                .is_some_and(|rest| rest.starts_with([':', '-']))
+        });
+        if !is_ref && !key.is_empty() {
+            keys.push((m.start(), key.to_string()));
+        }
+    }
+    for c in LATEX.captures_iter(text) {
+        let m = c.get(1).expect("its keys");
+        for key in m
+            .as_str()
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            keys.push((m.start(), key.to_string()));
+        }
+    }
+    keys.sort_by_key(|(at, _)| *at);
+    let mut seen = std::collections::HashSet::new();
+    keys.into_iter()
+        .map(|(_, k)| k)
+        .filter(|k| seen.insert(k.clone()))
+        .collect()
 }
 
 fn initialize(params: &Value) -> Value {
@@ -392,7 +596,7 @@ fn tools() -> Value {
         {
             "name": "search_papers",
             "title": "Search the library",
-            "description": "Find papers in the library. Words and \"phrases\" are looked for in titles, abstracts, authors, venues and keys, a word matching the words it starts. Fields: title: abstract: author: venue: year:2020..2026 collection:\"name\" label: key: doi: has:pdf has:abstract is:starred; - before any leaves out what it matches. Empty, it lists every paper.",
+            "description": "Find papers in the library. Words and \"phrases\" are looked for in titles, abstracts, authors, venues and keys, a word matching the words it starts. Fields: title: abstract: author: venue: year:2020..2026 collection:\"name\" label: key: doi: has:pdf has:abstract is:starred; - before any leaves out what it matches. Empty, it lists every paper. Of a paper with more than 10 authors, the first 10 are listed, and authors_total counts them all; get_paper lists them all.",
             "inputSchema": { "type": "object", "properties": {
                 "query": { "type": "string", "description": "e.g. perturbation \"linear baseline\" author:Halvorsen year:2020.." },
                 "sort": { "type": "string", "enum": ["relevance", "year", "added", "author", "title"] },
@@ -413,11 +617,22 @@ fn tools() -> Value {
         {
             "name": "cite",
             "title": "Make a bibliography",
-            "description": "BibTeX, CSL JSON, or [@key; @key] citations, of the papers with the keys given, or those a query finds, or both.",
+            "description": "BibTeX, CSL JSON, or [@key; @key] citations, of the papers with the keys given, or those a query finds, or both; or written to a file, output, a .bib (or .json for csl), only when every key given is had. A key merged into another paper's is cited under the key given. Keys no paper has are listed as missing, the rest cited. BibTeX titles keep their case through citeproc: capitals the authors gave are braced.",
             "inputSchema": { "type": "object", "properties": {
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },
-                "format": { "type": "string", "enum": ["bibtex", "csl", "keys"], "default": "bibtex" }
+                "format": { "type": "string", "enum": ["bibtex", "csl", "keys"], "default": "bibtex" },
+                "output": { "type": "string", "description": "a .bib or .json file to write, replaced whole" }
+            } },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "check_keys",
+            "title": "Check cited keys",
+            "description": "Which of the keys a manuscript cites the library has: found; merged, an older key of a paper now under another, which cite still gives under the old key; or missing. Give the keys, or the path of the text citing them (pandoc's @key, LaTeX's \\cite{key}).",
+            "inputSchema": { "type": "object", "properties": {
+                "keys": { "type": "array", "items": { "type": "string" } },
+                "path": { "type": "string", "description": "a .rmd, .md, .qmd or .tex file" }
             } },
             "annotations": read_only
         },
@@ -442,7 +657,7 @@ fn tools() -> Value {
         {
             "name": "add_paper",
             "title": "Add a paper",
-            "description": "Add a paper by its DOI, arXiv id, PMID, a publisher's address, a PDF's path, or its exact title, its record read from Crossref, arXiv or PubMed and an open copy of its PDF downloaded. A paper already here is not added again. A title several papers have adds none, and lists them, to add by id.",
+            "description": "Add a paper by its DOI, arXiv id, PMID, a publisher's address, a PDF's path, or its exact title, its record read from Crossref, arXiv or PubMed and an open copy of its PDF downloaded; no browser is opened. A paper already here is not added again. A title several papers have adds none, and lists them, to add by id.",
             "inputSchema": { "type": "object", "required": ["what"], "properties": {
                 "what": { "type": "string", "description": "e.g. 10.5555/demo.2026.01, arXiv:2412.99901, PMID: 99999901" },
                 "collections": { "type": "array", "items": { "type": "string" } },
@@ -454,19 +669,25 @@ fn tools() -> Value {
         {
             "name": "attach_pdf",
             "title": "Give a paper its PDF",
-            "description": "Give a paper without one the PDF at a path on this machine, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
-            "inputSchema": { "type": "object", "required": ["key", "path"], "properties": {
+            "description": "Give papers without one their PDF. Without a path, open copies are downloaded, published versions first, for each paper of the keys or the query (those it finds without a PDF); no browser is opened. Each paper's outcome is listed: its pdf_version, or why none was had, with each copy tried and its reason (http-429, http-403, html-page, not-a-pdf, not-the-paper, preprint, network). published: no preprint, and a paper whose PDF is a preprint's is given the published version in its place. With a path, one paper is given the PDF there, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
+            "inputSchema": { "type": "object", "properties": {
                 "key": { "type": "string" },
-                "path": { "type": "string" }
+                "keys": { "type": "array", "items": { "type": "string" } },
+                "query": { "type": "string", "description": "e.g. collection:\"name\"" },
+                "path": { "type": "string", "description": "a PDF on this machine, for the paper of key" },
+                "published": { "type": "boolean", "default": false }
             } },
-            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
         },
         {
             "name": "update_paper",
-            "title": "Change a paper's collections, labels or star",
-            "description": "Put a paper in collections or take it out, add or take away labels, star it or not.",
-            "inputSchema": { "type": "object", "required": ["key"], "properties": {
+            "title": "Change papers' collections, labels or star",
+            "description": "Put papers in collections or take them out, add or take away labels, star them or not: one paper by its key, or many, by keys or a query, as collection:\"old\" to rename a collection by adding the new and removing the old. add_aliases gives one paper older keys, as a manuscript cites it by, found and cited as its own.",
+            "inputSchema": { "type": "object", "properties": {
                 "key": { "type": "string" },
+                "keys": { "type": "array", "items": { "type": "string" } },
+                "query": { "type": "string" },
+                "add_aliases": { "type": "array", "items": { "type": "string" } },
                 "add_collections": { "type": "array", "items": { "type": "string" } },
                 "remove_collections": { "type": "array", "items": { "type": "string" } },
                 "add_labels": { "type": "array", "items": { "type": "string" } },

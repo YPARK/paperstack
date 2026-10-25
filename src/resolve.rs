@@ -7,6 +7,7 @@
 //! knows where open copies of the PDF are.
 
 use crate::net::Net;
+use crate::record::Version;
 use crate::source::{self, Source};
 use anyhow::{Context, bail};
 use regex::Regex;
@@ -506,15 +507,23 @@ pub fn enrich(net: &Net, found: &mut Found) {
     {
         found.csl["abstract"] = json!(text);
     }
-    for url in located(&work) {
-        if !found.pdfs.contains(&url) {
-            found.pdfs.push(url);
+    for copy in located(&work) {
+        if !found.pdfs.contains(&copy.url) {
+            found.pdfs.push(copy.url);
         }
     }
 }
 
+/// Where an open copy of a paper's PDF is, and which version it is, where
+/// that is said.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenCopy {
+    pub url: String,
+    pub version: Option<Version>,
+}
+
 /// Where OpenAlex's work says open copies of its PDF are, the best first.
-fn located(work: &Value) -> Vec<String> {
+fn located(work: &Value) -> Vec<OpenCopy> {
     let best = work.get("best_oa_location").into_iter();
     let all = work
         .get("locations")
@@ -522,8 +531,15 @@ fn located(work: &Value) -> Vec<String> {
         .into_iter()
         .flatten();
     best.chain(all)
-        .filter_map(|loc| loc.get("pdf_url").and_then(Value::as_str))
-        .map(str::to_string)
+        .filter_map(|loc| {
+            Some(OpenCopy {
+                url: loc.get("pdf_url")?.as_str()?.to_string(),
+                version: loc
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .and_then(Version::of_openalex),
+            })
+        })
         .collect()
 }
 
@@ -541,7 +557,7 @@ fn openalex_work(net: &Net, doi: &str, select: &str) -> Option<Value> {
 
 /// Where OpenAlex knows open copies of the PDF of `doi` to be, the best
 /// first.
-pub fn openalex_pdfs(net: &Net, doi: &str) -> Vec<String> {
+pub fn openalex_pdfs(net: &Net, doi: &str) -> Vec<OpenCopy> {
     openalex_work(net, doi, "best_oa_location,locations")
         .map(|w| located(&w))
         .unwrap_or_default()
@@ -886,7 +902,7 @@ pub fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn unescape(s: &str) -> String {
+pub fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")

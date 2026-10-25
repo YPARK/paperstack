@@ -1653,7 +1653,7 @@ impl App {
             "Looking for an open copy",
             what,
             Then::Fetch(h, back),
-            move |lib, index, net, say| open_copy(lib, index, net, &hit, say),
+            move |lib, index, net, say| open_copy(lib, index, net, &hit, false, say),
         );
     }
 

@@ -115,6 +115,9 @@ enum Command {
     /// Find papers: words, "phrases", author:, year:2020..2026, folder:, has:pdf, -...
     Find {
         query: Vec<String>,
+        /// Words to leave out, as `-has:pdf` is read: by `args`
+        #[arg(long = "not", hide = true)]
+        not: Vec<String>,
         #[arg(long, value_enum, default_value_t)]
         sort: Sort,
         #[arg(long)]
@@ -147,13 +150,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Give a paper its PDF: an open copy, downloaded, where there is one;
-    /// else, behind a paywall, its page opened in the browser, the PDF
-    /// downloaded there awaited; or a PDF's path or address
+    /// Give papers their PDFs: open copies, downloaded, where there are
+    /// some, published versions first; else, for one paper behind a
+    /// paywall, its page opened in the browser, the PDF downloaded there
+    /// awaited. Or one paper a PDF's path or address: `attach KEY FILE`
     Attach {
-        key: String,
-        /// A PDF's path, or its address, to take instead of waiting
-        pdf: Option<String>,
+        /// The papers' keys; or a key and a PDF's path or address
+        #[arg(required_unless_present = "query")]
+        what: Vec<String>,
+        /// The papers this finds, as collection:"name", that have no PDF
+        /// (or, with --published, a preprint's)
+        #[arg(long, short)]
+        query: Option<String>,
+        /// Open copies only: no page opened in the browser. So it is for
+        /// more than one paper
+        #[arg(long)]
+        no_browser: bool,
+        /// No preprint: a paper whose PDF is a preprint's is given the
+        /// published version in its place, the preprint's to the trash
+        #[arg(long)]
+        published: bool,
         /// How long to wait for the download, in minutes
         #[arg(long, default_value_t = 15)]
         wait: u64,
@@ -388,8 +404,76 @@ fn await_download(
     )))
 }
 
+/// The key and the PDF's path or address of `attach KEY FILE`: a second
+/// word that is a path, by a slash or `.pdf` in it, or an address, as no
+/// key is.
+fn pdf_given(what: &[String]) -> Option<(&str, &str)> {
+    match what {
+        [key, given]
+            if given.contains('/')
+                || given.to_lowercase().ends_with(".pdf")
+                || Path::new(given).exists() =>
+        {
+            Some((key, given))
+        }
+        _ => None,
+    }
+}
+
+/// The command line, a word of `find` that leaves out, as `-has:pdf`,
+/// given as `--not=has:pdf`: else it would be read as options, `-h` first.
+/// What is an option, and which take a value, is as clap is told.
+fn args<I: IntoIterator<Item = std::ffi::OsString>>(given: I) -> Vec<std::ffi::OsString> {
+    use clap::CommandFactory;
+    let command = Args::command();
+    let find = command.find_subcommand("find").expect("a find command");
+    let options: Vec<&clap::Arg> = command
+        .get_arguments()
+        .chain(find.get_arguments())
+        .collect();
+    let takes_value = |s: &str| {
+        options.iter().any(|a| {
+            a.get_action().takes_values()
+                && (a.get_long().is_some_and(|l| s == format!("--{l}"))
+                    || a.get_short().is_some_and(|c| s == format!("-{c}")))
+        })
+    };
+    // `-h`, or a short option, its value joined to it or not.
+    let is_short = |s: &str| {
+        let c = s.chars().nth(1);
+        (s == "-h")
+            || options.iter().any(|a| {
+                a.get_short().is_some()
+                    && a.get_short() == c
+                    && (s.len() == 2 || a.get_action().takes_values())
+            })
+    };
+    let mut out = Vec::new();
+    let mut finding = false;
+    let mut value_next = false;
+    for arg in given {
+        let s = arg.to_string_lossy();
+        let leaves_out = finding
+            && !value_next
+            && !s.starts_with("--")
+            && s.starts_with('-')
+            && s.chars().nth(1).is_some_and(char::is_alphabetic)
+            && !is_short(&s);
+        if leaves_out {
+            out.push(format!("--not={}", &s[1..]).into());
+            continue;
+        }
+        if !finding && !value_next && s == "find" && !out.is_empty() {
+            finding = true;
+        }
+        value_next = !value_next && takes_value(&s);
+        out.push(arg);
+    }
+    out
+}
+
 pub fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = Args::parse_from(args(std::env::args_os()));
     let net = || net::Net::new(email(args.email.clone()));
     match args.command {
         None => app::run(open(&args.library)?, net(), theme::Theme::of(args.theme)),
@@ -481,7 +565,7 @@ pub fn main() -> anyhow::Result<()> {
             println!("embedded: {:?}", reading.embedded);
             println!("ids: {:?}", pdf::ids(&reading));
             println!("article ids: {:?}", pdf::article_info_dois(&reading));
-            let first = reading.pages.first().map(String::as_str).unwrap_or("");
+            let first = pdf::first_page(&reading);
             for t in pdf::title_lines(first) {
                 println!("heading: {t}");
             }
@@ -501,40 +585,54 @@ pub fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Attach {
-            key,
-            pdf,
+            what,
+            query,
+            no_browser,
+            published,
             wait,
             json,
         }) => {
             let (lib, mut index) = open(&args.library)?;
-            let done = match pdf {
-                Some(given) => {
-                    let bytes = if given.starts_with("http://") || given.starts_with("https://") {
-                        net().pdf(&given)?
-                    } else {
-                        std::fs::read(&given)?
-                    };
-                    add::attach(&lib, &mut index, &key, &bytes, &given, true)
-                }
-                None => {
-                    let hit = index
-                        .get(&key)?
-                        .ok_or_else(|| anyhow::anyhow!("no paper with the key {key}"))?;
-                    anyhow::ensure!(!hit.has_pdf, "{key} has its PDF already");
-                    let say = |s: &str| {
-                        eprintln!("paperstack: {s}");
-                        true
-                    };
-                    match add::open_copy(&lib, &mut index, &net(), &hit, &say) {
-                        Ok(added) => Ok(added),
-                        Err(e) => {
-                            eprintln!("paperstack: no open copy: {}", add::one_line(&e));
-                            await_download(&lib, &mut index, &hit, wait)?
-                        }
-                    }
-                }
+            // A key and a PDF's path or address: that PDF, for that paper.
+            if let Some((key, given)) = pdf_given(&what).filter(|_| query.is_none()) {
+                let bytes = if given.starts_with("http://") || given.starts_with("https://") {
+                    net().pdf(given)?
+                } else {
+                    std::fs::read(given)?
+                };
+                let done = add::attach(&lib, &mut index, key, &bytes, given, true);
+                return cli::print_added(&lib, &[(key.to_string(), done)], json);
+            }
+            let chosen = index.choose(what.iter().map(String::as_str), query.as_deref())?;
+            let browser = chosen.papers.len() == 1 && !no_browser && wait > 0;
+            let net = net();
+            let say = |s: &str| {
+                eprintln!("paperstack: {s}");
+                true
             };
-            cli::print_added(&lib, &[(key, done)], json)
+            let mut done = add::open_copies(&lib, &mut index, &net, chosen.papers, published, &say);
+            // One paper behind a paywall: its page in the browser.
+            if let [(key, got)] = &mut done[..]
+                && browser
+                && let Err(e) = got
+                && e.is::<add::NoOpenCopy>()
+            {
+                eprintln!("paperstack: {}", add::one_line(e));
+                let hit = index
+                    .get(key)?
+                    .ok_or_else(|| anyhow::anyhow!("no paper with the key {key}"))?;
+                *got = await_download(&lib, &mut index, &hit, wait)?;
+            }
+            done.extend(
+                chosen
+                    .missing
+                    .into_iter()
+                    .map(|k| (k.clone(), Err(anyhow::anyhow!("no paper with the key {k}")))),
+            );
+            if done.is_empty() {
+                anyhow::bail!("no paper there wants a PDF");
+            }
+            cli::print_added(&lib, &done, json)
         }
         Some(Command::Delete {
             keys,
@@ -746,13 +844,15 @@ pub fn main() -> anyhow::Result<()> {
             cli::themes(&kept.current, &kept.placed, json)
         }
         Some(Command::Find {
-            query,
+            mut query,
+            not,
             sort,
             reverse,
             limit,
             format,
         }) => {
             let (lib, index) = open(&args.library)?;
+            query.extend(not.iter().map(|w| format!("-{w}")));
             let hits = index.search(&Query::parse(&query.join(" ")), sort, reverse, limit)?;
             cli::print(&lib, &hits, &format)
         }

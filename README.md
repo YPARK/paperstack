@@ -180,7 +180,19 @@ shell, the same:
 ```sh
 paperstack attach Brandt-Okafor2025-pb                 # an open copy, else open its page, await the download
 paperstack attach Brandt-Okafor2025-pb ~/Downloads/paper.pdf
+paperstack attach --query 'collection:"grant_demo"'    # open copies for each paper there without a PDF
+paperstack attach KEY1 KEY2 --published --json         # no preprints; a preprint's PDF replaced
 ```
+
+Open copies are tried published versions first, then accepted manuscripts,
+preprints last; the version taken is kept in the record, as `pdf_version`.
+A server that asks for fewer requests, as bioRxiv's, is asked again after a
+while. For more than one paper, or with `--no-browser`, no page is opened in
+the browser: each paper's outcome is said, and with `--json`, why none was
+had, with each copy tried and its reason (`http-429`, `http-403`,
+`html-page`, `not-the-paper`, …). `--published` takes no preprint, and gives
+a paper whose PDF is a preprint's the published version in its place, the
+preprint's moved to `.trash/`.
 
 | | |
 |---|---|
@@ -356,18 +368,21 @@ from the JSON.
 |---|---|---|
 | `search_papers` | find papers, by the query language below | reads |
 | `get_paper` | a paper's metadata, abstract and BibTeX, by its key | reads |
-| `cite` | BibTeX, CSL JSON or `[@a; @b]` of keys given, or of a query | reads |
+| `cite` | BibTeX, CSL JSON or `[@a; @b]` of keys given, or of a query; or written to a `.bib` | writes |
+| `check_keys` | which keys a manuscript cites are here, merged into another's, or missing | reads |
 | `read_paper` | the text of a paper's PDF, 20 pages at a time | reads |
 | `list_collections` | collections and labels, and how many papers each holds | reads |
 | `add_paper` | add by DOI, arXiv id, PMID, address, PDF or title | adds |
-| `attach_pdf` | give a paper the PDF at a path, if it is that paper's | adds |
-| `update_paper` | its collections, labels and star | changes |
+| `attach_pdf` | open copies for papers by keys or a query, or the PDF at a path, if it is that paper's | adds |
+| `update_paper` | collections, labels, star and older keys, of a paper or many | changes |
 | `delete_papers` | move papers to the library's `.trash/` | deletes |
 | `delete_collection` | take a collection or label off its papers, which stay | deletes |
 
-The first five are marked read-only, so a program may let the agent use them
-without asking; it asks before the other five, and the last two are marked
-destructive. The library's `AGENTS.md`,
+`search_papers`, `get_paper`, `check_keys`, `read_paper` and
+`list_collections` are marked read-only, so a program may let the agent use
+them without asking; it asks before the other six, and the last two are
+marked destructive. `cite` lists the keys it has no paper for, and cites the
+rest; a key merged into another paper's is cited under the key given. The library's `AGENTS.md`,
 which tells an agent how the library is laid out, is a resource too.
 
 ## Themes
@@ -481,7 +496,7 @@ paper has. A `-` before any of them leaves out what it matches.
 
 | | |
 |---|---|
-| `--bib` | BibTeX, plain, as reference managers write it |
+| `--bib` | BibTeX, plain, as reference managers write it; the capitals of a title that are its authors' braced, so citeproc keeps them, and HTML in it as LaTeX |
 | `--csl` | CSL JSON, for pandoc's and ohp's `bibliography:` |
 | `--keys` | `[@a; @b]`, to cite them |
 | `--json` | key, title, authors, year, ids, folders, the files' paths: for agents |
