@@ -879,10 +879,27 @@ impl App {
             .rev()
             .find(|(r, _)| r.contains(Position::new(m.column, m.row)))
             .map(|&(_, t)| t);
+        // Over the map, a name on it too, the wheel sideways, or with
+        // shift, moves it, once shown closer: a trackpad's stray sideways
+        // turn leaves the whole map as it is.
+        let on_map = at == Some(Target::Map) && matches!(self.popup, Popup::None);
+        let over_map = matches!(at, Some(Target::Map | Target::Label(_)))
+            && matches!(self.popup, Popup::None)
+            && self.map.as_ref().is_some_and(|m| m.top().zoom > 0);
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+        let pan = match m.kind {
+            MouseEventKind::ScrollRight => Some((1, 0)),
+            MouseEventKind::ScrollLeft => Some((-1, 0)),
+            MouseEventKind::ScrollUp if shift => Some((0, 1)),
+            MouseEventKind::ScrollDown if shift => Some((0, -1)),
+            _ => None,
+        };
+        if over_map && let Some((dx, dy)) = pan {
+            self.pan(dx, dy);
+            return None;
+        }
         let by = match m.kind {
-            MouseEventKind::Down(MouseButton::Left)
-                if at == Some(Target::Map) && matches!(self.popup, Popup::None) =>
-            {
+            MouseEventKind::Down(MouseButton::Left) if on_map => {
                 return self.map_click(m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => return self.click(at),
@@ -1778,7 +1795,8 @@ pub fn screen_svg(app: &mut App, width: u16, height: u16) -> String {
 /// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
 /// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, `<home>`,
 /// `<end>`, `<pageup>`, `<pagedown>`, `<del>`, `<f1>`; any of those or a
-/// character with control, as `<c-e>` or `<c-up>`, or with ⌘, as `<d-g>`;
+/// character with control, as `<c-e>` or `<c-up>`, with ⌘, as `<d-g>`, or
+/// with shift, as `<s-left>`;
 /// anything else, each character typed.
 pub fn keys(spec: &str) -> Vec<KeyEvent> {
     let Some(name) = spec.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
@@ -1791,6 +1809,7 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
     let (mods, name) = match name.split_at_checked(2) {
         Some(("c-", rest)) => (KeyModifiers::CONTROL, rest),
         Some(("d-", rest)) => (KeyModifiers::SUPER, rest),
+        Some(("s-", rest)) => (KeyModifiers::SHIFT, rest),
         _ => (KeyModifiers::NONE, name),
     };
     let code = match name {

@@ -512,6 +512,194 @@ impl Map {
         }
         b
     }
+
+    /// The map as a mosaic, a copy with each paper in a cell of its own
+    /// on a grid `aspect` times as wide as high, as recursive bisection
+    /// partitions a graph: the themes split in two halves by where they
+    /// lie, the grid split in two as many cells as each half has papers,
+    /// and again, till each theme has its block; then its papers alike,
+    /// till each has its cell. Themes lie by those they lie by on the map,
+    /// and papers within a theme by theirs; none hides another.
+    pub fn mosaic(&self, aspect: f32) -> Mosaic {
+        let mut out = self.clone();
+        let mut by: Vec<Vec<usize>> = vec![Vec::new(); self.themes.len()];
+        for (i, t) in self.theme.iter().enumerate() {
+            if let Some(t) = t {
+                by[*t].push(i);
+            }
+        }
+        let n: usize = by.iter().map(Vec::len).sum();
+        // Cells to spare, a fifth more, so cuts go straight across.
+        let room = n + n.div_ceil(5);
+        let cols = ((room as f32 * aspect.max(f32::MIN_POSITIVE)).sqrt().ceil() as usize).max(1);
+        let rows = room.div_ceil(cols);
+        let mut blocks = Blocks {
+            cols,
+            of: vec![None; cols * rows],
+        };
+        let mut cells: Vec<[f32; 2]> = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| [c as f32 + 0.5, r as f32 + 0.5]))
+            .collect();
+        let mut tiles: Vec<(Tile, usize, [f32; 2])> = by
+            .iter()
+            .enumerate()
+            .filter(|(_, of)| !of.is_empty())
+            .map(|(t, of)| (Tile::Theme(t), of.len(), self.themes[t].centre))
+            .collect();
+        self.tile(&mut tiles, &mut cells, &by, &mut out.xy, &mut blocks);
+        let middles = middles(
+            out.xy
+                .iter()
+                .zip(&out.theme)
+                .filter_map(|(&p, t)| Some((p, (*t)?))),
+            out.themes.len(),
+        );
+        for (th, m) in out.themes.iter_mut().zip(middles) {
+            if let Some(m) = m {
+                th.centre = m;
+            }
+        }
+        Mosaic { map: out, blocks }
+    }
+
+    /// `tiles`, each as many papers as it weighs and lying where it does,
+    /// put in `cells`, as many as they weigh or more: split in two by
+    /// where they lie along the way the cells are wider, as are the cells.
+    /// A theme's cells, those spare too, are its block in `blocks`; its
+    /// papers, those `by` lists.
+    fn tile(
+        &self,
+        tiles: &mut [(Tile, usize, [f32; 2])],
+        cells: &mut [[f32; 2]],
+        by: &[Vec<usize>],
+        xy: &mut [[f32; 2]],
+        blocks: &mut Blocks,
+    ) {
+        match *tiles {
+            [] => return,
+            // The cell in the middle of those left to it.
+            [(Tile::Paper(i), _, _)] => {
+                let m = mean(cells);
+                let d = |c: &[f32; 2]| (c[0] - m[0]).hypot(c[1] - m[1]);
+                if let Some(c) = cells.iter().min_by(|a, b| d(a).total_cmp(&d(b))) {
+                    xy[i] = *c;
+                }
+                return;
+            }
+            [(Tile::Theme(t), _, _)] => {
+                for &c in cells.iter() {
+                    blocks.set(c, t);
+                }
+                let mut papers: Vec<(Tile, usize, [f32; 2])> = by[t]
+                    .iter()
+                    .map(|&i| (Tile::Paper(i), 1, self.xy[i]))
+                    .collect();
+                self.tile(&mut papers, cells, by, xy, blocks);
+                return;
+            }
+            _ => {}
+        }
+        let extent = |k: usize| {
+            let (lo, hi) = cells.iter().fold((f32::MAX, f32::MIN), |(lo, hi), c| {
+                (lo.min(c[k]), hi.max(c[k]))
+            });
+            hi - lo
+        };
+        let wide = usize::from(extent(1) > extent(0));
+        let total: usize = tiles.iter().map(|t| t.1).sum();
+        let len = cells.len();
+        let order = |tiles: &mut [(Tile, usize, [f32; 2])], cells: &mut [[f32; 2]], k: usize| {
+            tiles.sort_by(|a, b| a.2[k].total_cmp(&b.2[k]).then(a.0.cmp(&b.0)));
+            cells.sort_by(|a, b| a[k].total_cmp(&b[k]).then(a[1 - k].total_cmp(&b[1 - k])));
+        };
+        // The cut, as `(way, tiles, cells)`: straight, between two lines of
+        // cells, with room on each side for its papers; the halves as even,
+        // and the cells as near the papers' share, as may be, the wider way
+        // first. Themes are cut either way, so each block is one; a theme's
+        // papers, the wider way alone.
+        let mut best: Option<(f64, usize, usize, usize)> = None;
+        let ways = if matches!(tiles[0].0, Tile::Theme(_)) {
+            2
+        } else {
+            1
+        };
+        for k in [wide, 1 - wide].into_iter().take(ways) {
+            order(tiles, cells, k);
+            let lines: Vec<usize> = (1..len)
+                .filter(|&i| cells[i][k] != cells[i - 1][k])
+                .collect();
+            let mut w = 0;
+            for cut in 1..tiles.len() {
+                w += tiles[cut - 1].1;
+                for &share in lines.iter().filter(|&&s| s >= w && len - s >= total - w) {
+                    let off = (share as f64 / len as f64 - w as f64 / total as f64).abs()
+                        + 0.5 * w.abs_diff(total - w) as f64 / total as f64
+                        + if k == wide { 0.0 } else { 0.05 };
+                    if best.is_none_or(|b| off < b.0) {
+                        best = Some((off, k, cut, share));
+                    }
+                }
+            }
+        }
+        // None straight: the halves as even, cut within a line.
+        let (k, cut, share) = best.map_or_else(
+            || {
+                order(tiles, cells, wide);
+                let (mut cut, mut left, mut off) = (1, 0, usize::MAX);
+                let mut w = 0;
+                for (i, t) in tiles[..tiles.len() - 1].iter().enumerate() {
+                    w += t.1;
+                    if w.abs_diff(total - w) < off {
+                        (cut, left, off) = (i + 1, w, w.abs_diff(total - w));
+                    }
+                }
+                let even = (len as f64 * left as f64 / total as f64).round() as usize;
+                (wide, cut, even.clamp(left, len - (total - left)))
+            },
+            |(_, k, cut, share)| (k, cut, share),
+        );
+        order(tiles, cells, k);
+        let (a, b) = tiles.split_at_mut(cut);
+        let (ca, cb) = cells.split_at_mut(share);
+        self.tile(a, ca, by, xy, blocks);
+        self.tile(b, cb, by, xy, blocks);
+    }
+}
+
+/// A map as a mosaic: the map with each paper at the middle of its cell,
+/// and each theme's block, its cells by their column and row.
+pub struct Mosaic {
+    pub map: Map,
+    pub blocks: Blocks,
+}
+
+/// The cells of a mosaic, row by row, each with the theme whose block it
+/// is in, if any.
+pub struct Blocks {
+    cols: usize,
+    of: Vec<Option<usize>>,
+}
+
+impl Blocks {
+    /// The theme whose block holds the place `p`, if any.
+    pub fn at(&self, p: [f32; 2]) -> Option<usize> {
+        let (c, r) = (p[0].floor(), p[1].floor());
+        if c < 0.0 || r < 0.0 || c as usize >= self.cols {
+            return None;
+        }
+        *self.of.get(r as usize * self.cols + c as usize)?
+    }
+
+    fn set(&mut self, p: [f32; 2], t: usize) {
+        self.of[p[1] as usize * self.cols + p[0] as usize] = Some(t);
+    }
+}
+
+/// What `Map::tile` puts in cells: a theme's papers, or a paper.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tile {
+    Theme(usize),
+    Paper(usize),
 }
 
 /// A paper new since the map was built, and the theme its nearest papers
@@ -1229,12 +1417,17 @@ fn layout(
     y
 }
 
+/// The middle of places.
+fn mean(xy: &[[f32; 2]]) -> [f32; 2] {
+    let n = xy.len().max(1) as f32;
+    xy.iter()
+        .fold([0.0f32; 2], |m, p| [m[0] + p[0] / n, m[1] + p[1] / n])
+}
+
 /// How far places lie from their middle, on average.
 fn spread(xy: &[[f32; 2]]) -> f32 {
     let n = xy.len().max(1) as f32;
-    let m = xy
-        .iter()
-        .fold([0.0f32; 2], |m, p| [m[0] + p[0] / n, m[1] + p[1] / n]);
+    let m = mean(xy);
     xy.iter()
         .map(|p| (p[0] - m[0]).hypot(p[1] - m[1]))
         .sum::<f32>()
@@ -1384,8 +1577,14 @@ impl Rng {
 // and min_dist 0.5, papers alike near but not on one another. Each edge is
 // sampled from both ends, as uwot and umap-learn sample it, in proportion to
 // its weight; each end in turn pulled towards the other and pushed from
-// `negative_sample_rate` random points. Edges are taken in parallel, the places shared without locks, as
-// HOGWILD! (Recht et al., NeurIPS 2011) and umap-learn's numba take them.
+// `negative_sample_rate` random points. A large map's edges are taken in
+// parallel, the places shared without locks, as HOGWILD! (Recht et al.,
+// NeurIPS 2011) and umap-learn's numba take them.
+
+/// Edges taken in chunks this large, each its own draws.
+const CHUNK: usize = 1024;
+/// Edges at most of a map laid out on one thread, the same each run.
+const ONE_THREAD: usize = 2_000;
 
 const A: f32 = 0.583;
 const B: f32 = 1.334;
@@ -1462,18 +1661,14 @@ impl Umap {
             }
             let epoch_f = epoch as f32;
             let alpha = self.learning_rate * (1.0 - epoch_f / self.n_epochs as f32);
-            edges
-                .par_iter()
-                .zip(next_epoch.par_iter_mut())
-                .zip(epochs_per_sample.par_iter())
-                .for_each_init(
-                    || {
-                        let tid = rayon::current_thread_index().unwrap_or(0) as u64;
-                        Rng((seed ^ ((epoch as u64) << 32) ^ (tid << 8)) | 1)
-                    },
-                    |rng, ((&(i, j, _), next), &every)| {
+            // Each chunk of edges with its own draws, the same however the
+            // chunks fall to threads; a small map's on one, the same each run.
+            let step =
+                |c: usize, (edges, next): (&[(usize, usize, f32)], &mut [f32]), every: &[f32]| {
+                    let mut rng = Rng((seed ^ ((epoch as u64) << 32) ^ ((c as u64) << 8)) | 1);
+                    for ((&(i, j, _), next), &every) in edges.iter().zip(next).zip(every) {
                         if *next > epoch_f {
-                            return;
+                            continue;
                         }
                         for (head, tail) in [(i, j), (j, i)] {
                             attract(coords, head, tail, alpha, a, b);
@@ -1485,8 +1680,23 @@ impl Umap {
                             }
                         }
                         *next += every;
-                    },
-                );
+                    }
+                };
+            if edges.len() <= ONE_THREAD {
+                edges
+                    .chunks(CHUNK)
+                    .zip(next_epoch.chunks_mut(CHUNK))
+                    .zip(epochs_per_sample.chunks(CHUNK))
+                    .enumerate()
+                    .for_each(|(c, (e, every))| step(c, e, every));
+            } else {
+                edges
+                    .par_chunks(CHUNK)
+                    .zip(next_epoch.par_chunks_mut(CHUNK))
+                    .zip(epochs_per_sample.par_chunks(CHUNK))
+                    .enumerate()
+                    .for_each(|(c, (e, every))| step(c, e, every));
+            }
         }
         let mut y: Vec<f32> = coords
             .0
@@ -1681,6 +1891,47 @@ mod tests {
     }
 
     #[test]
+    fn a_mosaic_gives_each_paper_a_cell_and_each_theme_a_block() {
+        let map = Map::build(&two_subjects(30), RESOLUTION, &|_| {});
+        let Mosaic { map: tiled, blocks } = map.mosaic(1.6);
+        assert_eq!(tiled.keys, map.keys);
+        let cell = |p: [f32; 2]| (p[0].floor() as i64, p[1].floor() as i64);
+        let placed: Vec<usize> = (0..map.keys.len())
+            .filter(|&i| map.theme[i].is_some())
+            .collect();
+        let cells: HashSet<(i64, i64)> = placed.iter().map(|&i| cell(tiled.xy[i])).collect();
+        assert_eq!(cells.len(), placed.len(), "one paper to a cell");
+        // Each in its theme's block.
+        assert!(
+            placed
+                .iter()
+                .all(|&i| blocks.at(tiled.xy[i]) == map.theme[i])
+        );
+        // Each theme's block one: each of its cells reached from one, step
+        // by step.
+        let of =
+            |t: usize, (x, y): (i64, i64)| blocks.at([x as f32 + 0.5, y as f32 + 0.5]) == Some(t);
+        for t in 0..map.themes.len() {
+            let all: Vec<(i64, i64)> = (0..64)
+                .flat_map(|x| (0..64).map(move |y| (x, y)))
+                .filter(|&c| of(t, c))
+                .collect();
+            let Some(&first) = all.first() else { continue };
+            let (mut seen, mut next) = (HashSet::from([first]), vec![first]);
+            while let Some((x, y)) = next.pop() {
+                for c in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+                    if of(t, c) && seen.insert(c) {
+                        next.push(c);
+                    }
+                }
+            }
+            assert_eq!(seen.len(), all.len(), "theme {t} in one block");
+        }
+        // The same map, the same mosaic.
+        assert_eq!(map.mosaic(1.6).map.xy, tiled.xy);
+    }
+
+    #[test]
     fn built_again_from_a_map_keeps_its_shape() {
         let mut docs = two_subjects(30);
         let map = Map::build(&docs, RESOLUTION, &|_| {});
@@ -1693,25 +1944,31 @@ mod tests {
                 .iter()
                 .all(|p| p[0].is_finite() && p[1].is_finite())
         );
-        // Each paper near where it was, against the map's spread.
-        let n = map.keys.len() as f32;
-        let mean = map
-            .xy
-            .iter()
-            .fold([0.0, 0.0], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
-        let spread = map
-            .xy
-            .iter()
-            .map(|p| (p[0] - mean[0]).hypot(p[1] - mean[1]))
-            .sum::<f32>()
-            / n;
+        // Each subject where it was, against the map's spread, and each
+        // paper near.
+        let spread = spread(&map.xy);
+        for subject in ["cell", "gwas"] {
+            let of = |xy: &[[f32; 2]]| {
+                let of: Vec<[f32; 2]> = (0..map.keys.len())
+                    .filter(|&i| map.keys[i].starts_with(subject))
+                    .map(|i| xy[i])
+                    .collect();
+                mean(&of)
+            };
+            let (p, q) = (of(&map.xy), of(&again.xy));
+            let moved = (p[0] - q[0]).hypot(p[1] - q[1]);
+            assert!(
+                moved < 0.25 * spread,
+                "{subject} moved {moved} of spread {spread}"
+            );
+        }
         let moved = map
             .xy
             .iter()
             .zip(&again.xy)
             .map(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
             .sum::<f32>()
-            / n;
+            / map.keys.len() as f32;
         assert!(moved < 0.5 * spread, "moved {moved} of spread {spread}");
     }
 

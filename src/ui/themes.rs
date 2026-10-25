@@ -57,6 +57,7 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
         app.targets
             .push((at, Target::Key(crate::app::keys("N")[0])));
     }
+    m.tile(area);
     m.canvas = area;
     app.targets.push((area, Target::Map));
     let within = m.within();
@@ -64,11 +65,16 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
     let picked = m.top().picked;
     // Within a theme, none picked till a finer theme is chosen.
     let shows_picked = within.is_none_or(|w| w.chosen);
-    // Within a theme, every finer theme in its colour till one is chosen.
-    let all = m.colours || within.is_some_and(|w| !w.chosen);
+    let is_picked = |i: usize| i == picked && shows_picked;
+    // Within a theme, every finer theme in its colour till one is chosen;
+    // as a mosaic, every theme, its blocks seen by their colours; `c`
+    // turns either about.
+    let all = m.colours != m.mosaic || within.is_some_and(|w| !w.chosen);
     // Its links; a finer theme chosen, its own alone.
     let chosen = within.filter(|w| w.chosen).map(|w| w.lens.picked);
+    // As a mosaic, a paper's place says not where its links go.
     let links: Vec<(usize, usize)> = within
+        .filter(|_| !m.mosaic)
         .map(|w| w.links.as_slice())
         .unwrap_or_default()
         .iter()
@@ -78,21 +84,36 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
     let paper = within.and_then(|w| w.lens.paper).map(|i| map.xy[i]);
     let bounds = m.bounds();
     let [x0, x1, y0, y1] = bounds;
+    // Each theme's papers as dots; as a mosaic, none, its blocks drawn.
     let mut by_theme: Vec<Vec<(f64, f64)>> = vec![Vec::new(); map.themes.len()];
-    for (p, th) in map.xy.iter().zip(&map.theme) {
-        if let Some(th) = th {
-            by_theme[*th].push((p[0] as f64, p[1] as f64));
+    if !m.mosaic {
+        for (p, th) in map.xy.iter().zip(&map.theme) {
+            if let Some(th) = th {
+                by_theme[*th].push((p[0] as f64, p[1] as f64));
+            }
         }
     }
     // The papers new since the map, on the whole map only.
-    let placed: &[crate::map::Placing] = if within.is_some() {
-        &[]
+    // As a mosaic, each in the cell of the paper nearest it as laid out.
+    let placed: Vec<(&str, [f32; 2])> = if within.is_some() {
+        Vec::new()
     } else {
-        &m.kept.placed
+        m.kept
+            .placed
+            .iter()
+            .filter_map(|p| {
+                let at = if m.mosaic {
+                    map.xy[m.map().nearest_where(p.xy, |_| true)?]
+                } else {
+                    p.xy
+                };
+                Some((p.key.as_str(), at))
+            })
+            .collect()
     };
     let new: Vec<(f64, f64)> = placed
         .iter()
-        .map(|p| (p.xy[0] as f64, p.xy[1] as f64))
+        .map(|(_, p)| (p[0] as f64, p[1] as f64))
         .collect();
     let labels = place_labels(map, picked, area, bounds);
     let named = map.named();
@@ -108,8 +129,8 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
             .map(|((_, p), _)| *p);
         let new = placed
             .iter()
-            .filter(|p| found.contains(&p.key))
-            .map(|p| p.xy);
+            .filter(|(k, _)| found.contains(*k))
+            .map(|&(_, p)| p);
         let mut cells = std::collections::HashSet::new();
         on_map
             .chain(new)
@@ -179,10 +200,23 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
             }
         });
     f.render_widget(canvas, area);
+    // As a mosaic, each theme a block in a faint pastel, boxed in a
+    // paler one of its colour; the picked one less faint.
+    let fill = |i: usize| {
+        let k = if is_picked(i) { 0.7 } else { 0.85 };
+        pastel(colour(i), k, t.page)
+    };
+    let edge = |i: usize| pastel(colour(i), 0.4, t.page);
+    if let Some(blocks) = m.blocks() {
+        tiles(f.buffer_mut(), area, blocks, bounds, fill, edge, t.page);
+    }
     // Each theme's name over the map, in the cells it is clicked in.
     for (i, col, row, len) in labels {
-        let style = if i == picked && shows_picked {
+        let style = if is_picked(i) {
             Style::new().fg(t.on_accent).bg(colour_of(i)).bold()
+        } else if m.mosaic {
+            // On its block, in its block's pastel, the text to be read.
+            Style::new().fg(t.text).bg(fill(i)).bold()
         } else if all {
             Style::new().fg(colour_of(i)).bold()
         } else {
@@ -197,6 +231,87 @@ pub(super) fn map_canvas(f: &mut Frame, app: &mut App, area: Rect) {
         let name = format!(" {} ", map.themes[i].name());
         f.render_widget(Paragraph::new(Span::styled(name, style)), at);
         app.targets.push((at, Target::Label(i)));
+    }
+}
+
+/// `c` made faint on `page`, as a pastel: `k` of the way to it; to a dark
+/// grey where the page is the terminal's own, as in the dark theme.
+fn pastel(c: Color, k: f32, page: Color) -> Color {
+    let (r1, g1, b1) = match page {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (30, 30, 30),
+    };
+    // The greys the themes name, as the terminal shows them about.
+    let c = match c {
+        Color::DarkGray => Color::Rgb(118, 118, 118),
+        Color::Gray => Color::Rgb(204, 204, 204),
+        c => c,
+    };
+    match c {
+        Color::Rgb(r, g, b) => {
+            let to =
+                |v: u8, p: u8| (f32::from(v) + (f32::from(p) - f32::from(v)) * k).round() as u8;
+            Color::Rgb(to(r, r1), to(g, g1), to(b, b1))
+        }
+        c => c,
+    }
+}
+
+/// The mosaic's `blocks` in `area`, as much of them as `bounds` shows:
+/// each cell, a paper's or one spare, a half of a cell of the screen or
+/// more, the upper or the lower, in its theme's `fill`, those at a
+/// block's edge in its `edge`, a box about it; beyond the blocks, `page`.
+/// What the canvas printed over a cell, a paper found or picked, stays,
+/// on its lower half's colour.
+fn tiles(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    blocks: &crate::map::Blocks,
+    [x0, x1, y0, y1]: [f64; 4],
+    fill: impl Fn(usize) -> Color,
+    edge: impl Fn(usize) -> Color,
+    page: Color,
+) {
+    let (w, h) = (i64::from(area.width), 2 * i64::from(area.height));
+    // Each half cell's theme, a row of them to each half row.
+    let theme: Vec<Option<usize>> = (0..h)
+        .flat_map(|half| (0..w).map(move |col| (col, half)))
+        .map(|(col, half)| {
+            let x = x0 + (col as f64 + 0.5) / w as f64 * (x1 - x0);
+            let y = y1 - (half as f64 + 0.5) / h as f64 * (y1 - y0);
+            blocks.at([x as f32, y as f32])
+        })
+        .collect();
+    let at = |col: i64, half: i64| {
+        ((0..w).contains(&col) && (0..h).contains(&half))
+            .then(|| theme[(half * w + col) as usize])
+            .flatten()
+    };
+    let colour = |col: i64, half: i64| {
+        let Some(t) = at(col, half) else { return page };
+        let inner = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            .iter()
+            .all(|(dx, dy)| at(col + dx, half + dy) == Some(t));
+        if inner { fill(t) } else { edge(t) }
+    };
+    for row in 0..area.height {
+        for col in 0..area.width {
+            let (c, half) = (i64::from(col), 2 * i64::from(row));
+            let (top, low) = (colour(c, half), colour(c, half + 1));
+            let cell = &mut buf[(area.x + col, area.y + row)];
+            if cell.symbol().trim_matches(['\u{2800}', ' ']).is_empty() {
+                // A half beyond the blocks as the page, never in the
+                // terminal's own colour for text, as a half block would be.
+                match (top == page, low == page) {
+                    (true, true) => cell.set_symbol(" "),
+                    (true, false) => cell.set_symbol("▄").set_fg(low),
+                    _ => cell.set_symbol("▀").set_fg(top),
+                };
+                cell.set_bg(if top == page { page } else { low });
+            } else {
+                cell.set_bg(low);
+            }
+        }
     }
 }
 
