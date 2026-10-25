@@ -2240,7 +2240,7 @@ fn prefers_the_published_copy_and_says_why_others_failed() {
             (alex.clone(), work.clone()),
             (format!("pdf {pre}"), pre_pdf.clone()),
             (format!("pdf {blocked}"), "!status 403".to_string()),
-            (format!("pdf {page}"), "!page".to_string()),
+            (format!("pdf {page}"), "<html>".to_string()),
         ];
         let at_published = if published_ok {
             pub_pdf.clone()
@@ -2268,7 +2268,11 @@ fn prefers_the_published_copy_and_says_why_others_failed() {
     let err = crate::add::open_copy(&lib, &mut index, &net, &hit, true, &quiet).unwrap_err();
     let none = err.downcast_ref::<crate::add::NoOpenCopy>().expect("why");
     let reasons: Vec<&str> = none.tried.iter().map(|t| t.reason.as_str()).collect();
-    assert_eq!(reasons, ["http-403", "html-page", "http-404"], "{err:#}");
+    assert_eq!(
+        reasons,
+        ["http-403", "html-page", "http-404", "preprint"],
+        "{err:#}"
+    );
     assert!(
         index.get("Whitlock2017-ex").unwrap().unwrap().has_pdf,
         "kept"
@@ -2480,4 +2484,94 @@ fn tells_a_pdfs_path_from_a_key() {
     assert!(crate::pdf_given(&w(&["K2025-ab", "https://x.example/p"])).is_some());
     assert!(crate::pdf_given(&w(&["K2025-ab", "L2024-cd"])).is_none());
     assert!(crate::pdf_given(&w(&["K2025-ab"])).is_none());
+}
+
+#[test]
+fn keeps_a_name_with_a_particle_whole() {
+    let mut r = demo::records().remove(0);
+    r.csl["author"] = serde_json::json!([
+        { "family": "van der Ndiaye", "given": "A B" },
+        { "family": "Ndiaye", "non-dropping-particle": "de", "given": "C" },
+        { "family": "Okafor", "non-dropping-particle": "d'", "given": "E" },
+        { "family": "Okafor", "given": "D" }
+    ]);
+    let bib = bibtex::entry(&r);
+    assert!(
+        bib.contains(
+            "author = {{van der Ndiaye}, A B and {de Ndiaye}, C and {d'Okafor}, E and Okafor, D}"
+        ),
+        "{bib}"
+    );
+}
+
+#[test]
+fn follows_a_landing_page_to_its_pdf_and_says_what_it_passed_over() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("Whitlock2017-ex").unwrap().unwrap();
+    let (title, doi) = (
+        hit.record.title().to_string(),
+        hit.record.doi().unwrap().to_string(),
+    );
+    let (landing, file, pre) = (
+        "https://repository.example/handle/1",
+        "https://repository.example/bitstream/1.pdf",
+        "https://www.biorxiv.org/content/x.full.pdf",
+    );
+    let work = serde_json::json!({
+        "locations": [
+            { "pdf_url": pre, "version": "acceptedVersion" },
+            { "pdf_url": null, "landing_page_url": "https://pubmed.ncbi.nlm.nih.gov/1", "is_oa": true },
+            { "pdf_url": null, "landing_page_url": "https://closed.example/1", "is_oa": false },
+            { "pdf_url": null, "landing_page_url": landing, "is_oa": true },
+        ]
+    })
+    .to_string();
+    // Named from the page's own folder.
+    let page =
+        r#"<html><head><meta name="citation_pdf_url" content="../bitstream/1.pdf"></head></html>"#;
+    let pdf = String::from_utf8(first_page(&title)).unwrap();
+    let alex = format!("json https://api.openalex.org/works/doi:{doi}");
+    let answers = [
+        (alex.as_str(), work.as_str()),
+        (&format!("pdf {landing}"), page),
+        (&format!("pdf {file}"), pdf.as_str()),
+    ];
+    let net = crate::net::Net::canned(&answers);
+    // A repository's open copy, by the PDF its page names, told by its own
+    // address; no closed copy, nor PubMed's page, asked for.
+    let got = crate::add::open_copy(&lib, &mut index, &net, &hit, true, &|_| true).unwrap();
+    assert!(got.how.contains(file), "{}", got.how);
+
+    // With none to be had, the preprint passed over is told.
+    let hit = index.get("Corbett2021-mr").unwrap().unwrap();
+    let doi = hit.record.doi().unwrap().to_string();
+    let work = serde_json::json!({ "locations": [{ "pdf_url": pre }] }).to_string();
+    let alex = format!("json https://api.openalex.org/works/doi:{doi}");
+    let net = crate::net::Net::canned(&[(alex.as_str(), work.as_str())]);
+    let e = crate::add::open_copy(&lib, &mut index, &net, &hit, true, &|_| true).unwrap_err();
+    let none = e.downcast_ref::<crate::add::NoOpenCopy>().expect("why");
+    assert_eq!(none.tried.len(), 1, "{e:#}");
+    assert_eq!(
+        (none.tried[0].url.as_str(), none.tried[0].reason.as_str()),
+        (pre, "preprint")
+    );
+}
+
+#[test]
+fn makes_an_address_a_page_names_whole() {
+    use crate::resolve::absolute;
+    let base = "https://repo.example/items/7/view?x=1";
+    for (href, whole) in [
+        ("https://cdn.example/a.pdf", "https://cdn.example/a.pdf"),
+        ("//cdn.example/a.pdf", "https://cdn.example/a.pdf"),
+        ("/bitstream/a.pdf", "https://repo.example/bitstream/a.pdf"),
+        ("files/a.pdf", "https://repo.example/items/7/files/a.pdf"),
+        (
+            "httpdocs/a.pdf",
+            "https://repo.example/items/7/httpdocs/a.pdf",
+        ),
+        ("../../b/./a.pdf", "https://repo.example/b/a.pdf"),
+    ] {
+        assert_eq!(absolute(href, base).as_deref(), Some(whole), "{href}");
+    }
 }

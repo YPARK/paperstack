@@ -118,21 +118,26 @@ fn names(value: &Value) -> Option<String> {
                 return Some(format!("{{{}}}", escape(&literal)));
             }
             let part = |key| name.get(key).and_then(text).map(|s| escape(&s));
-            let particle = [part("dropping-particle"), part("non-dropping-particle")]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let family = match part("family") {
-                Some(f) if particle.is_empty() => f,
-                Some(f) => format!("{particle} {f}"),
-                None => return part("given").map(|g| format!("{{{g}}}")),
+            let family = match (part("non-dropping-particle"), part("family")) {
+                // As CSL: no space after a particle ending in an apostrophe.
+                (Some(p), Some(f)) if p.ends_with(['\'', '\u{2019}']) => format!("{p}{f}"),
+                (Some(p), Some(f)) => format!("{p} {f}"),
+                (None, Some(f)) => f,
+                (_, None) => return part("given").map(|g| format!("{{{g}}}")),
             };
-            // A family name of several words, as a consortium's, kept whole.
-            let family = if part("given").is_none() && family.contains(' ') {
+            // A family name of several words, as a consortium's, or with a
+            // particle kept with it, as `van der Berg`, kept whole: BibTeX
+            // would read the particle apart, and a style put it last.
+            let whole = (part("given").is_none() && family.contains(' '))
+                || family.starts_with(char::is_lowercase);
+            let family = if whole {
                 format!("{{{family}}}")
             } else {
                 family
+            };
+            let family = match part("dropping-particle") {
+                Some(p) => format!("{p} {family}"),
+                None => family,
             };
             Some(
                 [Some(family), part("suffix"), part("given")]

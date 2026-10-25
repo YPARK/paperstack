@@ -443,19 +443,23 @@ pub fn open_copy(
     let doi = r.doi().filter(|d| crate::source::arxiv_of_doi(d).is_none());
     // The publisher's own is as published; a preprint server's, as
     // submitted, whatever OpenAlex says.
-    let copy = |url: String, version| {
+    let copy = |url: String, version, landing| {
         let version = if on_preprint_server(&url) {
             Some(Version::Preprint)
         } else {
             version
         };
-        resolve::OpenCopy { url, version }
+        resolve::OpenCopy {
+            url,
+            version,
+            landing,
+        }
     };
     let publishers: Vec<resolve::OpenCopy> = doi
         .map(resolve::publisher_pdfs)
         .unwrap_or_default()
         .into_iter()
-        .map(|u| copy(u, Some(Version::Published)))
+        .map(|u| copy(u, Some(Version::Published), false))
         .collect();
     // OpenAlex, and arXiv, are asked only once the publisher's fail.
     let others = || {
@@ -465,11 +469,11 @@ pub fn open_copy(
             copies.extend(
                 resolve::openalex_pdfs(net, d)
                     .into_iter()
-                    .map(|c| copy(c.url, c.version)),
+                    .map(|c| copy(c.url, c.version, c.landing)),
             );
         }
         if let Some(id) = arxiv {
-            copies.push(copy(resolve::arxiv_pdf(id), Some(Version::Preprint)));
+            copies.push(copy(resolve::arxiv_pdf(id), Some(Version::Preprint), false));
         }
         // A version not said is between the accepted and the preprint.
         copies.sort_by_key(|c| match c.version {
@@ -482,23 +486,45 @@ pub fn open_copy(
     };
     let mut seen = std::collections::HashSet::new();
     let mut tried = Vec::new();
-    let wanted = publishers
+    let mut copies = publishers
         .into_iter()
-        .chain(std::iter::once_with(others).flatten())
-        .filter(|c| !(published && c.version == Some(Version::Preprint)))
-        .filter(|c| seen.insert(c.url.clone()))
-        .take(OPEN_TRIES);
-    for c in wanted {
+        .chain(std::iter::once_with(others).flatten());
+    let mut downloads = 0;
+    // The cap is minded before the next is had: OpenAlex is asked only for one.
+    while downloads < OPEN_TRIES {
+        let Some(c) = copies.next() else { break };
+        if !seen.insert(c.url.clone()) {
+            continue;
+        }
+        // A preprint, where the published version is asked for, is passed
+        // over, and said to be.
+        if published && c.version == Some(Version::Preprint) {
+            tried.push(Tried {
+                why: format!("{} is a preprint", c.url),
+                url: c.url,
+                reason: "preprint".to_string(),
+            });
+            continue;
+        }
+        downloads += 1;
         if !say(&format!("downloading {}", c.url)) {
             bail!("stopped");
         }
-        let done = net.pdf(&c.url).and_then(|bytes| {
+        // A page followed to its PDF: that PDF is told by its own address,
+        // and is not had again.
+        let got = if c.landing {
+            net.pdf_via_page(&c.url, &|named| !seen.contains(named))
+        } else {
+            net.pdf(&c.url).map(|bytes| (bytes, c.url.clone()))
+        };
+        let done = got.and_then(|(bytes, at)| {
+            seen.insert(at.clone());
             let take = Take {
                 version: c.version,
                 published,
                 ..Take::default()
             };
-            attach_as(lib, index, key, &bytes, &c.url, take)
+            attach_as(lib, index, key, &bytes, &at, take)
         });
         match done {
             Ok(added) => return Ok(added),

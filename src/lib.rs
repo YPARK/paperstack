@@ -596,7 +596,7 @@ pub fn main() -> anyhow::Result<()> {
             // A key and a PDF's path or address: that PDF, for that paper.
             if let Some((key, given)) = pdf_given(&what).filter(|_| query.is_none()) {
                 let bytes = if given.starts_with("http://") || given.starts_with("https://") {
-                    net().pdf(given)?
+                    net().pdf_via_page(given, &|_| true)?.0
                 } else {
                     std::fs::read(given)?
                 };
