@@ -1035,7 +1035,7 @@ mod tests {
         // Built on a thread of its own, the popup saying how it goes.
         assert!(matches!(app.popup, Popup::Busy(_)));
         app.wait_for_map();
-        assert_eq!(app.view, View::Map);
+        assert_eq!(app.view, crate::app::View::Map);
         // Kept beside the index, not in the user's cache.
         assert!(dir.path().join("map.json").is_file());
         let m = app.map.as_ref().unwrap();
@@ -1062,13 +1062,13 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         assert_eq!(app.view, View::List);
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SUPER));
-        assert_eq!(app.view, View::Map);
+        assert_eq!(app.view, crate::app::View::Map);
         app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
         assert_eq!(app.view, View::List);
         // The button top left, clicked, does too: ◆ Map, then ▤ List, after
         // the ▤ of paperstack's name.
         click(&mut app, "◆", 0, true);
-        assert_eq!(app.view, View::Map);
+        assert_eq!(app.view, crate::app::View::Map);
         click(&mut app, "▤", 1, true);
         assert_eq!(app.view, View::List);
     }
@@ -1152,12 +1152,12 @@ mod tests {
                 |(s, n)| matches!(s, Shelf::Label(l) if l == "theme-perturbation") && *n == size
             )
         );
-        // a adds a paper, as in the list; / searches, in the list.
+        // a adds a paper, as in the list; / searches, on the map.
         press(&mut app, KeyCode::Char('a'));
         assert!(matches!(app.popup, Popup::Add(_)));
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char('/'));
-        assert_eq!(app.view, View::List);
+        assert_eq!(app.view, View::Map);
         assert!(app.searching);
     }
 
@@ -1219,13 +1219,17 @@ mod tests {
         // With no room beside the map, said above it.
         let s = screen(&mut app, 110, 40);
         assert!(
-            s.contains("found for") && s.contains("esc in the list clears it"),
+            s.contains("found for") && s.contains("/ then esc clears it"),
             "{s}"
         );
-        // Cleared in the list, nothing is shown on the map.
-        press(&mut app, 'm');
+        // Searched on the map, it stays, what is found lit as it is typed;
+        // cleared there, nothing is.
+        press(&mut app, '/');
+        assert_eq!(app.view, crate::app::View::Map);
+        app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(app.found.is_some(), "lit as it is typed");
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        press(&mut app, 'm');
+        assert_eq!(app.view, crate::app::View::Map);
         assert!(app.found.is_none());
         // A theme's name, clicked, picks it; twice, its card.
         let click_on = |app: &mut App, what: &dyn Fn(&Target) -> bool| {
