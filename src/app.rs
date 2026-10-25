@@ -15,6 +15,22 @@ use crate::query::Query;
 use crate::source::Source;
 use crate::theme::{self, Theme};
 use crate::ui;
+
+mod themes;
+pub use themes::{Card, Inside, MapView, Mapped};
+
+/// What a click lands on, as a double click is known by.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Clicked {
+    /// A paper in the list, by its row.
+    Paper(usize),
+    /// A paper on a card, by its row.
+    Card(usize),
+    /// A paper on the map shown, by its place.
+    Dot(usize),
+    /// A theme's name on the map shown.
+    Name(usize),
+}
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -25,21 +41,13 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Modifier;
 use ratatui::widgets::ListState;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
-
-/// How much finer each `+` gathers the themes, and how many steps each
-/// way from 1 it goes.
-const STEP: f64 = 1.5;
-const STEPS: i32 = 5;
-
-/// How many of a theme's newest papers the map shows beside it.
-const NEWEST: usize = 8;
 
 /// Papers so many that a label for them all is typed out, not offered.
 pub const MANY_LABELLED: usize = 200;
@@ -137,8 +145,10 @@ pub enum Target {
     Key(KeyEvent),
     /// A button top left: as if its key were pressed where one is.
     Button(KeyEvent),
-    /// One of the newest papers of the theme picked on the map, to open.
-    Newest(usize),
+    /// A theme's name on the map.
+    Label(usize),
+    /// A paper on a theme's card, by its place there.
+    CardPaper(usize),
 }
 
 /// What the page shows: the papers, or the map of their themes.
@@ -146,52 +156,6 @@ pub enum Target {
 pub enum View {
     List,
     Map,
-}
-
-/// The map of themes, as kept on this machine, and what is picked on it.
-pub struct MapView {
-    pub kept: map::Kept,
-    /// The theme picked, by its place in the map's themes.
-    pub picked: usize,
-    /// Every theme in its colour, rather than the picked one alone.
-    pub colours: bool,
-    /// Where the map was last drawn.
-    pub canvas: Rect,
-    /// The papers the map was last brought up to, placed or not.
-    seen: HashSet<String>,
-}
-
-impl MapView {
-    pub fn map(&self) -> &map::Map {
-        &self.kept.current
-    }
-
-    /// The part of the plane shown, `[x0, x1, y0, y1]`: the papers', and a
-    /// little more.
-    pub fn bounds(&self) -> [f64; 4] {
-        let [x0, x1, y0, y1] = self.map().bounds();
-        let (px, py) = ((x1 - x0) * 0.04, (y1 - y0) * 0.04);
-        [x0 - px, x1 + px, y0 - py, y1 + py]
-    }
-
-    /// A theme picked that the map names.
-    fn settle(&mut self) {
-        if self.picked >= self.map().named() {
-            self.picked = 0;
-        }
-    }
-
-    /// Whether the papers are those the map was last brought up to.
-    fn has(&self, keys: impl Iterator<Item = impl AsRef<str>>) -> bool {
-        let mut n = 0;
-        for k in keys {
-            if !self.seen.contains(k.as_ref()) {
-                return false;
-            }
-            n += 1;
-        }
-        n == self.seen.len()
-    }
 }
 
 /// A PDF awaited from the browser, for the paper `key`.
@@ -225,6 +189,8 @@ pub enum Popup {
     Busy(Box<Busy>),
     /// A name typed: a theme's, or a label for papers.
     Ask(Box<Ask>),
+    /// A theme of the map: its words, its authors, its papers to open.
+    Card(Box<Card>),
 }
 
 /// A name being typed, and what it is for.
@@ -267,13 +233,8 @@ pub enum Report {
 pub enum Done {
     Added(Added),
     Mapped(Box<Mapped>),
-}
-
-/// What the map's work gave: the maps, a theme to pick, what to say.
-pub struct Mapped {
-    pub kept: map::Kept,
-    pub picked: Option<usize>,
-    pub status: String,
+    /// A theme from within: its own map, and the links it shows.
+    Within(usize, Box<Inside>),
 }
 
 /// What is done with what the work gave.
@@ -284,6 +245,8 @@ pub enum Then {
     Add,
     /// The map built, or its themes gathered again: shown.
     Map,
+    /// A theme from within, made: gone into. Nothing is written.
+    Within,
 }
 
 /// A PDF that holds more than one paper, as a page of letters, and the
@@ -335,8 +298,8 @@ pub struct App {
     pub status: String,
     /// Where each thing clicked on was drawn; the last drawn over the rest.
     pub targets: Vec<(Rect, Target)>,
-    /// The paper last clicked, and when, to know a double click.
-    clicked: Option<(Instant, usize)>,
+    /// What was last clicked, and when, to know a double click.
+    clicked: Option<(Instant, Clicked)>,
     quit: bool,
 }
 
@@ -389,7 +352,7 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
         }
         Ok(())
     })();
-    app.wait_for_map();
+    app.wait_for_writes();
     give_back();
     result
 }
@@ -534,43 +497,6 @@ impl App {
             .and(Query::parse(&self.query))
     }
 
-    /// What the query finds in the whole library, for the map: found again
-    /// only where the query, or the papers, changed since.
-    fn find(&mut self) {
-        let query = self.query.trim().to_string();
-        if self.found_for.as_ref() == Some(&query) {
-            return;
-        }
-        self.found = (!query.is_empty()).then(|| {
-            match self
-                .index
-                .search(&Query::parse(&query), Sort::Relevance, false, None)
-            {
-                Ok(hits) => hits.into_iter().map(|h| h.record.key.clone()).collect(),
-                Err(e) => {
-                    self.status = one_line(&e);
-                    HashSet::new()
-                }
-            }
-        });
-        self.found_for = Some(query);
-    }
-
-    /// The newest papers of the theme picked on the map, newest first.
-    pub fn newest(&self) -> Vec<Hit> {
-        let Some(m) = &self.map else {
-            return Vec::new();
-        };
-        let mut papers: Vec<Hit> = m
-            .map()
-            .members(m.picked)
-            .filter_map(|(_, k)| self.index.get(k).ok().flatten())
-            .collect();
-        papers.sort_by_key(|h| std::cmp::Reverse(h.record.year()));
-        papers.truncate(NEWEST);
-        papers
-    }
-
     /// Show the papers on the shelf that the query finds.
     pub fn narrow(&mut self) {
         let query = self.wanted();
@@ -582,6 +508,10 @@ impl App {
         if let (Shelf::Theme(t, _), Some(m)) = (&self.shelves[self.shelf].0, &mut self.map) {
             let of: HashSet<&str> = m.map().members(*t).map(|(_, k)| k).collect();
             self.shown.retain(|h| of.contains(h.record.key.as_str()));
+        }
+        // Its shelf picked, the theme is picked on the map too.
+        if let Shelf::Theme(t, _) = self.shelves[self.shelf].0 {
+            self.pick_theme(t);
         }
         if self.view == View::Map {
             self.find();
@@ -649,6 +579,29 @@ impl App {
                         }
                     }
                     _ => edit_line(&mut ask.line, key),
+                }
+                return None;
+            }
+            Popup::Card(card) => {
+                let last = card.papers.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => card.at = (card.at + 1).min(last),
+                    KeyCode::Char('k') | KeyCode::Up => card.at = card.at.saturating_sub(1),
+                    KeyCode::PageDown => card.at = (card.at + 10).min(last),
+                    KeyCode::PageUp => card.at = card.at.saturating_sub(10),
+                    KeyCode::Char('g') | KeyCode::Home => card.at = 0,
+                    KeyCode::Char('G') | KeyCode::End => card.at = last,
+                    KeyCode::Enter | KeyCode::Char('o') => return self.open_card(),
+                    // The next theme's card, or the one before.
+                    KeyCode::Right => self.next_card(1),
+                    KeyCode::Left | KeyCode::Char('h') => self.next_card(-1),
+                    // The theme's papers in the list; a finer theme's are here.
+                    KeyCode::Char('l') if !card.finer => {
+                        self.popup = Popup::None;
+                        self.show_theme();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => self.popup = Popup::None,
+                    _ => {}
                 }
                 return None;
             }
@@ -911,8 +864,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if at == Some(Target::Map) && matches!(self.popup, Popup::None) =>
             {
-                self.map_click(m.column, m.row);
-                return None;
+                return self.map_click(m.column, m.row);
             }
             MouseEventKind::Down(MouseButton::Left) => return self.click(at),
             MouseEventKind::ScrollDown => 1,
@@ -921,7 +873,11 @@ impl App {
         };
         match (&mut self.popup, at) {
             (Popup::Cite(_, scroll), _) => *scroll = scroll.saturating_add_signed(by as i16),
-            (Popup::None, Some(Target::Map)) => self.next_theme(by),
+            (Popup::None, Some(Target::Map | Target::Label(_))) => self.wheel_theme(by),
+            (Popup::Card(card), _) => {
+                let last = card.papers.len().saturating_sub(1) as isize;
+                card.at = (card.at as isize + by).clamp(0, last.max(0)) as usize;
+            }
             (Popup::None, Some(Target::Side | Target::Shelf(_))) => {
                 self.focus = Focus::Side;
                 self.step(by);
@@ -944,7 +900,26 @@ impl App {
         None
     }
 
+    /// Whether `what` was clicked just before, a double click; if not, it
+    /// is the one clicked last.
+    fn twice(&mut self, what: Clicked) -> bool {
+        let again = self
+            .clicked
+            .is_some_and(|(when, was)| was == what && when.elapsed() < DOUBLE_CLICK);
+        self.clicked = (!again).then(|| (Instant::now(), what));
+        again
+    }
+
     fn click(&mut self, at: Option<Target>) -> Option<Action> {
+        if let (Some(Target::CardPaper(i)), Popup::Card(card)) = (at, &mut self.popup) {
+            // Once picks it; twice opens it.
+            card.at = i.min(card.papers.len().saturating_sub(1));
+            return if self.twice(Clicked::Card(i)) {
+                self.open_card()
+            } else {
+                None
+            };
+        }
         if !matches!(self.popup, Popup::None) {
             if at != Some(Target::Popup) && !matches!(self.popup, Popup::Busy(_)) {
                 self.popup = Popup::None;
@@ -962,10 +937,8 @@ impl App {
                 self.focus = Focus::List;
                 return self.key(key);
             }
-            Target::Newest(i) => {
-                let h = self.newest().into_iter().nth(i)?;
-                return Some(Action::Open(Some(Box::new(h))));
-            }
+            Target::Label(t) => self.pick_name(t, true),
+            Target::CardPaper(_) => {}
             // A button, pressed where it is.
             Target::Button(key) => return self.key(key),
             Target::Sort => self.resort(),
@@ -982,11 +955,7 @@ impl App {
             Target::Paper(i) => {
                 self.focus = Focus::List;
                 self.list.select(Some(i));
-                let again = self
-                    .clicked
-                    .is_some_and(|(when, j)| j == i && when.elapsed() < DOUBLE_CLICK);
-                self.clicked = (!again).then(|| (Instant::now(), i));
-                if again {
+                if self.twice(Clicked::Paper(i)) {
                     return Some(Action::Open(None));
                 }
             }
@@ -1020,367 +989,18 @@ impl App {
         None
     }
 
-    /// The map, if shown, else the papers; the map read, or built, when
-    /// first shown, and the papers new since placed, to be asked of.
-    fn toggle_view(&mut self) {
-        if self.view == View::Map {
-            self.view = View::List;
-            return;
-        }
-        // The theme whose papers are listed, picked.
-        let listed = match &self.shelves[self.shelf].0 {
-            Shelf::Theme(t, _) => Some(*t),
-            _ => None,
-        };
-        match &mut self.map {
-            Some(m) if m.has(self.index.keys()) => {
-                if let Some(t) = listed {
-                    m.picked = t;
-                }
-                self.view = View::Map;
-                let new = m.kept.placed.len();
-                if new > 0 {
-                    self.status = new_since(new);
-                }
-                self.find();
-            }
-            Some(_) => self.bring_up_map(listed),
-            None => {
-                let path = map::default_path(self.index.path());
-                let docs = self.index.docs();
-                self.map_work("the library's themes", move |say| {
-                    let kept = map::Kept::open(&path, &docs, say)?;
-                    let status = new_since(kept.placed.len());
-                    Ok(Mapped {
-                        kept,
-                        picked: None,
-                        status,
-                    })
-                });
-            }
-        }
-    }
-
-    /// The map's `job` done on a thread of its own, what it does said as it
-    /// goes; the map shown with what it gave once done.
-    fn map_work(
-        &mut self,
-        what: &str,
-        job: impl FnOnce(map::Say) -> anyhow::Result<Mapped> + Send + 'static,
-    ) {
-        self.spawn("Map", what.to_string(), Then::Map, move |say| {
-            let mapped = job(&|s: &str| {
-                say(&format!("{s}…"));
-            })?;
-            Ok(Done::Mapped(Box::new(mapped)))
-        });
-    }
-
-    /// The maps kept, changed by `job` on a thread of its own, from the
-    /// papers as they are; it gives a theme to pick, and what to say.
-    fn redo_map(
-        &mut self,
-        what: &str,
-        job: impl FnOnce(
-            &mut map::Kept,
-            &[map::Doc],
-            map::Say,
-        ) -> anyhow::Result<(Option<usize>, String)>
-        + Send
-        + 'static,
-    ) {
-        let Some(m) = &self.map else { return };
-        let mut kept = m.kept.clone();
-        let docs = self.index.docs();
-        self.map_work(what, move |say| {
-            // Done but not kept, as where it cannot be written, it is shown
-            // all the same, with why.
-            let (picked, status) =
-                job(&mut kept, &docs, say).unwrap_or_else(|e| (None, one_line(&e)));
-            Ok(Mapped {
-                kept,
-                picked,
-                status,
-            })
-        });
-    }
-
-    /// The map's work on its own thread, if any, waited for and its map
-    /// shown: as `paperstack screen` drives the keys, and before quitting,
-    /// so a map being written is not cut off.
-    pub fn wait_for_map(&mut self) {
-        while let Popup::Busy(busy) = &self.popup
-            && matches!(busy.then, Then::Map)
-        {
-            std::thread::sleep(SPIN / 10);
-            self.tick();
-        }
-    }
-
-    /// The map the work gave, shown, and what it said.
-    fn mapped(&mut self, mapped: Mapped) {
-        let Mapped {
-            kept,
-            picked,
-            status,
-        } = mapped;
-        match &mut self.map {
-            Some(m) => m.kept = kept,
-            None => {
-                self.map = Some(MapView {
-                    kept,
-                    picked: 0,
-                    colours: false,
-                    canvas: Rect::default(),
-                    seen: HashSet::new(),
-                })
-            }
-        }
-        if let (Some(m), Some(p)) = (&mut self.map, picked) {
-            m.picked = p;
-        }
-        self.view = View::Map;
-        self.status = status;
-        self.map_settled();
-    }
-
-    /// The map brought up to the papers: those gone taken off it, those
-    /// new placed, to be asked of; `picked`, if any, picked.
-    fn bring_up_map(&mut self, picked: Option<usize>) {
-        self.redo_map(
-            "the map, brought up to the papers",
-            move |kept, docs, say| {
-                say("placing the papers new since the map");
-                kept.refresh(docs);
-                Ok((picked, new_since(kept.placed.len())))
-            },
-        );
-    }
-
-    /// The map as brought up to the papers as they are now, a theme it
-    /// names picked, and the shelves again.
-    fn map_settled(&mut self) {
-        let Some(m) = &mut self.map else { return };
-        m.seen = self.index.keys().map(str::to_string).collect();
-        m.settle();
-        self.reshelve();
-    }
-
     /// The shelves again, the map's themes among them, keeping to the one
     /// picked; on a theme's, the theme picked on the map.
     fn reshelve(&mut self) {
         if let (Some(m), Some((Shelf::Theme(t, _), _))) =
             (&self.map, self.shelves.get_mut(self.shelf))
         {
-            *t = m.picked;
+            *t = m.lens.picked;
         }
         if let Err(e) = self.restock() {
             self.status = one_line(&e);
         }
         self.narrow();
-    }
-
-    /// Take `key` on the map; whether it was the map's.
-    fn map_key(&mut self, key: KeyEvent) -> bool {
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return false;
-        }
-        match key.code {
-            KeyCode::Right | KeyCode::Char('l' | 'j') | KeyCode::Down | KeyCode::Tab => {
-                self.next_theme(1)
-            }
-            KeyCode::Left | KeyCode::Char('h' | 'k') | KeyCode::Up | KeyCode::BackTab => {
-                self.next_theme(-1)
-            }
-            KeyCode::Enter => self.show_theme(),
-            KeyCode::Esc | KeyCode::Char('m') => self.view = View::List,
-            KeyCode::Char('A') => self.assign(),
-            // Theme 1 to 9, as numbered on the map and by `paperstack themes`.
-            KeyCode::Char(c @ '1'..='9') => {
-                if let Some(m) = &mut self.map {
-                    let t = c as usize - '1' as usize;
-                    if t < m.map().named() {
-                        m.picked = t;
-                    }
-                }
-            }
-            KeyCode::Char('n') => {
-                if let Some(m) = &self.map {
-                    self.ask_name(m.picked);
-                }
-            }
-            KeyCode::Char('L') => {
-                if let Some(m) = &self.map {
-                    let keys = m.map().member_keys(m.picked);
-                    let name = m.map().themes.get(m.picked).map(map::Theme::name);
-                    self.ask_label(keys, name.unwrap_or_default());
-                }
-            }
-            KeyCode::Char('R') => self.rebuild(false),
-            KeyCode::Char('F') => self.rebuild(true),
-            KeyCode::Char('s') => self.split_theme(),
-            KeyCode::Char('+' | '=') => self.regroup(1),
-            KeyCode::Char('-') => self.regroup(-1),
-            KeyCode::Char('u') => self.undo_map(),
-            KeyCode::Char('c') => {
-                if let Some(m) = &mut self.map {
-                    m.colours = !m.colours;
-                }
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Pick the theme `by` on from the one picked, of those named.
-    fn next_theme(&mut self, by: isize) {
-        let Some(m) = &mut self.map else { return };
-        let named = m.map().named().max(1);
-        m.picked = (m.picked as isize + by).rem_euclid(named as isize) as usize;
-    }
-
-    /// The papers of the theme picked, on its shelf.
-    fn show_theme(&mut self) {
-        let Some(m) = &self.map else { return };
-        let picked = m.picked;
-        if let Some(i) = self
-            .shelves
-            .iter()
-            .position(|(s, _)| matches!(s, Shelf::Theme(t, _) if *t == picked))
-        {
-            self.shelf = i;
-            self.list.select(Some(0));
-        }
-        self.view = View::List;
-        self.focus = Focus::List;
-        self.narrow();
-    }
-
-    /// Pick the theme of the paper nearest a click on the map; again, show
-    /// its papers.
-    fn map_click(&mut self, column: u16, row: u16) {
-        self.searching = false;
-        let Some(m) = &mut self.map else { return };
-        let (r, [x0, x1, y0, y1]) = (m.canvas, m.bounds());
-        if r.width == 0 || r.height == 0 {
-            return;
-        }
-        let x = x0 + (f64::from(column - r.x) + 0.5) / f64::from(r.width) * (x1 - x0);
-        let y = y1 - (f64::from(row - r.y) + 0.5) / f64::from(r.height) * (y1 - y0);
-        let Some(i) = m.map().nearest([x as f32, y as f32]) else {
-            return;
-        };
-        let Some(t) = m.map().theme[i] else { return };
-        let again = m.picked == t
-            && self
-                .clicked
-                .is_some_and(|(when, _)| when.elapsed() < DOUBLE_CLICK);
-        m.picked = t;
-        self.clicked = (!again).then(|| (Instant::now(), usize::MAX));
-        if again {
-            self.show_theme();
-        }
-    }
-
-    /// Put the papers new since the map in the themes said, and keep it.
-    fn assign(&mut self) {
-        let Some(m) = &mut self.map else { return };
-        if m.kept.placed.is_empty() {
-            self.status = "no papers new since the map".to_string();
-            return;
-        }
-        self.status = match m.kept.assign() {
-            Ok(n) => format!("{n} papers put in their themes"),
-            Err(e) => one_line(&e),
-        };
-        self.reshelve();
-    }
-
-    /// Gather the themes again from all papers, at the map's resolution,
-    /// the map till now kept as the previous: laid out from where the
-    /// papers are, so the map keeps its shape, or, `fresh`, anew.
-    fn rebuild(&mut self, fresh: bool) {
-        let what = if fresh {
-            "all papers' themes, gathered and laid out anew"
-        } else {
-            "all papers' themes, gathered again"
-        };
-        self.redo_map(what, move |kept, docs, say| {
-            let started = Instant::now();
-            kept.rebuild(docs, None, fresh, say)?;
-            let status = format!(
-                "{} themes gathered at resolution {:.2} in {:.1}s; u shows the previous again",
-                kept.current.named(),
-                kept.current.resolution,
-                started.elapsed().as_secs_f32()
-            );
-            Ok((None, status))
-        });
-    }
-
-    /// Gather the themes again a step finer, `by` 1, or coarser, -1, in
-    /// steps of half again, the papers where they are.
-    fn regroup(&mut self, by: i32) {
-        let Some(m) = &self.map else { return };
-        let now = m.map().resolution;
-        // The next step on, from a resolution on one or between two.
-        let at = now.ln() / STEP.ln();
-        let step = if by > 0 {
-            (at + 1e-6).floor() as i32 + 1
-        } else {
-            (at - 1e-6).ceil() as i32 - 1
-        };
-        let r = STEP.powi(step.clamp(-STEPS, STEPS));
-        if (r - now) * f64::from(by) <= 1e-9 {
-            let most = if by > 0 { "finest" } else { "coarsest" };
-            self.status = format!("the themes are at their {most}, resolution {now:.2}");
-            return;
-        }
-        self.redo_map("the themes, gathered again", move |kept, docs, say| {
-            kept.regroup(docs, r, say)?;
-            let status = format!(
-                "{} themes at resolution {r:.2}; u shows the previous again",
-                kept.current.named()
-            );
-            Ok((None, status))
-        });
-    }
-
-    /// The theme picked split in finer themes of its own; the largest of
-    /// them picked.
-    fn split_theme(&mut self) {
-        let Some(m) = &self.map else { return };
-        let t = m.picked;
-        let Some(name) = m.map().themes.get(t).map(map::Theme::name) else {
-            return;
-        };
-        self.redo_map(&format!("{name}, split"), move |kept, docs, say| {
-            let picked = kept.split(docs, t, map::RESOLUTION, say)?;
-            let status = match picked {
-                Some(_) => format!("{name} split in finer themes; u shows it whole again"),
-                None => format!("{name} does not split further"),
-            };
-            Ok((picked, status))
-        });
-    }
-
-    /// Ask for theme `t`'s name, its own or its words to start from.
-    fn ask_name(&mut self, t: usize) {
-        let Some(name) = self
-            .map
-            .as_ref()
-            .and_then(|m| m.map().themes.get(t))
-            .map(map::Theme::name)
-        else {
-            return;
-        };
-        self.popup = Popup::Ask(Box::new(Ask {
-            what: Asked::Name(t),
-            line: name,
-        }));
     }
 
     /// Ask for a label to put on the papers of `keys`, `name` to start from.
@@ -1422,22 +1042,6 @@ impl App {
             }
         }
         self.reshelve();
-    }
-
-    /// The previous map shown again, the one till now kept as its previous.
-    fn undo_map(&mut self) {
-        self.redo_map("the map before", |kept, docs, say| {
-            say("placing the papers new since the map");
-            let status = if kept.undo(docs)? {
-                format!(
-                    "the map of {} shown again; u for the other",
-                    kept.current.built
-                )
-            } else {
-                "no previous map kept".to_string()
-            };
-            Ok((None, status))
-        });
     }
 
     /// Sort by the next of [`Sort::ALL`] that orders the papers otherwise,
@@ -1653,7 +1257,7 @@ impl App {
             return;
         };
         // What the work wrote, read into this index; the map's writes none.
-        if !matches!(busy.then, Then::Map) {
+        if !matches!(busy.then, Then::Map | Then::Within) {
             if let Err(e) = self.index.refresh(&self.lib) {
                 self.status = one_line(&e);
             }
@@ -1661,7 +1265,13 @@ impl App {
         }
         match (busy.then, done) {
             (Then::Map, Ok(Done::Mapped(mapped))) => self.mapped(*mapped),
-            (Then::Map, Err(e)) => self.status = one_line(&e),
+            (Then::Within, Ok(Done::Within(t, inside))) => {
+                if let Some(m) = &mut self.map {
+                    m.within.insert(t, *inside);
+                }
+                self.go_in(t);
+            }
+            (Then::Map | Then::Within, Err(e)) => self.status = one_line(&e),
             (Then::Fetch(_), Ok(Done::Added(added))) => self.attached(&added),
             (Then::Add, Ok(Done::Added(added))) => self.added(Ok(added)),
             // Work gives what it was started for.
@@ -2183,16 +1793,6 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
         .collect()
 }
 
-/// What to say of `n` papers new since the map; nothing of none.
-fn new_since(n: usize) -> String {
-    if n == 0 {
-        return String::new();
-    }
-    format!(
-        "{n} papers new since the map: A puts them in the themes said, R gathers the themes again"
-    )
-}
-
 /// `key` as the handlers read it, from a terminal that says keys with
 /// all their modifiers: a small letter shifted as its capital; ctrl-m,
 /// ctrl-[ and ctrl-i as Enter, Esc and Tab, as other terminals send them;
@@ -2203,6 +1803,7 @@ fn plain(mut key: KeyEvent) -> Option<KeyEvent> {
         return None;
     }
     if let KeyCode::Char(c) = key.code {
+        // A letter only: a symbol's shifted one is the keyboard's own.
         if key.modifiers == KeyModifiers::SHIFT && c.is_ascii_lowercase() {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }

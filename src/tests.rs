@@ -8,7 +8,7 @@ use crate::{bibtex, demo, layout};
 use std::path::PathBuf;
 
 /// The demo library in a folder of its own, and its index beside it.
-fn library() -> (tempfile::TempDir, Library, Index) {
+pub(crate) fn library() -> (tempfile::TempDir, Library, Index) {
     let dir = tempfile::tempdir().unwrap();
     let lib = Library::init(&dir.path().join("lib")).unwrap();
     for r in demo::records() {
@@ -29,7 +29,7 @@ fn keys(index: &Index, q: &str, sort: Sort) -> Vec<String> {
         .collect()
 }
 
-fn screen(app: &mut App, width: u16, height: u16) -> String {
+pub(crate) fn screen(app: &mut App, width: u16, height: u16) -> String {
     crate::app::screen(app, width, height)
 }
 
@@ -485,7 +485,12 @@ fn draws_the_library() {
 
 /// A left click where any of `what` is drawn the `nth` time, on the
 /// sidebar or right of it.
-fn click(app: &mut App, what: &str, nth: usize, side: bool) -> Option<crate::app::Action> {
+pub(crate) fn click(
+    app: &mut App,
+    what: &str,
+    nth: usize,
+    side: bool,
+) -> Option<crate::app::Action> {
     use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     let s = screen(app, 160, 44);
     let (row, column) = s
@@ -1789,144 +1794,11 @@ fn tells_why_a_pdf_is_not_an_unresolved_papers() {
 }
 
 #[test]
-fn toggles_the_map_and_shows_a_themes_papers() {
-    use crate::app::View;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (dir, lib, index) = library();
-    let mut app = App::new(lib, index).unwrap();
-    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-    // Built on a thread of its own, the popup saying how it goes.
-    assert!(matches!(app.popup, Popup::Busy(_)));
-    app.wait_for_map();
-    assert_eq!(app.view, View::Map);
-    // Kept beside the index, not in the user's cache.
-    assert!(dir.path().join("map.json").is_file());
-    let m = app.map.as_ref().unwrap();
-    let picked = m.picked;
-    let size = m.map().themes[picked].size;
-    let text = screen(&mut app, 160, 44);
-    assert!(text.contains("THEMES"), "{text}");
-    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.view, View::List);
-    assert_eq!(app.shown.len(), size);
-    let map = app.map.as_ref().unwrap().map();
-    let of: Vec<&str> = map.members(picked).map(|(_, k)| k).collect();
-    assert!(
-        app.shown
-            .iter()
-            .all(|h| of.contains(&h.record.key.as_str()))
-    );
-    // Typed into the search, ⌘G, or super+g, still toggles; ctrl-g, which
-    // a terminal may take for itself, no longer does.
-    app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-    assert_eq!(app.view, View::List);
-    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SUPER));
-    assert_eq!(app.view, View::Map);
-    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-    assert_eq!(app.view, View::List);
-    // The button top left, clicked, does too: ◆ Map, then ▤ List, after
-    // the ▤ of paperstack's name.
-    click(&mut app, "◆", 0, true);
-    assert_eq!(app.view, View::Map);
-    click(&mut app, "▤", 1, true);
-    assert_eq!(app.view, View::List);
-}
-
-#[test]
 fn fits_a_long_name_to_the_sidebar() {
     use crate::ui::fit;
     assert_eq!(fit("cancer · tumor", 20), "cancer · tumor");
     assert_eq!(fit("genome wide · wide association", 20), "genome wide");
     assert_eq!(fit("a very long collection name", 10), "a very lo…");
-}
-
-#[test]
-fn gathers_the_themes_finer_and_back() {
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (_dir, lib, index) = library();
-    let mut app = App::new(lib, index).unwrap();
-    let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-    app.wait_for_map();
-    let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
-    assert_eq!(resolution(&app), 1.0);
-    app.key(key('+'));
-    app.wait_for_map();
-    assert_eq!(resolution(&app), 1.5);
-    // Not starred, as `s` would a paper in the list: the theme is split,
-    // and its largest part picked, or it is said that it does not split.
-    let themes = |app: &App| app.map.as_ref().unwrap().map().themes.len();
-    let before = themes(&app);
-    app.key(key('s'));
-    app.wait_for_map();
-    let m = app.map.as_ref().unwrap();
-    if app.status.contains("does not split") {
-        assert_eq!(themes(&app), before);
-    } else {
-        assert!(themes(&app) > before, "{}", app.status);
-        assert!(m.picked < m.map().named());
-    }
-    assert_eq!(resolution(&app), 1.5);
-    app.key(key('-'));
-    app.wait_for_map();
-    assert_eq!(resolution(&app), 1.0);
-}
-
-#[test]
-fn names_a_theme_and_labels_its_papers() {
-    use crate::app::{Popup, Shelf, View};
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (_dir, lib, index) = library();
-    let mut app = App::new(lib, index).unwrap();
-    let press = |app: &mut App, code| {
-        app.key(KeyEvent::new(code, KeyModifiers::NONE));
-    };
-    let typed = |app: &mut App, s: &str| {
-        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        for c in s.chars() {
-            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-        }
-    };
-    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-    app.wait_for_map();
-    let picked = app.map.as_ref().unwrap().picked;
-    // n names the picked theme; its shelf says so.
-    press(&mut app, KeyCode::Char('n'));
-    assert!(matches!(app.popup, Popup::Ask(_)));
-    typed(&mut app, "perturbation");
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(
-        app.map.as_ref().unwrap().map().themes[picked].name(),
-        "perturbation"
-    );
-    assert!(
-        app.shelves
-            .iter()
-            .any(|(s, _)| matches!(s, Shelf::Theme(t, n) if *t == picked && n == "perturbation"))
-    );
-    // L labels its papers, in their records.
-    let size = app.map.as_ref().unwrap().map().themes[picked].size;
-    press(&mut app, KeyCode::Char('L'));
-    typed(&mut app, "theme-perturbation");
-    press(&mut app, KeyCode::Enter);
-    assert!(
-        app.status.starts_with(&format!("{size} papers labelled")),
-        "{}",
-        app.status
-    );
-    assert!(
-        app.shelves
-            .iter()
-            .any(|(s, n)| matches!(s, Shelf::Label(l) if l == "theme-perturbation") && *n == size)
-    );
-    // a adds a paper, as in the list; / searches, in the list.
-    press(&mut app, KeyCode::Char('a'));
-    assert!(matches!(app.popup, Popup::Add(_)));
-    press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Char('/'));
-    assert_eq!(app.view, View::List);
-    assert!(app.searching);
 }
 
 #[test]
@@ -1970,104 +1842,4 @@ fn takes_keys_as_terminals_say_them_with_all_their_modifiers() {
     assert!(matches!(app.popup, Popup::Help(1)));
     app.key(key(KeyCode::Char('x'), KeyModifiers::NONE));
     assert!(matches!(app.popup, Popup::None));
-}
-
-#[test]
-fn picks_a_theme_by_its_number_and_asks_a_label_for_many_typed_out() {
-    use crate::app::{Ask, Asked, Popup};
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (_dir, lib, index) = library();
-    let mut app = App::new(lib, index).unwrap();
-    app.key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
-    app.wait_for_map();
-    app.key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
-    assert_eq!(app.map.as_ref().unwrap().picked, 1);
-    app.key(KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE));
-    let m = app.map.as_ref().unwrap();
-    assert!(m.picked < m.map().named(), "no theme 9: picked as it was");
-    app.popup = Popup::Ask(Box::new(Ask {
-        what: Asked::Label(vec!["x".to_string(); crate::app::MANY_LABELLED]),
-        line: String::new(),
-    }));
-    let s = screen(&mut app, 160, 44);
-    assert!(s.contains("so many papers"), "{s}");
-}
-
-#[test]
-fn shows_what_a_search_finds_on_the_map_and_takes_clicks_on_its_keys() {
-    use crate::app::Target;
-    use ratatui::crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    };
-    let (_dir, lib, index) = library();
-    let mut app = App::new(lib, index).unwrap();
-    let press = |app: &mut App, c| {
-        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-    };
-    // Searched in the list, then shown on the map, and said beside it.
-    press(&mut app, '/');
-    for c in "perturbation".chars() {
-        press(&mut app, c);
-    }
-    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    // Found for the map only once it is shown, not as the search is typed.
-    assert!(app.found.is_none());
-    press(&mut app, 'm');
-    app.wait_for_map();
-    let found = app.found.clone().expect("what the search finds");
-    assert!(!found.is_empty());
-    let s = screen(&mut app, 160, 44);
-    assert!(
-        s.contains(&format!("“perturbation” · {} in the library", found.len())),
-        "{s}"
-    );
-    // With no room beside the map, said above it.
-    let s = screen(&mut app, 110, 40);
-    assert!(
-        s.contains("in the library · esc in the list clears it"),
-        "{s}"
-    );
-    // Cleared in the list, nothing is shown on the map.
-    press(&mut app, 'm');
-    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    press(&mut app, 'm');
-    assert!(app.found.is_none());
-    // A newest paper of the theme picked, clicked, is to be opened.
-    screen(&mut app, 160, 44);
-    let (at, _) = *app
-        .targets
-        .iter()
-        .find(|(_, t)| matches!(t, Target::Newest(0)))
-        .expect("the newest paper beside the map");
-    let opened = app.mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: at.x + 1,
-        row: at.y,
-        modifiers: KeyModifiers::NONE,
-    });
-    let Some(crate::app::Action::Open(Some(h))) = opened else {
-        panic!("a paper to open");
-    };
-    assert_eq!(h.record.key, app.newest()[0].record.key);
-    // A key in the footer, clicked, as if pressed: + finer, - coarser.
-    let click = |app: &mut App, c| {
-        screen(app, 160, 44);
-        let (at, _) = *app
-            .targets
-            .iter()
-            .find(|(_, t)| matches!(t, Target::Key(k) if k.code == KeyCode::Char(c)))
-            .expect("the key in the footer");
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: at.x + 1,
-            row: at.y,
-            modifiers: KeyModifiers::NONE,
-        });
-        app.wait_for_map();
-    };
-    let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
-    click(&mut app, '+');
-    assert_eq!(resolution(&app), 1.5);
-    click(&mut app, '-');
-    assert_eq!(resolution(&app), 1.0);
 }
