@@ -98,13 +98,17 @@ impl Theme {
 }
 
 /// Neighbours each paper is linked to by its words.
-const KNN: usize = 15;
+const KNN: usize = 8;
+/// Neighbours a paper new since the map is placed by, each a vote: by
+/// its words, and by shared authors.
+const PLACED_BY: usize = 15;
+const PLACED_BY_COAUTHORS: usize = 10;
 /// A paper's words, by weight, its neighbours are looked for by.
 const QUERY_TERMS: usize = 40;
 /// Papers of more authors than this are not linked by them.
 const MAX_AUTHORS: usize = 50;
 /// Papers each is linked to by shared authors, at most.
-const COAUTHOR_KNN: usize = 10;
+const COAUTHOR_KNN: usize = 3;
 /// How much a shared author counts beside alike words.
 const COAUTHOR_WEIGHT: f32 = 0.5;
 /// Themes of fewer papers are left unnamed on the map.
@@ -153,10 +157,13 @@ impl Graph {
             "finding each of {} papers' {KNN} nearest by their words",
             members.len()
         ));
-        let near = knn(&vectors, vocab.len(), members, &|k| local[k].is_some());
+        let near = knn(&vectors, vocab.len(), members, &|k| local[k].is_some(), KNN);
         let mut edges = fuzzy(members, &near);
         say("linking the papers that share authors");
-        blend(&mut edges, &coauthors(docs, &|d| local[d].is_some()));
+        blend(
+            &mut edges,
+            &coauthors(docs, &|d| local[d].is_some(), COAUTHOR_KNN),
+        );
         let mut edges: Vec<(usize, usize, f32)> = edges
             .into_iter()
             .filter_map(|((i, j), w)| Some((local[i]?, local[j]?, w)))
@@ -533,10 +540,16 @@ impl Map {
             return Vec::new();
         }
         let (vocab, vectors, _, _) = tfidf(docs);
-        let near = knn(&vectors, vocab.len(), &new, &|k| on_map[k].is_some());
+        let near = knn(
+            &vectors,
+            vocab.len(),
+            &new,
+            &|k| on_map[k].is_some(),
+            PLACED_BY,
+        );
         // Each new paper's co-authors on the map.
         let mut shared: HashMap<usize, Vec<(usize, f32)>> = HashMap::new();
-        for ((a, b), x) in coauthors(docs, &|_| true) {
+        for ((a, b), x) in coauthors(docs, &|_| true, PLACED_BY_COAUTHORS) {
             for (i, j) in [(a, b), (b, a)] {
                 if on_map[i].is_none() && on_map[j].is_some() {
                     shared.entry(i).or_default().push((j, x * COAUTHOR_WEIGHT));
@@ -867,10 +880,11 @@ fn tfidf(
                     Some((j, (1.0 + c.ln()) * idf))
                 })
                 .collect();
+            // In one order before summed, the same length each run.
+            v.sort_unstable_by_key(|&(j, _)| j);
             let norm = v.iter().map(|(_, x)| x * x).sum::<f32>().sqrt();
             v.iter_mut()
                 .for_each(|(_, x)| *x /= norm.max(f32::MIN_POSITIVE));
-            v.sort_unstable_by_key(|&(j, _)| j);
             v
         })
         .collect();
@@ -890,7 +904,7 @@ fn tfidf(
     )
 }
 
-/// The nearest to each paper of `queries`, of those `allowed`, by cosine
+/// The `nearest` to each paper of `queries`, of those `allowed`, by cosine
 /// distance, nearest first, by its words of most weight; papers of no words
 /// have none.
 fn knn(
@@ -898,6 +912,7 @@ fn knn(
     terms: usize,
     queries: &[usize],
     allowed: &(dyn Fn(usize) -> bool + Sync),
+    nearest: usize,
 ) -> Vec<Vec<(usize, f32)>> {
     let mut postings: Vec<Vec<(u32, f32)>> = vec![Vec::new(); terms];
     for (i, v) in vectors.iter().enumerate().filter(|&(i, _)| allowed(i)) {
@@ -928,11 +943,14 @@ fn knn(
                     .map(|k| (k, 1.0 - std::mem::take(&mut score[k])))
                     .filter(|&(k, _)| k != i && allowed(k))
                     .collect();
-                if near.len() > KNN {
-                    near.select_nth_unstable_by(KNN, |a, b| a.1.total_cmp(&b.1));
-                    near.truncate(KNN);
+                if near.len() > nearest {
+                    // Of distances alike, the paper first: the same each run.
+                    near.select_nth_unstable_by(nearest, |a, b| {
+                        a.1.total_cmp(&b.1).then(a.0.cmp(&b.0))
+                    });
+                    near.truncate(nearest);
                 }
-                near.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                near.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
                 near
             },
         )
@@ -1001,7 +1019,11 @@ fn smooth_knn_sigma(dists: &[f32], rho: f32, target: f32) -> f32 {
 /// Pairs of papers sharing authors, weighed by how many they share against
 /// the fewer authors of the two, each paper keeping its strongest few; not
 /// through papers of more than `MAX_AUTHORS`.
-fn coauthors(docs: &[Doc], among: &dyn Fn(usize) -> bool) -> HashMap<(usize, usize), f32> {
+fn coauthors(
+    docs: &[Doc],
+    among: &dyn Fn(usize) -> bool,
+    keep: usize,
+) -> HashMap<(usize, usize), f32> {
     let mut by_author: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, d) in docs.iter().enumerate() {
         if d.authors.len() > MAX_AUTHORS || !among(i) {
@@ -1022,17 +1044,19 @@ fn coauthors(docs: &[Doc], among: &dyn Fn(usize) -> bool) -> HashMap<(usize, usi
             }
         }
     }
-    let mut strongest: Vec<Vec<(usize, f32)>> = vec![Vec::new(); docs.len()];
+    let mut strongest: Vec<Vec<(usize, f32, u32)>> = vec![Vec::new(); docs.len()];
     for (&(i, j), &s) in &shared {
         let fewer = docs[i].authors.len().min(docs[j].authors.len()).max(1) as f32;
         let w = (s as f32 / fewer.sqrt()).min(1.0);
-        strongest[i].push((j, w));
-        strongest[j].push((i, w));
+        strongest[i].push((j, w, s));
+        strongest[j].push((i, w, s));
     }
+    // A paper's strongest `keep`: of weights alike, as many are, those of
+    // the more authors shared.
     let mut edges = HashMap::new();
     for (i, mut s) in strongest.into_iter().enumerate() {
-        s.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        for (j, w) in s.into_iter().take(COAUTHOR_KNN) {
+        s.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+        for (j, w, _) in s.into_iter().take(keep) {
             edges.insert((i.min(j), i.max(j)), w);
         }
     }
@@ -1768,15 +1792,20 @@ mod tests {
         ));
         let placed = map.place(&docs);
         assert_eq!(placed.len(), 1);
-        // Its theme, as the map numbers them now: largest first.
-        let cell0 = |map: &Map| map.theme[map.keys.iter().position(|k| k == "cell0").unwrap()];
-        let size = |map: &Map| map.themes[cell0(map).unwrap()].size;
-        assert_eq!(Some(placed[0].theme), cell0(&map));
+        // Into a theme of the single-cell papers, not of the GWAS ones.
+        let of = |map: &Map, key: &str| map.theme[map.keys.iter().position(|k| k == key).unwrap()];
+        let cells: HashSet<_> = (0..20).map(|i| of(&map, &format!("cell{i}"))).collect();
+        assert!(cells.contains(&Some(placed[0].theme)), "{cells:?}");
         assert!(placed[0].share > 0.5);
+        let key = (0..20)
+            .map(|i| format!("cell{i}"))
+            .find(|k| of(&map, k) == Some(placed[0].theme))
+            .unwrap();
+        let size = |map: &Map| map.themes[of(map, &key).unwrap()].size;
         let was = size(&map);
         map.accept(&placed);
         assert_eq!(size(&map), was + 1);
-        assert_eq!(map.theme.last().copied().flatten(), cell0(&map));
+        assert_eq!(map.theme.last().copied().flatten(), of(&map, &key));
         assert!(map.themes.windows(2).all(|w| w[0].size >= w[1].size));
         assert!(map.place(&docs).is_empty());
         // A paper gone is taken off.
