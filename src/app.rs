@@ -18,7 +18,8 @@ use crate::ui;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
@@ -36,6 +37,9 @@ use std::time::{Duration, Instant};
 /// way from 1 it goes.
 const STEP: f64 = 1.5;
 const STEPS: i32 = 5;
+
+/// Papers so many that a label for them all is typed out, not offered.
+pub const MANY_LABELLED: usize = 200;
 
 /// Two clicks on a paper within this open it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -126,6 +130,8 @@ pub enum Target {
     Popup,
     /// The map of themes.
     Map,
+    /// The button to the map, or back to the list.
+    View,
 }
 
 /// What the page shows: the papers, or the map of their themes.
@@ -200,7 +206,8 @@ pub enum Popup {
     Add(String),
     /// BibTeX shown, and how far it is scrolled.
     Cite(String, u16),
-    Help,
+    /// The keys, and how far they are scrolled.
+    Help(u16),
     /// A PDF awaited from the browser.
     Fetch(Box<Fetch>),
     /// What `y` deletes, asked first.
@@ -380,18 +387,35 @@ fn take() -> DefaultTerminal {
     let terminal = ratatui::init();
     // Work on a thread of its own that panics is said to have stopped; the
     // terminal stays the TUI's, which goes on.
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().name() == Some("main") {
-            hook(info);
-        }
-    }));
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some("main") {
+                give_back_keys();
+                hook(info);
+            }
+        }));
+    });
+    // Keys said with their modifiers, ⌘ or the Windows key among them, by
+    // terminals that can, as kitty: ⌘G, or super+g, for the map. Those
+    // that cannot pass the asking by.
+    let _ = execute!(
+        std::io::stdout(),
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     terminal
 }
 
-fn give_back() {
+/// The mouse, and keys as terminals say them by default, given back.
+fn give_back_keys() {
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+}
+
+fn give_back() {
+    give_back_keys();
     ratatui::restore();
 }
 
@@ -539,6 +563,7 @@ impl App {
     /// Take `key`; what it asks of the terminal, as opening a PDF in ohp,
     /// is left to the caller.
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
+        let key = plain(key)?;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
@@ -584,8 +609,14 @@ impl App {
                 }
                 return None;
             }
-            Popup::Help => {
-                self.popup = Popup::None;
+            Popup::Help(scroll) => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
+                    KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::PageDown | KeyCode::Char(' ') => *scroll = scroll.saturating_add(10),
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    _ => self.popup = Popup::None,
+                }
                 return None;
             }
             Popup::Fetch(fetch) => {
@@ -658,7 +689,9 @@ impl App {
             }
             Popup::None => {}
         }
-        if ctrl && key.code == KeyCode::Char('g') {
+        // ⌘G, or super+g, where the terminal says so: the map, and back,
+        // while searching too.
+        if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('g') {
             self.searching = false;
             self.toggle_view();
             return None;
@@ -691,9 +724,13 @@ impl App {
             self.narrow();
             return None;
         }
+        // A ctrl-letter not bound above is nothing, not its letter.
+        if ctrl && matches!(key.code, KeyCode::Char(_)) {
+            return None;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('?') => self.popup = Popup::Help,
+            KeyCode::Char('?') => self.popup = Popup::Help(0),
             KeyCode::Char('/') => {
                 // From the map too: what is found is in the list.
                 self.view = View::List;
@@ -864,6 +901,7 @@ impl App {
                 self.focus = Focus::List;
             }
             Target::Add => return self.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Target::View => self.toggle_view(),
             Target::Sort => self.resort(),
             Target::Side => self.focus = Focus::Side,
             Target::Shelf(i) => {
@@ -1093,6 +1131,15 @@ impl App {
             KeyCode::Enter => self.show_theme(),
             KeyCode::Esc | KeyCode::Char('m') => self.view = View::List,
             KeyCode::Char('A') => self.assign(),
+            // Theme 1 to 9, as numbered on the map and by `paperstack themes`.
+            KeyCode::Char(c @ '1'..='9') => {
+                if let Some(m) = &mut self.map {
+                    let t = c as usize - '1' as usize;
+                    if t < m.map().named() {
+                        m.picked = t;
+                    }
+                }
+            }
             KeyCode::Char('n') => {
                 if let Some(m) = &self.map {
                     self.ask_name(m.picked);
@@ -1275,9 +1322,15 @@ impl App {
             self.status = "no papers to label".to_string();
             return;
         }
+        // So many are labelled only by a name typed out, not one offered.
+        let line = if keys.len() < MANY_LABELLED {
+            name
+        } else {
+            String::new()
+        };
         self.popup = Popup::Ask(Box::new(Ask {
             what: Asked::Label(keys),
-            line: name,
+            line,
         }));
     }
 
@@ -2049,6 +2102,12 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
     if let Some(&[c]) = ctrl.as_deref() {
         return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)];
     }
+    // ⌘, or super, as vim writes it.
+    if let Some(c) = spec.strip_prefix("<d-").and_then(|s| s.strip_suffix('>'))
+        && let [c] = c.chars().collect::<Vec<_>>()[..]
+    {
+        return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::SUPER)];
+    }
     spec.chars()
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
         .collect()
@@ -2062,6 +2121,34 @@ fn new_since(n: usize) -> String {
     format!(
         "{n} papers new since the map: A puts them in the themes said, R gathers the themes again"
     )
+}
+
+/// `key` as the handlers read it, from a terminal that says keys with
+/// all their modifiers: a small letter shifted as its capital; ctrl-m,
+/// ctrl-[ and ctrl-i as Enter, Esc and Tab, as other terminals send them;
+/// and ⌘, or super, with any key but G, which is the map's, as nothing,
+/// those being the system's.
+fn plain(mut key: KeyEvent) -> Option<KeyEvent> {
+    if key.modifiers.contains(KeyModifiers::SUPER) && key.code != KeyCode::Char('g') {
+        return None;
+    }
+    if let KeyCode::Char(c) = key.code {
+        if key.modifiers == KeyModifiers::SHIFT && c.is_ascii_lowercase() {
+            key.code = KeyCode::Char(c.to_ascii_uppercase());
+        }
+        if key.modifiers == KeyModifiers::CONTROL {
+            let alias = match c {
+                'm' => Some(KeyCode::Enter),
+                '[' => Some(KeyCode::Esc),
+                'i' => Some(KeyCode::Tab),
+                _ => None,
+            };
+            if let Some(code) = alias {
+                key = KeyEvent::new(code, KeyModifiers::NONE);
+            }
+        }
+    }
+    Some(key)
 }
 
 /// `key` typed into `line`: a character, backspace, ctrl-u to clear it or
