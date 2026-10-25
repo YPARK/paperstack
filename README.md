@@ -110,25 +110,27 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 
 | Key | |
 |---|---|
-| `j` / `k`, arrows | move; on the left, change shelf |
+| `j` / `k`, `↑` / `↓` | move; on the left, change shelf |
 | `g` / `G`, `home` / `end`, `ctrl-↑` / `ctrl-↓` | the first paper, the last |
 | `h` / `l`, `tab` | switch between shelves and papers |
 | `/` | search, as below; `esc` clears |
 | `S` | sort by relevance, date added, year, first author or title, as shown at the top right; click it too |
-| `enter`, `o` | open the PDF in ohp; quit ohp to come back |
+| `⏎`, `o` | open the PDF in ohp; quit ohp to come back |
 | `space` | mark a paper; `*` marks all shown, or unmarks them; `esc` unmarks all |
 | `ctrl-e` | BibTeX of the papers marked, or the one picked |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
-| `d` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
+| `d`, `del` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
 | `p` | get the PDF of a paper without one: an open copy, else in the browser |
-| `f` | locate a PDF on disk for the paper picked, where it has none |
+| `f` | locate a PDF on disk for the paper picked, where it has none; `ctrl-l` in the get-PDF dialog does the same |
 | `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
 | `m`, `⌘G` | the map of themes, and back to the list, as the ◆ Map button top left does; `⌘G` (super+g, the Windows key on Linux) while typing a search too, in a terminal that passes it on, as kitty does |
 | `n` | on a theme's shelf, name the theme |
 | `L` | label the papers marked, else all shown |
+| `esc`, `ctrl-g` | clear the search; `esc` again, unmark all; either closes a dialog, as `ctrl-g` cancels in Emacs |
+| `?`, `F1` | the keys, of the list or of the map; `F1` while typing a search too |
 | `q` | quit |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
@@ -369,14 +371,15 @@ which tells an agent how the library is laid out, is a resource too.
 
 ## Themes
 
-`m`, or the ◆ Map button top left, shows the library as a map: papers
-near one another where their words are alike or their authors shared,
-gathered into themes, each named by the words that set it apart. `←` /
-`→`, a click on a theme's name, or picking its shelf under THEMES, picks
-a theme; its papers are listed on its shelf, where search narrows them
+`m`, `⌘G`, or the ◆ Map button top left, shows the library as a map:
+papers near one another where their words are alike or their authors
+shared, gathered into themes, each named by the words that set it apart;
+`m` or `esc` again shows the list. `←` / `→`, `h` / `l`, a click on a
+theme's name, or picking its shelf under THEMES, picks a theme; its papers are listed on its shelf, where search narrows them
 further. `c` colours every theme, not the picked one alone;
-`1` to `9` pick those themes; `?` on the map lists its keys, scrolling
-where they do not fit.
+`1` to `9` pick those themes; `?` or `F1` on the map lists its keys,
+scrolling where they do not fit. `/` searches and `a` adds a paper, as in
+the list; `q` quits.
 
 `⏎`, or a theme's name clicked twice, goes into it: a map of its papers
 alone, laid out by their links among themselves and gathered in their own
@@ -384,7 +387,7 @@ finer themes, each paper's strongest links drawn beneath. Within, `←` /
 `→` go into the next theme, a click picks a paper and says its title,
 twice opens it in ohp, and `⏎` shows the theme's card: its words, its
 authors and its papers, newest first, `⏎` opening one, `l` listing them.
-`esc` comes out to the whole map. `>` and `<` show the map closer to the
+`esc`, or `ctrl-g`, comes out to the whole map. `>` and `<` show the map closer to the
 theme picked, and further. A theme picked on the left is picked on the
 map too.
 

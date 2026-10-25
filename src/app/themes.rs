@@ -890,10 +890,8 @@ mod tests {
                 .iter()
                 .all(|h| of.contains(&h.record.key.as_str()))
         );
-        // Typed into the search, ⌘G, or super+g, still toggles; ctrl-g, which
-        // a terminal may take for itself, no longer does.
+        // Typed into the search, ⌘G, or super+g, still toggles.
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert_eq!(app.view, View::List);
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::SUPER));
         assert_eq!(app.view, View::Map);
@@ -1044,13 +1042,16 @@ mod tests {
         assert!(!found.is_empty());
         let s = screen(&mut app, 160, 44);
         assert!(
-            s.contains(&format!("“perturbation” · {} in the library", found.len())),
+            s.contains(&format!(
+                "{} found for “perturbation” in the library",
+                found.len()
+            )),
             "{s}"
         );
         // With no room beside the map, said above it.
         let s = screen(&mut app, 110, 40);
         assert!(
-            s.contains("in the library") && s.contains("esc in the list clears it"),
+            s.contains("found for") && s.contains("esc in the list clears it"),
             "{s}"
         );
         // Cleared in the list, nothing is shown on the map.

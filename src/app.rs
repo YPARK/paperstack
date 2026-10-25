@@ -481,6 +481,12 @@ impl App {
             .map_or(0, |(_, n)| *n)
     }
 
+    /// Whether a key asked to quit.
+    #[cfg(test)]
+    pub(crate) fn quitting(&self) -> bool {
+        self.quit
+    }
+
     pub fn current(&self) -> Option<&Hit> {
         self.shown.get(self.list.selected()?)
     }
@@ -550,11 +556,19 @@ impl App {
     /// Take `key`; what it asks of the terminal, as opening a PDF in ohp,
     /// is left to the caller.
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
-        let key = plain(key)?;
+        let mut key = plain(key)?;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
             return None;
+        }
+        // As Emacs cancels: a dialog, a search being typed, the map; not the
+        // list's esc, which would unmark all.
+        if ctrl
+            && key.code == KeyCode::Char('g')
+            && (!matches!(self.popup, Popup::None) || self.searching || self.view == View::Map)
+        {
+            key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         }
         match &mut self.popup {
             Popup::Add(line) => {
@@ -704,6 +718,11 @@ impl App {
         if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('g') {
             self.searching = false;
             self.toggle_view();
+            return None;
+        }
+        // Help, from the map and while typing a search too.
+        if key.code == KeyCode::F(1) {
+            self.popup = Popup::Help(0);
             return None;
         }
         // On the map, the list's keys would act on papers not shown.
@@ -1757,40 +1776,51 @@ pub fn screen_svg(app: &mut App, width: u16, height: u16) -> String {
 }
 
 /// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
-/// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, and
-/// with control, as `<c-u>` or `<c-e>`; anything else, each character typed.
+/// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, `<home>`,
+/// `<end>`, `<pageup>`, `<pagedown>`, `<del>`, `<f1>`; any of those or a
+/// character with control, as `<c-e>` or `<c-up>`, or with ⌘, as `<d-g>`;
+/// anything else, each character typed.
 pub fn keys(spec: &str) -> Vec<KeyEvent> {
-    let named = match spec {
-        "<enter>" => Some(KeyCode::Enter),
-        "<esc>" => Some(KeyCode::Esc),
-        "<tab>" => Some(KeyCode::Tab),
-        "<space>" => Some(KeyCode::Char(' ')),
-        "<up>" => Some(KeyCode::Up),
-        "<down>" => Some(KeyCode::Down),
-        "<left>" => Some(KeyCode::Left),
-        "<right>" => Some(KeyCode::Right),
-        "<backspace>" => Some(KeyCode::Backspace),
-        _ => None,
+    let Some(name) = spec.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
+        return spec
+            .chars()
+            .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+            .collect();
     };
-    if let Some(code) = named {
-        return vec![KeyEvent::new(code, KeyModifiers::NONE)];
-    }
-    let ctrl: Option<Vec<char>> = spec
-        .strip_prefix("<c-")
-        .and_then(|s| s.strip_suffix('>'))
-        .map(|s| s.chars().collect());
-    if let Some(&[c]) = ctrl.as_deref() {
-        return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)];
-    }
-    // ⌘, or super, as vim writes it.
-    if let Some(c) = spec.strip_prefix("<d-").and_then(|s| s.strip_suffix('>'))
-        && let [c] = c.chars().collect::<Vec<_>>()[..]
-    {
-        return vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::SUPER)];
-    }
-    spec.chars()
-        .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
-        .collect()
+    // With control, or ⌘ (super), as vim writes them.
+    let (mods, name) = match name.split_at_checked(2) {
+        Some(("c-", rest)) => (KeyModifiers::CONTROL, rest),
+        Some(("d-", rest)) => (KeyModifiers::SUPER, rest),
+        _ => (KeyModifiers::NONE, name),
+    };
+    let code = match name {
+        "enter" => KeyCode::Enter,
+        "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "space" => KeyCode::Char(' '),
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "backspace" => KeyCode::Backspace,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "del" => KeyCode::Delete,
+        "f1" => KeyCode::F(1),
+        _ => match name.chars().collect::<Vec<_>>()[..] {
+            [c] if mods != KeyModifiers::NONE => KeyCode::Char(c),
+            // Not a key's name: each character typed, as `<` alone is.
+            _ => {
+                return spec
+                    .chars()
+                    .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                    .collect();
+            }
+        },
+    };
+    vec![KeyEvent::new(code, mods)]
 }
 
 /// `key` as the handlers read it, from a terminal that says keys with

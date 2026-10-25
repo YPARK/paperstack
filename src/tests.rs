@@ -1824,11 +1824,23 @@ fn takes_keys_as_terminals_say_them_with_all_their_modifiers() {
     app.key(key(KeyCode::Char('j'), KeyModifiers::NONE));
     let at = app.list.selected();
     let starred = app.current().unwrap().record.paperstack.starred;
-    // ⌘S is the system's, not a star; ctrl-g, the old map key, nothing.
+    // ⌘S is the system's, not a star; ctrl-g in the list, nothing: not to
+    // the first paper, nor unmarking all, as esc would.
     app.key(key(KeyCode::Char('s'), KeyModifiers::SUPER));
     assert_eq!(app.current().unwrap().record.paperstack.starred, starred);
+    app.key(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.key(key(KeyCode::Char('k'), KeyModifiers::NONE));
     app.key(key(KeyCode::Char('g'), KeyModifiers::CONTROL));
     assert_eq!(app.list.selected(), at, "not to the first paper");
+    assert_eq!(app.marked.len(), 1);
+    // In a dialog, or typing a search, it cancels, as esc does.
+    app.key(key(KeyCode::Char('?'), KeyModifiers::NONE));
+    app.key(key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert!(matches!(app.popup, Popup::None));
+    app.key(key(KeyCode::Char('/'), KeyModifiers::NONE));
+    app.key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.key(key(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert!(!app.searching && app.query.is_empty());
     // ctrl-m is Enter, as terminals send it otherwise.
     app.key(key(KeyCode::Char('/'), KeyModifiers::NONE));
     assert!(app.searching);

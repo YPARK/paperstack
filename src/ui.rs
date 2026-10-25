@@ -7,6 +7,7 @@ use crate::app::{
     App, Ask, Asked, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View,
 };
 use crate::browser;
+use crate::keymap;
 use crate::record::Record;
 use crate::source::Source;
 use crate::theme::Theme;
@@ -71,7 +72,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 vec![
                     Span::styled(" ● ", Style::new().fg(t.star).bold()),
                     Span::styled(
-                        format!("“{}” · {} in the library", app.query.trim(), found.len()),
+                        // How many first, so a long query is cut, not the count.
+                        format!(
+                            "{} found for “{}” in the library",
+                            found.len(),
+                            app.query.trim()
+                        ),
                         Style::new().fg(t.star).bold(),
                     ),
                     Span::styled("  · esc in the list clears it", Style::new().fg(t.hint)),
@@ -580,40 +586,8 @@ pub(crate) fn fit(name: &str, room: usize) -> String {
 /// The keys most wanted, each clickable, as if pressed; and what was said.
 fn keys(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme;
-    // Each key as drawn, what it does, and as `paperstack screen` writes it.
-    let map_keys = [
-        ("→", "theme", "<right>"),
-        ("⏎", "into", "<enter>"),
-        ("s", "split", "s"),
-        ("+", "finer", "+"),
-        ("-", "coarser", "-"),
-        (">", "closer", ">"),
-        ("u", "undo", "u"),
-        ("?", "more", "?"),
-        ("m", "list", "m"),
-    ];
-    let list_keys = [
-        ("/", "search", "/"),
-        ("S", "sort", "S"),
-        ("⏎", "open in ohp", "<enter>"),
-        ("p", "get PDF", "p"),
-        ("␣", "mark", "<space>"),
-        ("*", "mark all", "*"),
-        ("^E", "BibTeX", "<c-e>"),
-        ("y", "yank [@key]", "y"),
-        ("s", "star", "s"),
-        ("a", "add", "a"),
-        ("m", "map", "m"),
-        ("?", "help", "?"),
-        ("q", "quit", "q"),
-    ];
-    let shown: &[(&str, &str, &str)] = if app.view == View::Map {
-        &map_keys
-    } else {
-        &list_keys
-    };
     let mut parts = Vec::new();
-    for &(k, what, spec) in shown {
+    for &(k, what, spec) in keymap::of(app.view).flat_map(|k| k.foot) {
         let target = Some(pressed(spec));
         parts.push((
             Span::styled(format!(" {k} "), Style::new().fg(t.title).bold()),
@@ -978,24 +952,19 @@ fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
 
 /// The keys of the view shown, scrolled by `scroll` where they do not fit.
 fn help(f: &mut Frame, t: &Theme, view: View, scroll: u16) -> Rect {
-    let rows = if view == View::Map {
-        MAP_KEYS
-    } else {
-        LIST_KEYS
-    };
-    let area = centered(f.area(), 94, rows.len() as u16 + 2);
-    f.render_widget(Clear, area);
-    let lines: Vec<Line> = rows
-        .iter()
-        .map(|(k, what)| {
+    let lines: Vec<Line> = keymap::of(view)
+        .map(|k| {
             Line::from(vec![
-                Span::styled(format!("{k:<9}"), Style::new().fg(t.title).bold()),
-                Span::raw(*what),
+                Span::styled(format!("{:<11}", k.keys), Style::new().fg(t.title).bold()),
+                Span::raw(k.what),
             ])
         })
         .collect();
+    let rows = lines.len() as u16;
+    let area = centered(f.area(), 96, rows + 2);
+    f.render_widget(Clear, area);
     let shown = area.height.saturating_sub(2);
-    let more = (rows.len() as u16).saturating_sub(shown);
+    let more = rows.saturating_sub(shown);
     let mut block = dialog(t, "Keys");
     if more > 0 {
         block = block.title_bottom(Line::styled(
@@ -1011,128 +980,6 @@ fn help(f: &mut Frame, t: &Theme, view: View, scroll: u16) -> Rect {
     );
     area
 }
-
-const MAP_KEYS: &[(&str, &str)] = &[
-    (
-        "← → h l",
-        "pick a theme; ↑ ↓, tab and the wheel too; or click its name",
-    ),
-    ("1-9", "theme 1 to 9, as `paperstack themes` numbers them"),
-    (
-        "⏎",
-        "into it: its papers alone, and their links; or click its name twice",
-    ),
-    (
-        "",
-        "within, ← → the next theme, a click picks a paper, twice opens it",
-    ),
-    (
-        "",
-        "⏎ its card: its papers, newest first, ⏎ opens one, l lists them",
-    ),
-    ("esc", "out of the theme, to the whole map; again, the list"),
-    ("< >", "further from the theme picked, and closer"),
-    (
-        "n",
-        "name it; blank, its own words again; a name follows its papers",
-    ),
-    (
-        "L",
-        "label its papers, in their records; d on the label takes it off",
-    ),
-    (
-        "s",
-        "split it in finer themes of its own; the rest stay as they are",
-    ),
-    (
-        "+ -",
-        "every theme finer or coarser, the papers where they are",
-    ),
-    (
-        "R",
-        "gather the themes again from all papers, the map keeping its shape",
-    ),
-    ("F", "the same, the map laid out anew"),
-    (
-        "N A",
-        "where each paper new since, a cross, would go; A puts them there",
-    ),
-    (
-        "u",
-        "the map before the last s, + -, R, F or A; again, back",
-    ),
-    ("c", "every theme in its colour, not the picked one alone"),
-    ("/", "search, in the list"),
-    ("a", "add a paper"),
-    ("m esc ⌘G", "the list; or click ▤ List, top left"),
-    ("q", "quit"),
-];
-
-const LIST_KEYS: &[(&str, &str)] = &[
-    ("j k ↑ ↓", "move; on the left, change shelf"),
-    ("h l tab", "switch between shelves and papers"),
-    (
-        "/",
-        "search; esc clears. Words and \"phrases\" in title, abstract, authors",
-    ),
-    (
-        "",
-        "author:  year:2020..2026  folder:\"name\"  label:  has:pdf  is:starred  -...",
-    ),
-    (
-        "S",
-        "sort: relevance, date added, year, first author, title; or click it",
-    ),
-    (
-        "g G",
-        "the first paper, the last; home end, ctrl-↑ ctrl-↓ too",
-    ),
-    ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
-    (
-        "p",
-        "get the PDF: an open copy, else in your browser, signed in, to download",
-    ),
-    (
-        "f",
-        "locate a PDF on disk for the paper picked, where it has none",
-    ),
-    (
-        "ctrl-l",
-        "the same, from the get-PDF dialog, instead of a download",
-    ),
-    (
-        "x",
-        "delete the PDF picked, or those marked, to .trash/; papers stay",
-    ),
-    (
-        "m ⌘G",
-        "the library's themes as a map, and back; or click ◆ Map; ? there for its keys",
-    ),
-    (
-        "space",
-        "mark a paper; * marks all shown, again unmarks; esc unmarks all",
-    ),
-    ("ctrl-e", "BibTeX of the papers marked, or the one picked"),
-    (
-        "click",
-        "pick; on a box, mark; on a star, star; on PDF, get or delete; twice, open",
-    ),
-    ("y", "copy [@key; @key] to the clipboard"),
-    ("n", "on a theme's shelf, name the theme"),
-    ("L", "label the papers marked, or else all shown"),
-    ("s", "star, written to the paper's record"),
-    (
-        "d",
-        "delete the papers marked, or the one picked, to .trash/; asked first",
-    ),
-    ("", "on the left, a collection or label: its papers stay"),
-    ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
-    (
-        "r",
-        "read again what paperstack serve, or another machine, added",
-    ),
-    ("q", "quit"),
-];
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);

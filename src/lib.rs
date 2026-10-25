@@ -12,6 +12,7 @@ mod cli;
 mod daemon;
 mod demo;
 mod index;
+mod keymap;
 mod layout;
 mod library;
 mod map;
