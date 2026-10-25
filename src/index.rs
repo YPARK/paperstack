@@ -414,6 +414,30 @@ impl Index {
         record: Record,
         was: Option<&Path>,
     ) -> anyhow::Result<Vec<String>> {
+        self.put(lib, rel, record, was)?;
+        Ok(self.reckon())
+    }
+
+    /// As `upsert`, for many records just written, each with where it was;
+    /// what is worked out over all papers worked out once, after.
+    pub fn upsert_all(
+        &mut self,
+        lib: &Library,
+        written: Vec<(PathBuf, Record, PathBuf)>,
+    ) -> anyhow::Result<Vec<String>> {
+        for (rel, record, was) in written {
+            self.put(lib, &rel, record, Some(&was))?;
+        }
+        Ok(self.reckon())
+    }
+
+    fn put(
+        &mut self,
+        lib: &Library,
+        rel: &Path,
+        record: Record,
+        was: Option<&Path>,
+    ) -> anyhow::Result<()> {
         let meta = std::fs::metadata(lib.root.join(rel))?;
         let (mtime, size) = library::stamp(&meta);
         let rel_s = rel.to_string_lossy().into_owned();
@@ -428,7 +452,7 @@ impl Index {
             record: Arc::new(record),
         }));
         self.dirty = true;
-        Ok(self.reckon())
+        Ok(())
     }
 
     /// Take out the record that was at `rel`, from the library's root, as

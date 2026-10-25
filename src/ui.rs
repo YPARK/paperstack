@@ -3,7 +3,9 @@
 //! to mark and its star, the paper picked on the right, and the keys at
 //! the foot. Colours are the theme's.
 
-use crate::app::{App, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View};
+use crate::app::{
+    App, Ask, Asked, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View,
+};
 use crate::browser;
 use crate::record::Record;
 use crate::source::Source;
@@ -76,7 +78,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let popup = match &app.popup {
         Popup::Add(line) => Some(add(f, &t, line)),
         Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
-        Popup::Help => Some(help(f, &t)),
+        Popup::Help => Some(help(f, &t, app.view)),
+        Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
         Popup::Fetch(fetch) => Some(fetch_dialog(f, &t, fetch)),
         Popup::Delete(doomed) => Some(delete(f, &t, doomed)),
         Popup::Choose(choose) => Some(chooser(f, &t, choose)),
@@ -732,13 +735,13 @@ fn map_panel(f: &mut Frame, app: &App, area: Rect) {
             ]));
         }
         lines.push(Line::styled(
-            "a assigns them · R gathers again",
+            "A puts them there · R gathers again",
             Style::new().fg(t.hint),
         ));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        format!("built {}", map.built),
+        format!("built {} · resolution {:.2}", map.built, map.resolution),
         Style::new().fg(t.dim),
     ));
     f.render_widget(
@@ -759,15 +762,15 @@ fn keys(f: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
     let mut spans = Vec::new();
     let map_keys = [
-        ("← →", "theme"),
-        ("⏎", "its papers"),
-        ("a", "assign new"),
-        ("c", "colours"),
-        ("R", "rebuild"),
-        ("u", "previous"),
-        ("^G m", "list"),
-        ("?", "help"),
-        ("q", "quit"),
+        ("←→", "theme"),
+        ("⏎", "papers"),
+        ("n", "name"),
+        ("L", "label"),
+        ("s", "split"),
+        ("+-", "finer"),
+        ("u", "undo"),
+        ("?", "more"),
+        ("^G", "list"),
     ];
     let list_keys = [
         ("/", "search"),
@@ -821,6 +824,14 @@ fn dialog<'a>(t: &Theme, title: &'a str) -> Block<'a> {
         .style(Style::new().bg(t.page).fg(t.text))
 }
 
+/// A line being typed, as a field.
+fn field<'a>(t: &Theme, line: &str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
+        Span::styled(format!("{line}▏"), Style::new().fg(t.text).bg(t.field)),
+    ])
+}
+
 fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     let area = centered(f.area(), 86, 16);
     f.render_widget(Clear, area);
@@ -831,10 +842,7 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
             "DOI, arXiv id, PMID, address, a PDF's path, a title, or a library's export",
             hint,
         ),
-        Line::from(vec![
-            Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
-            Span::styled(format!("{line}▏"), Style::new().fg(t.text).bg(t.field)),
-        ]),
+        field(t, line),
         Line::raw(""),
     ];
     if !what.is_empty() {
@@ -851,6 +859,33 @@ fn add(f: &mut Frame, t: &Theme, line: &str) -> Rect {
     }
     let block = dialog(t, "Add paper")
         .title_bottom(Line::styled(" ⏎ add · ctrl-v paste · esc cancel ", hint));
+    f.render_widget(Paragraph::new(lines).block(block), area);
+    area
+}
+
+/// A name typed: a theme's, or a label for papers.
+fn ask_dialog(f: &mut Frame, t: &Theme, ask: &Ask) -> Rect {
+    let area = centered(f.area(), 72, 7);
+    f.render_widget(Clear, area);
+    let hint = Style::new().fg(t.hint);
+    let (title, what, verb) = match &ask.what {
+        Asked::Name(n) => (
+            "Name theme",
+            format!("theme {}; blank, its own words again", n + 1),
+            "name",
+        ),
+        Asked::Label(papers) => (
+            "Label papers",
+            format!(
+                "a label on each of these {} papers, in its record",
+                papers.len()
+            ),
+            "label",
+        ),
+    };
+    let keys = format!(" ⏎ {verb} · ctrl-u clear · esc cancel ");
+    let lines = vec![Line::raw(""), Line::styled(what, hint), field(t, &ask.line)];
+    let block = dialog(t, title).title_bottom(Line::styled(keys, hint));
     f.render_widget(Paragraph::new(lines).block(block), area);
     area
 }
@@ -909,13 +944,7 @@ fn fetch_dialog(f: &mut Frame, t: &Theme, fetch: &Fetch) -> Rect {
             hint,
         ),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled(" › ", Style::new().fg(t.accent).bg(t.field)),
-            Span::styled(
-                format!("{}▏", fetch.line),
-                Style::new().fg(t.text).bg(t.field),
-            ),
-        ]),
+        field(t, &fetch.line),
     ];
     if !fetch.note.is_empty() {
         lines.push(Line::raw(""));
@@ -1077,70 +1106,13 @@ fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
     area
 }
 
-fn help(f: &mut Frame, t: &Theme) -> Rect {
-    let rows = [
-        ("j k ↑ ↓", "move; on the left, change shelf"),
-        ("h l tab", "switch between shelves and papers"),
-        (
-            "/",
-            "search; esc clears. Words and \"phrases\" in title, abstract, authors",
-        ),
-        (
-            "",
-            "author:  year:2020..2026  folder:\"name\"  label:  has:pdf  is:starred  -...",
-        ),
-        (
-            "S",
-            "sort: relevance, date added, year, first author, title; or click it",
-        ),
-        (
-            "g G",
-            "the first paper, the last; home end, ctrl-↑ ctrl-↓ too",
-        ),
-        ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
-        (
-            "p",
-            "get the PDF: an open copy, else in your browser, signed in, to download",
-        ),
-        (
-            "f",
-            "locate a PDF on disk for the paper picked, where it has none",
-        ),
-        (
-            "ctrl-l",
-            "the same, from the get-PDF dialog, instead of a download",
-        ),
-        (
-            "x",
-            "delete the PDF picked, or those marked, to .trash/; papers stay",
-        ),
-        (
-            "^G m",
-            "the map of themes, and back; ← → a theme, ⏎ its papers, a R u",
-        ),
-        (
-            "space",
-            "mark a paper; * marks all shown, again unmarks; esc unmarks all",
-        ),
-        ("ctrl-e", "BibTeX of the papers marked, or the one picked"),
-        (
-            "click",
-            "pick; on a box, mark; on a star, star; on PDF, get or delete; twice, open",
-        ),
-        ("y", "copy [@key; @key] to the clipboard"),
-        ("s", "star, written to the paper's record"),
-        (
-            "d",
-            "delete the papers marked, or the one picked, to .trash/; asked first",
-        ),
-        ("", "on the left, a collection or label: its papers stay"),
-        ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
-        (
-            "r",
-            "read again what paperstack serve, or another machine, added",
-        ),
-        ("q", "quit"),
-    ];
+/// The keys of the view shown.
+fn help(f: &mut Frame, t: &Theme, view: View) -> Rect {
+    let rows = if view == View::Map {
+        MAP_KEYS
+    } else {
+        LIST_KEYS
+    };
     let area = centered(f.area(), 94, rows.len() as u16 + 2);
     f.render_widget(Clear, area);
     let lines: Vec<Line> = rows
@@ -1155,6 +1127,113 @@ fn help(f: &mut Frame, t: &Theme) -> Rect {
     f.render_widget(Paragraph::new(lines).block(dialog(t, "Keys")), area);
     area
 }
+
+const MAP_KEYS: &[(&str, &str)] = &[
+    (
+        "← → h l",
+        "pick a theme; ↑ ↓, tab and the wheel too; or click one",
+    ),
+    (
+        "⏎",
+        "its papers, on its shelf under THEMES; or click it twice",
+    ),
+    (
+        "n",
+        "name it; blank, its own words again; a name follows its papers",
+    ),
+    (
+        "L",
+        "label its papers, in their records; d on the label takes it off",
+    ),
+    (
+        "s",
+        "split it in finer themes of its own; the rest stay as they are",
+    ),
+    (
+        "+ -",
+        "every theme finer or coarser, the papers where they are",
+    ),
+    (
+        "R",
+        "gather the themes again from all papers, laid out anew",
+    ),
+    (
+        "A",
+        "put the papers new since, the crosses, in the themes said",
+    ),
+    ("u", "the map before the last s, + -, R or A; again, back"),
+    ("c", "every theme in its colour, not the picked one alone"),
+    ("/", "search, in the list"),
+    ("a", "add a paper"),
+    ("^G m esc", "the list"),
+    ("q", "quit"),
+];
+
+const LIST_KEYS: &[(&str, &str)] = &[
+    ("j k ↑ ↓", "move; on the left, change shelf"),
+    ("h l tab", "switch between shelves and papers"),
+    (
+        "/",
+        "search; esc clears. Words and \"phrases\" in title, abstract, authors",
+    ),
+    (
+        "",
+        "author:  year:2020..2026  folder:\"name\"  label:  has:pdf  is:starred  -...",
+    ),
+    (
+        "S",
+        "sort: relevance, date added, year, first author, title; or click it",
+    ),
+    (
+        "g G",
+        "the first paper, the last; home end, ctrl-↑ ctrl-↓ too",
+    ),
+    ("⏎ o", "open the PDF in ohp; quit ohp to come back"),
+    (
+        "p",
+        "get the PDF: an open copy, else in your browser, signed in, to download",
+    ),
+    (
+        "f",
+        "locate a PDF on disk for the paper picked, where it has none",
+    ),
+    (
+        "ctrl-l",
+        "the same, from the get-PDF dialog, instead of a download",
+    ),
+    (
+        "x",
+        "delete the PDF picked, or those marked, to .trash/; papers stay",
+    ),
+    (
+        "^G m",
+        "the map of the library's themes, and back; ? there for its keys",
+    ),
+    (
+        "space",
+        "mark a paper; * marks all shown, again unmarks; esc unmarks all",
+    ),
+    ("ctrl-e", "BibTeX of the papers marked, or the one picked"),
+    (
+        "click",
+        "pick; on a box, mark; on a star, star; on PDF, get or delete; twice, open",
+    ),
+    ("y", "copy [@key; @key] to the clipboard"),
+    ("n", "on a theme's shelf, name the theme"),
+    ("L", "label the papers marked, or else all shown"),
+    ("s", "star, written to the paper's record"),
+    (
+        "d",
+        "delete the papers marked, or the one picked, to .trash/; asked first",
+    ),
+    ("", "on the left, a collection or label: its papers stay"),
+    ("a", "add from a DOI, arXiv id, PMID, address, PDF or title"),
+    (
+        "r",
+        "read again what paperstack serve, or another machine, added",
+    ),
+    ("q", "quit"),
+];
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
