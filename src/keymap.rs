@@ -183,6 +183,13 @@ pub const KEYS: &[Key] = &[
     ),
     key(
         List,
+        "< >",
+        "the pane on the right wider, narrower; or drag its edge",
+        &["<", ">"],
+        &[],
+    ),
+    key(
+        List,
         "click",
         "pick; on a box, mark; on a star, star; on PDF, get or delete; twice, open",
         &[],
@@ -191,7 +198,7 @@ pub const KEYS: &[Key] = &[
     key(
         List,
         "esc ctrl-g",
-        "clear the search; esc again, unmark all; either closes a dialog",
+        "clear the search; again, papers from the map among all their shelf's; again, unmark all",
         // ctrl-g only in a dialog or a search, which these tests do not open.
         &["<esc>"],
         &[],
@@ -223,13 +230,13 @@ pub const KEYS: &[Key] = &[
     key(
         Map,
         "⏎",
-        "into it: its papers alone, and their links; or click its name twice",
+        "into it, its papers alone, and their links; fewer than ten, to read in the list",
         &["<enter>"],
         &[("⏎", "into", "<enter>")],
     ),
     more(
         Map,
-        "within, ← → the next theme, a click picks a paper, twice opens it",
+        "within, ← → the next theme, a click picks a paper, twice opens it, or lists a few",
     ),
     more(
         Map,
