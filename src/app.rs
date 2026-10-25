@@ -38,6 +38,9 @@ use std::time::{Duration, Instant};
 const STEP: f64 = 1.5;
 const STEPS: i32 = 5;
 
+/// How many of a theme's newest papers the map shows beside it.
+const NEWEST: usize = 8;
+
 /// Papers so many that a label for them all is typed out, not offered.
 pub const MANY_LABELLED: usize = 200;
 
@@ -97,8 +100,9 @@ impl Shelf {
 
 /// What a key asks of the terminal, beyond the screen.
 pub enum Action {
-    /// Present the paper picked with ohp, which takes the terminal.
-    Open,
+    /// Present a paper with ohp, which takes the terminal: this one, or
+    /// the one picked.
+    Open(Option<Box<Hit>>),
     /// Add what is named, on a thread of its own, its steps shown.
     Add(String),
     /// Ask for a PDF on disk, in the system's file dialog, which takes the
@@ -112,7 +116,6 @@ pub enum Action {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Target {
     Search,
-    Add,
     /// What the papers are sorted by: the next order.
     Sort,
     /// The sidebar, and a shelf on it, by its place in `shelves`.
@@ -130,8 +133,12 @@ pub enum Target {
     Popup,
     /// The map of themes.
     Map,
-    /// The button to the map, or back to the list.
-    View,
+    /// A key in the footer: as if pressed, in the list or on the map.
+    Key(KeyEvent),
+    /// A button top left: as if its key were pressed where one is.
+    Button(KeyEvent),
+    /// One of the newest papers of the theme picked on the map, to open.
+    Newest(usize),
 }
 
 /// What the page shows: the papers, or the map of their themes.
@@ -310,6 +317,11 @@ pub struct App {
     pub shelf: usize,
     pub focus: Focus,
     pub query: String,
+    /// What the query finds in the whole library, for the map to show:
+    /// none without a query; and the query it was found for.
+    pub found: Option<HashSet<String>>,
+    found_for: Option<String>,
+
     pub searching: bool,
     pub sort: Sort,
     pub shown: Vec<Hit>,
@@ -369,7 +381,7 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
             };
             match action {
                 Some(Action::Add(line)) => app.add(&line),
-                Some(Action::Open) => app.open(&mut terminal),
+                Some(Action::Open(h)) => app.open(&mut terminal, h.map(|h| *h)),
                 Some(Action::Locate) => app.locate(&mut terminal),
                 Some(Action::Choose) => app.choose(),
                 None => {}
@@ -430,6 +442,9 @@ impl App {
             shelf: 1,
             focus: Focus::List,
             query: String::new(),
+            found: None,
+            found_for: None,
+
             searching: false,
             sort: Sort::Relevance,
             shown: Vec::new(),
@@ -458,6 +473,8 @@ impl App {
             folders,
             labels,
         } = self.index.shelves()?;
+        // The papers may have changed: what a query finds, found again.
+        self.found_for = None;
         let picked = self.shelves.get(self.shelf).map(|(s, _)| s.clone());
         let mut shelves = vec![
             (Shelf::Heading("MY LIBRARY"), 0),
@@ -517,6 +534,43 @@ impl App {
             .and(Query::parse(&self.query))
     }
 
+    /// What the query finds in the whole library, for the map: found again
+    /// only where the query, or the papers, changed since.
+    fn find(&mut self) {
+        let query = self.query.trim().to_string();
+        if self.found_for.as_ref() == Some(&query) {
+            return;
+        }
+        self.found = (!query.is_empty()).then(|| {
+            match self
+                .index
+                .search(&Query::parse(&query), Sort::Relevance, false, None)
+            {
+                Ok(hits) => hits.into_iter().map(|h| h.record.key.clone()).collect(),
+                Err(e) => {
+                    self.status = one_line(&e);
+                    HashSet::new()
+                }
+            }
+        });
+        self.found_for = Some(query);
+    }
+
+    /// The newest papers of the theme picked on the map, newest first.
+    pub fn newest(&self) -> Vec<Hit> {
+        let Some(m) = &self.map else {
+            return Vec::new();
+        };
+        let mut papers: Vec<Hit> = m
+            .map()
+            .members(m.picked)
+            .filter_map(|(_, k)| self.index.get(k).ok().flatten())
+            .collect();
+        papers.sort_by_key(|h| std::cmp::Reverse(h.record.year()));
+        papers.truncate(NEWEST);
+        papers
+    }
+
     /// Show the papers on the shelf that the query finds.
     pub fn narrow(&mut self) {
         let query = self.wanted();
@@ -528,6 +582,9 @@ impl App {
         if let (Shelf::Theme(t, _), Some(m)) = (&self.shelves[self.shelf].0, &mut self.map) {
             let of: HashSet<&str> = m.map().members(*t).map(|(_, k)| k).collect();
             self.shown.retain(|h| of.contains(h.record.key.as_str()));
+        }
+        if self.view == View::Map {
+            self.find();
         }
         let at = key
             .and_then(|k| self.shown.iter().position(|h| h.record.key == k))
@@ -834,7 +891,7 @@ impl App {
                 }
             }
             KeyCode::Enter | KeyCode::Char('o') if self.focus == Focus::List => {
-                return Some(Action::Open);
+                return Some(Action::Open(None));
             }
             KeyCode::Enter => self.focus = Focus::List,
             _ => {}
@@ -900,8 +957,17 @@ impl App {
                 self.searching = true;
                 self.focus = Focus::List;
             }
-            Target::Add => return self.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
-            Target::View => self.toggle_view(),
+            Target::Key(key) => {
+                // As the list's keys would be pressed in the list.
+                self.focus = Focus::List;
+                return self.key(key);
+            }
+            Target::Newest(i) => {
+                let h = self.newest().into_iter().nth(i)?;
+                return Some(Action::Open(Some(Box::new(h))));
+            }
+            // A button, pressed where it is.
+            Target::Button(key) => return self.key(key),
             Target::Sort => self.resort(),
             Target::Side => self.focus = Focus::Side,
             Target::Shelf(i) => {
@@ -921,7 +987,7 @@ impl App {
                     .is_some_and(|(when, j)| j == i && when.elapsed() < DOUBLE_CLICK);
                 self.clicked = (!again).then(|| (Instant::now(), i));
                 if again {
-                    return Some(Action::Open);
+                    return Some(Action::Open(None));
                 }
             }
             Target::Mark(i) => {
@@ -976,6 +1042,7 @@ impl App {
                 if new > 0 {
                     self.status = new_since(new);
                 }
+                self.find();
             }
             Some(_) => self.bring_up_map(listed),
             None => {
@@ -1586,10 +1653,11 @@ impl App {
             return;
         };
         // What the work wrote, read into this index; the map's writes none.
-        if !matches!(busy.then, Then::Map)
-            && let Err(e) = self.index.refresh(&self.lib)
-        {
-            self.status = one_line(&e);
+        if !matches!(busy.then, Then::Map) {
+            if let Err(e) = self.index.refresh(&self.lib) {
+                self.status = one_line(&e);
+            }
+            self.found_for = None;
         }
         match (busy.then, done) {
             (Then::Map, Ok(Done::Mapped(mapped))) => self.mapped(*mapped),
@@ -1948,8 +2016,10 @@ impl App {
 
     /// Present the paper's PDF with ohp, which takes the terminal until it
     /// quits.
-    fn open(&mut self, terminal: &mut DefaultTerminal) {
-        let Some(h) = self.current() else { return };
+    fn open(&mut self, terminal: &mut DefaultTerminal, paper: Option<Hit>) {
+        let Some(h) = paper.as_ref().or(self.current()) else {
+            return;
+        };
         let path = self.pdf(h);
         if !h.has_pdf || !path.exists() {
             self.status = format!("no PDF: {}", path.display());

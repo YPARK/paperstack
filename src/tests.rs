@@ -1992,3 +1992,82 @@ fn picks_a_theme_by_its_number_and_asks_a_label_for_many_typed_out() {
     let s = screen(&mut app, 160, 44);
     assert!(s.contains("so many papers"), "{s}");
 }
+
+#[test]
+fn shows_what_a_search_finds_on_the_map_and_takes_clicks_on_its_keys() {
+    use crate::app::Target;
+    use ratatui::crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let press = |app: &mut App, c| {
+        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    };
+    // Searched in the list, then shown on the map, and said beside it.
+    press(&mut app, '/');
+    for c in "perturbation".chars() {
+        press(&mut app, c);
+    }
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Found for the map only once it is shown, not as the search is typed.
+    assert!(app.found.is_none());
+    press(&mut app, 'm');
+    app.wait_for_map();
+    let found = app.found.clone().expect("what the search finds");
+    assert!(!found.is_empty());
+    let s = screen(&mut app, 160, 44);
+    assert!(
+        s.contains(&format!("“perturbation” · {} in the library", found.len())),
+        "{s}"
+    );
+    // With no room beside the map, said above it.
+    let s = screen(&mut app, 110, 40);
+    assert!(
+        s.contains("in the library · esc in the list clears it"),
+        "{s}"
+    );
+    // Cleared in the list, nothing is shown on the map.
+    press(&mut app, 'm');
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    press(&mut app, 'm');
+    assert!(app.found.is_none());
+    // A newest paper of the theme picked, clicked, is to be opened.
+    screen(&mut app, 160, 44);
+    let (at, _) = *app
+        .targets
+        .iter()
+        .find(|(_, t)| matches!(t, Target::Newest(0)))
+        .expect("the newest paper beside the map");
+    let opened = app.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: at.x + 1,
+        row: at.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    let Some(crate::app::Action::Open(Some(h))) = opened else {
+        panic!("a paper to open");
+    };
+    assert_eq!(h.record.key, app.newest()[0].record.key);
+    // A key in the footer, clicked, as if pressed: + finer, - coarser.
+    let click = |app: &mut App, c| {
+        screen(app, 160, 44);
+        let (at, _) = *app
+            .targets
+            .iter()
+            .find(|(_, t)| matches!(t, Target::Key(k) if k.code == KeyCode::Char(c)))
+            .expect("the key in the footer");
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: at.x + 1,
+            row: at.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.wait_for_map();
+    };
+    let resolution = |app: &App| app.map.as_ref().unwrap().map().resolution;
+    click(&mut app, '+');
+    assert_eq!(resolution(&app), 1.5);
+    click(&mut app, '-');
+    assert_eq!(resolution(&app), 1.0);
+}
