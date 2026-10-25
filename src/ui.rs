@@ -80,7 +80,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                         ),
                         Style::new().fg(t.star).bold(),
                     ),
-                    Span::styled("  · esc in the list clears it", Style::new().fg(t.hint)),
+                    Span::styled(
+                        if app.searching {
+                            "  · ⏎ done · esc clears it"
+                        } else {
+                            "  · / then esc clears it"
+                        },
+                        Style::new().fg(t.hint),
+                    ),
                 ],
                 t.page,
             );

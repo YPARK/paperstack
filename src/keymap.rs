@@ -320,7 +320,13 @@ pub const KEYS: &[Key] = &[
         &["c"],
         &[],
     ),
-    key(Map, "/", "search, in the list", &["/"], &[]),
+    key(
+        Map,
+        "/",
+        "search, here, what it finds lit as typed; ⏎ done, esc clears it",
+        &["/"],
+        &[],
+    ),
     key(Map, "a", "add a paper", &["a"], &[]),
     key(
         Map,

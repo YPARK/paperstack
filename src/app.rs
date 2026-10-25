@@ -761,8 +761,7 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Popup::Help(0),
             KeyCode::Char('/') => {
-                // From the map too: what is found is in the list.
-                self.view = View::List;
+                // On the map, it stays, what is found lit as it is typed.
                 self.searching = true;
                 self.focus = Focus::List;
             }

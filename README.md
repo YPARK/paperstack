@@ -378,8 +378,8 @@ shared, gathered into themes, each named by the words that set it apart;
 theme's name, or picking its shelf under THEMES, picks a theme; its papers are listed on its shelf, where search narrows them
 further. `c` colours the picked theme alone, or every theme again;
 `1` to `9` pick those themes; `?` or `F1` on the map lists its keys,
-scrolling where they do not fit. `/` searches and `a` adds a paper, as in
-the list; `q` quits.
+scrolling where they do not fit. `/` searches here, what it finds lit on the map as it is typed, and `a`
+adds a paper, as in the list; `q` quits.
 
 `⏎`, or a theme's name clicked twice, goes into it: a map of its papers
 alone, laid out by their links among themselves and gathered in their own
