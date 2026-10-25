@@ -33,6 +33,35 @@ pub struct MapView {
     /// drawn.
     pub mosaic: bool,
     pub(super) tiled: Option<Tiled>,
+    /// Each theme coloured by how many of its papers came lately, rather
+    /// than in its own colour; and how far back, as one of `LATELY`.
+    pub recent: Option<Recent>,
+    pub lately: usize,
+}
+
+/// The papers that came lately, of the library as it held so many.
+pub struct Recent {
+    pub keys: HashSet<String>,
+    of: usize,
+}
+
+/// How far back papers count as recent at first: 6 months.
+pub const LATELY_FIRST: usize = 2;
+
+/// How far back papers count as recent: in days, and as said.
+pub const LATELY: [(i64, &str); 7] = [
+    (30, "month"),
+    (91, "3 months"),
+    (182, "6 months"),
+    (365, "year"),
+    (730, "2 years"),
+    (1095, "3 years"),
+    (1826, "5 years"),
+];
+
+/// The keys of the papers added in the last of `LATELY` at `lately`.
+fn recent(index: &Index, lately: usize) -> HashSet<String> {
+    index.added_since(crate::add::now_secs() - LATELY[lately].0 * 86_400)
 }
 
 /// The map shown closer: the middle of what it is closer to, and how wide
@@ -557,6 +586,8 @@ impl App {
                     seen: HashSet::new(),
                     mosaic: true,
                     tiled: None,
+                    recent: None,
+                    lately: LATELY_FIRST,
                 })
             }
         }
@@ -667,14 +698,71 @@ impl App {
                     .to_string();
                 }
             }
+            // Coloured by recent papers, first back to each theme's own.
             KeyCode::Char('c') => {
-                if let Some(m) = &mut self.map {
+                if let Some(m) = &mut self.map
+                    && m.recent.take().is_none()
+                {
                     m.colours = !m.colours;
                 }
+            }
+            KeyCode::Char('t') => {
+                let was = m.lately;
+                if self.map.as_mut().and_then(|m| m.recent.take()).is_some() {
+                    self.status = "coloured as before".to_string();
+                } else {
+                    self.lately(was);
+                }
+            }
+            // Recent, shorter or longer.
+            KeyCode::Char('[' | ']') => {
+                let by = if matches!(key.code, KeyCode::Char('[')) {
+                    -1
+                } else {
+                    1
+                };
+                // Off, on again as it was.
+                let lately = match m.recent {
+                    Some(_) => m.lately.saturating_add_signed(by).min(LATELY.len() - 1),
+                    None => m.lately,
+                };
+                self.lately(lately);
             }
             _ => return false,
         }
         true
+    }
+
+    /// Each theme coloured by how many of its papers came in the last of
+    /// `LATELY` at `lately`.
+    fn lately(&mut self, lately: usize) {
+        let Some(m) = &mut self.map else { return };
+        m.lately = lately;
+        let keys = recent(&self.index, lately);
+        self.status = format!(
+            "{} papers added in the last {} · [ ] shorter, longer",
+            keys.len(),
+            LATELY[lately].1
+        );
+        let of = self.total();
+        if let Some(m) = &mut self.map {
+            m.recent = Some(Recent { keys, of });
+        }
+    }
+
+    /// The papers that came lately read again, where the library has more
+    /// or fewer since.
+    pub(crate) fn stay_recent(&mut self) {
+        let of = self.total();
+        if let Some(m) = &mut self.map
+            && let Some(r) = &mut m.recent
+            && r.of != of
+        {
+            *r = Recent {
+                keys: recent(&self.index, m.lately),
+                of,
+            };
+        }
     }
 
     /// Pick the theme `by` on from the one picked, of those named; within a
@@ -1599,6 +1687,46 @@ mod tests {
         assert_eq!(app.view, View::List);
         assert!(app.query.is_empty());
         assert_eq!(app.shown.len(), size);
+    }
+
+    #[test]
+    fn colours_the_map_by_papers_added_lately_over_a_range_asked() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (_dir, lib, index) = library();
+        let mut app = App::new(lib, index).unwrap();
+        let press = |app: &mut App, code| {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE));
+            app.wait_for_map();
+        };
+        press(&mut app, KeyCode::Char('m'));
+        let lately = |app: &App| {
+            let m = app.map.as_ref().unwrap();
+            m.recent.is_some().then_some(m.lately)
+        };
+        let before = crate::app::screen_svg(&mut app, 160, 44);
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(lately(&app), Some(super::LATELY_FIRST));
+        assert!(app.status.contains("6 months"), "{}", app.status);
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(lately(&app), Some(3));
+        for _ in 0..9 {
+            press(&mut app, KeyCode::Char(']'));
+        }
+        assert_eq!(lately(&app), Some(super::LATELY.len() - 1));
+        // Off and on again, as far back as it was.
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(lately(&app), Some(super::LATELY.len() - 1));
+        for _ in 0..9 {
+            press(&mut app, KeyCode::Char('['));
+        }
+        assert_eq!(lately(&app), Some(0));
+        assert_ne!(crate::app::screen_svg(&mut app, 160, 44), before);
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(lately(&app), None);
+        // Its colours as before, what was said aside.
+        app.status.clear();
+        assert_eq!(crate::app::screen_svg(&mut app, 160, 44), before);
     }
 
     #[test]

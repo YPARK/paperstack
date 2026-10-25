@@ -1856,3 +1856,17 @@ fn takes_keys_as_terminals_say_them_with_all_their_modifiers() {
     app.key(key(KeyCode::Char('x'), KeyModifiers::NONE));
     assert!(matches!(app.popup, Popup::None));
 }
+
+#[test]
+fn reads_a_time_with_its_offset_taken_off() {
+    use crate::add::{rfc3339, secs_of};
+    let z = secs_of("2026-10-19T16:00:00Z").unwrap();
+    assert_eq!(rfc3339(z), "2026-10-19T16:00:00Z");
+    assert_eq!(secs_of("2026-10-19T09:00:00-07:00"), Some(z));
+    assert_eq!(secs_of("2026-10-19T17:30:00.123+01:30"), Some(z));
+    assert_eq!(
+        secs_of("2000-02-29T00:00:00Z").map(rfc3339).as_deref(),
+        Some("2000-02-29T00:00:00Z")
+    );
+    assert_eq!(secs_of("Mon, 05 Mar 2021 10:00:00"), None);
+}

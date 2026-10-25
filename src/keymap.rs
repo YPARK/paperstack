@@ -323,8 +323,15 @@ pub const KEYS: &[Key] = &[
     key(
         Map,
         "c",
-        "every theme in its colour, or the picked one alone, as shown at first",
+        "every theme in its colour, or the picked one alone, as shown at first; after t, as before",
         &["c"],
+        &[],
+    ),
+    key(
+        Map,
+        "t [ ]",
+        "each theme from grey to orange by its papers added lately; [ ] lately shorter, longer",
+        &["t", "[", "]"],
         &[],
     ),
     key(

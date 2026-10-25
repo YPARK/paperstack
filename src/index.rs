@@ -378,6 +378,16 @@ impl Index {
         self.papers.iter().map(|p| p.record().key.as_str())
     }
 
+    /// The keys of the papers added since `when`, in seconds since 1970.
+    pub fn added_since(&self, when: i64) -> HashSet<String> {
+        self.papers
+            .iter()
+            .map(|p| p.record())
+            .filter(|r| crate::add::secs_of(&r.paperstack.added).is_some_and(|s| s >= when))
+            .map(|r| r.key.clone())
+            .collect()
+    }
+
     /// Every paper as the map reads it.
     pub fn docs(&self) -> Vec<crate::map::Doc> {
         self.papers

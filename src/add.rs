@@ -952,10 +952,43 @@ fn tilde(path: &str) -> PathBuf {
 
 /// Now, in RFC 3339, UTC.
 pub fn now() -> String {
-    let secs = std::time::SystemTime::now()
+    rfc3339(now_secs())
+}
+
+/// Now, in seconds since 1970.
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    rfc3339(secs)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// An RFC 3339 time, in seconds since 1970; its offset, if any, taken
+/// off.
+pub fn secs_of(time: &str) -> Option<i64> {
+    let num = |from: usize, to: usize| time.get(from..to)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // After the seconds, and any fraction of one: Z, or ±hh:mm.
+    let zone = time
+        .get(19..)?
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match zone.as_bytes().first() {
+        None | Some(b'Z' | b'z') => 0,
+        Some(sign @ (b'+' | b'-')) => {
+            let at = time.len() - zone.len();
+            let off = num(at + 1, at + 3)? * 3600 + num(at + 4, at + 6)? * 60;
+            if *sign == b'-' { -off } else { off }
+        }
+        Some(_) => return None,
+    };
+    // A civil date to days, after Howard Hinnant's `days_from_civil`.
+    let y = y - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss - offset)
 }
 
 /// A time, in seconds since 1970, in RFC 3339, UTC.
