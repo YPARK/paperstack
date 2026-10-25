@@ -451,7 +451,7 @@ pub(super) fn card(f: &mut Frame, app: &mut App) {
     let block = dialog(&t, &title)
         .border_style(Style::new().fg(colour_of(card.theme)))
         .title_bottom(Line::styled(
-            " ⏎ or a double click opens in ohp · ← → the next theme · l in the list · esc close ",
+            " ⏎ or twice clicked opens in ohp · p gets its PDF · ← → next theme · l in the list · esc close ",
             hint,
         ));
     f.render_widget(Paragraph::new(lines).block(block), area);

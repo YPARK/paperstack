@@ -240,7 +240,7 @@ pub const KEYS: &[Key] = &[
     ),
     more(
         Map,
-        "⏎ its card: its papers, newest first, ⏎ opens one, l lists them",
+        "⏎ its card: its papers, newest first, ⏎ opens one, p gets its PDF, l lists them",
     ),
     key(
         Map,

@@ -172,6 +172,8 @@ pub struct Fetch {
     pub arrivals: Arrivals,
     /// What came of the last PDF that came, if it was not this paper's.
     pub note: String,
+    /// The card it was asked for from, to show again.
+    pub back: Option<Box<Card>>,
 }
 
 pub enum Popup {
@@ -242,8 +244,9 @@ pub enum Done {
 
 /// What is done with what the work gave.
 pub enum Then {
-    /// An open copy of this paper's PDF: filed; else got in the browser.
-    Fetch(Hit),
+    /// An open copy of this paper's PDF: filed; else got in the browser;
+    /// the card it was asked for from shown again after.
+    Fetch(Hit, Option<Box<Card>>),
     /// A paper added: shown; or, where its PDF holds several, asked which.
     Add,
     /// The map built, or its themes gathered again: shown.
@@ -643,6 +646,7 @@ impl App {
                     KeyCode::Char('g') | KeyCode::Home => card.at = 0,
                     KeyCode::Char('G') | KeyCode::End => card.at = last,
                     KeyCode::Enter | KeyCode::Char('o') => return self.open_card(),
+                    KeyCode::Char('p') => self.card_pdf(),
                     // The next theme's card, or the one before.
                     KeyCode::Right => self.next_card(1),
                     KeyCode::Left | KeyCode::Char('h') => self.next_card(-1),
@@ -688,8 +692,8 @@ impl App {
             Popup::Fetch(fetch) => {
                 match key.code {
                     KeyCode::Esc => {
-                        self.popup = Popup::None;
                         self.status = "no PDF got".to_string();
+                        self.close_popup();
                     }
                     KeyCode::Enter => {
                         let line = fetch.line.trim().to_string();
@@ -708,7 +712,7 @@ impl App {
                 return None;
             }
             Popup::Busy(busy) => {
-                if let Then::Fetch(_) = busy.then {
+                if let Then::Fetch(..) = busy.then {
                     match key.code {
                         KeyCode::Char('b') => {
                             busy.browse = true;
@@ -1034,7 +1038,7 @@ impl App {
         }
         if !matches!(self.popup, Popup::None) {
             if at != Some(Target::Popup) && !matches!(self.popup, Popup::Busy(_)) {
-                self.popup = Popup::None;
+                self.close_popup();
             }
             return None;
         }
@@ -1385,16 +1389,20 @@ impl App {
                 self.go_in(t);
             }
             (Then::Map | Then::Within, Err(e)) => self.status = one_line(&e),
-            (Then::Fetch(_), Ok(Done::Added(added))) => self.attached(&added),
+            (Then::Fetch(_, back), Ok(Done::Added(added))) => {
+                self.attached(&added);
+                self.back_to(back);
+            }
             (Then::Add, Ok(Done::Added(added))) => self.added(Ok(added)),
             // Work gives what it was started for.
             (_, Ok(_)) => {}
-            (Then::Fetch(h), Err(e)) if !busy.stop.load(Ordering::Relaxed) => {
-                self.browse(&h, format!("no open copy: {}", one_line(&e)));
+            (Then::Fetch(h, back), Err(e)) if !busy.stop.load(Ordering::Relaxed) => {
+                self.browse(&h, format!("no open copy: {}", one_line(&e)), back);
             }
-            (Then::Fetch(h), Err(_)) if busy.browse => self.browse(&h, String::new()),
-            (Then::Fetch(h), Err(_)) => {
+            (Then::Fetch(h, back), Err(_)) if busy.browse => self.browse(&h, String::new(), back),
+            (Then::Fetch(h, back), Err(_)) => {
                 self.status = format!("{}: stopped; no PDF got", h.record.key);
+                self.back_to(back);
             }
             (Then::Add, Err(e)) => match e.downcast::<Ambiguous>() {
                 Ok(a) => {
@@ -1581,15 +1589,62 @@ impl App {
     /// thread of its own, its steps shown, if one is to be had; else, or
     /// asked, in the browser.
     pub fn get_pdf(&mut self) {
-        let Some(h) = self.current().cloned() else {
+        if let Some(h) = self.current().cloned() {
+            self.fetch_pdf(h, None);
+        }
+    }
+
+    /// Get the PDF of the paper picked on the card, the card shown again
+    /// after.
+    fn card_pdf(&mut self) {
+        let Popup::Card(card) = std::mem::replace(&mut self.popup, Popup::None) else {
             return;
+        };
+        match card.papers.get(card.at).cloned() {
+            Some(h) => self.fetch_pdf(h, Some(card)),
+            None => self.popup = Popup::Card(card),
+        }
+    }
+
+    /// The card a PDF was asked for from, again, that paper read anew;
+    /// unless what came after opened something else.
+    fn back_to(&mut self, back: Option<Box<Card>>) {
+        let Some(mut card) = back else {
+            return;
+        };
+        if !matches!(self.popup, Popup::None) {
+            return;
+        }
+        if let Some(h) = card.papers.get_mut(card.at)
+            && let Ok(Some(now)) = self.index.get(&h.record.key)
+        {
+            *h = now;
+        }
+        self.popup = Popup::Card(card);
+    }
+
+    /// The popup closed, whichever it is; where it awaited a PDF asked for
+    /// from a card, the card again.
+    fn close_popup(&mut self) {
+        if let Popup::Fetch(fetch) = std::mem::replace(&mut self.popup, Popup::None) {
+            self.back_to(fetch.back);
+        }
+    }
+
+    /// Get `h`'s PDF, `back` shown again after.
+    fn fetch_pdf(&mut self, h: Hit, back: Option<Box<Card>>) {
+        // As it is now: another program may have filed its PDF since.
+        let h = match self.index.get(&h.record.key) {
+            Ok(Some(now)) => now,
+            _ => h,
         };
         if h.has_pdf {
             self.status = format!("{} has its PDF: ⏎ opens it", h.record.key);
+            self.back_to(back);
             return;
         }
         if self.net.is_none() {
-            self.browse(&h, String::new());
+            self.browse(&h, String::new(), back);
             return;
         }
         let what = h.record.title().to_string();
@@ -1597,14 +1652,15 @@ impl App {
         self.work(
             "Looking for an open copy",
             what,
-            Then::Fetch(h),
+            Then::Fetch(h, back),
             move |lib, index, net, say| open_copy(lib, index, net, &hit, say),
         );
     }
 
     /// Get the PDF of `h` in the browser: its page opened there, the PDF
-    /// downloaded there awaited; `note` said in the dialog.
-    fn browse(&mut self, h: &Hit, note: String) {
+    /// downloaded there awaited; `note` said in the dialog; `back` shown
+    /// again after.
+    fn browse(&mut self, h: &Hit, note: String, back: Option<Box<Card>>) {
         let page = browser::page(&h.record);
         let note = match browser::open(&page) {
             Ok(()) => note,
@@ -1617,6 +1673,7 @@ impl App {
             line: String::new(),
             arrivals: Arrivals::new(browser::downloads()),
             note,
+            back,
         }));
     }
 
@@ -1673,12 +1730,16 @@ impl App {
     }
 
     fn attached(&mut self, added: &crate::add::Added) {
-        self.popup = Popup::None;
+        let back = match std::mem::replace(&mut self.popup, Popup::None) {
+            Popup::Fetch(fetch) => fetch.back,
+            _ => None,
+        };
         self.status = format!("{}: {}", added.key, added.summary());
         if let Err(e) = self.restock() {
             self.status = one_line(&e);
         }
         self.narrow();
+        self.back_to(back);
     }
 
     /// The paper to give a PDF from disk: the one whose PDF is awaited, or
