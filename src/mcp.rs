@@ -441,7 +441,10 @@ impl Server {
                 }
                 let mut updated = Vec::new();
                 for Picked { hit, .. } in &papers {
-                    let mut record = crate::library::read(&self.lib.root.join(&hit.path))?;
+                    let Some((_, mut record)) = self.index.fresh(&self.lib, &hit.record.key)?
+                    else {
+                        continue;
+                    };
                     let before = record.clone();
                     crate::add::set_fields(&mut record, &set)?;
                     crate::add::reset_fields(&mut record, &reset);

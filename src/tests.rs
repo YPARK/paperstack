@@ -3114,3 +3114,29 @@ fn tells_a_page_naming_no_pdf_from_one_turned_away() {
     assert!(Why::Page.blocked() && Why::Status(202).blocked() && Why::Status(429).blocked());
     assert!(!Why::Unnamed.blocked() && !Why::Status(404).blocked());
 }
+
+// An unreadable file, as Unix makes one, stands for one kept only online.
+#[cfg(unix)]
+#[test]
+fn labels_without_reading_records_unchanged_since() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, lib, mut index) = library();
+    let all = keys(&index, "", Sort::Added);
+    let (kept, changed) = (&all[0], &all[1]);
+    // One kept only online, as Dropbox keeps them: not to be read.
+    let online = lib.root.join(index.get(kept).unwrap().unwrap().path);
+    std::fs::set_permissions(&online, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // One another program changed since: read again, its change kept.
+    let file = lib.root.join(index.get(changed).unwrap().unwrap().path);
+    let mut r = crate::library::read(&file).unwrap();
+    r.paperstack.labels.push("Elsewhere".to_string());
+    std::fs::write(&file, serde_json::to_vec_pretty(&r).unwrap()).unwrap();
+
+    let n = crate::remove::label(&lib, &mut index, &all, "Later").unwrap();
+    assert_eq!(n, all.len());
+    std::fs::set_permissions(&online, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(keys(&index, "label:Later", Sort::Added).len(), all.len());
+    let was = crate::library::read(&file).unwrap().paperstack.labels;
+    assert!(was.contains(&"Elsewhere".to_string()), "{was:?}");
+    assert!(was.contains(&"Later".to_string()), "{was:?}");
+}

@@ -618,6 +618,25 @@ impl Index {
             .map(|&i| self.papers[i].hit(0.0)))
     }
 
+    /// The paper with the key, as its file holds it now, and where that is:
+    /// the record kept where the file's time and size are as they were,
+    /// else read again. A file kept only online, as Dropbox keeps many, is
+    /// not fetched to be read for nothing.
+    pub fn fresh(&self, lib: &Library, key: &str) -> anyhow::Result<Option<(PathBuf, Record)>> {
+        let Some(&i) = self.by_key.get(&key.to_lowercase()) else {
+            return Ok(None);
+        };
+        let kept = &self.papers[i].kept;
+        let path = lib.root.join(&kept.path);
+        let record = match std::fs::metadata(&path) {
+            Ok(meta) if library::stamp(&meta) == (kept.mtime, kept.size) => {
+                Record::clone(&kept.record)
+            }
+            _ => library::read(&path)?,
+        };
+        Ok(Some((PathBuf::from(&kept.path), record)))
+    }
+
     /// The papers asked for: by `keys`, each once, with the key it was
     /// asked by, as a manuscript cites it; then those `query` finds, but
     /// those named already. And the keys no paper has.
