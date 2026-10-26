@@ -178,6 +178,7 @@ impl Server {
                     let output = std::path::PathBuf::from(path);
                     let asked = match text("format").as_deref() {
                         Some("keys") => bail!("[@a; @b] citations are not written to a file"),
+                        Some("text") => bail!("references in a style are not written to a file"),
                         Some("csl") => Some(crate::kept::Format::Csl),
                         Some(_) => Some(crate::kept::Format::Bibtex),
                         None => None,
@@ -213,6 +214,21 @@ impl Server {
                             .join("; ")
                     ),
                     Some("csl") => crate::kept::render(&papers, crate::kept::Format::Csl)?,
+                    Some("text") => {
+                        // A paper asked for by its key and by one merged
+                        // into it, once.
+                        let mut seen = std::collections::HashSet::new();
+                        let records: Vec<_> = papers
+                            .iter()
+                            .map(|p| p.hit.record.as_ref())
+                            .filter(|r| seen.insert(&r.key))
+                            .collect();
+                        let style = text("style").unwrap_or_else(|| "apa".to_string());
+                        let markup = crate::style::Markup::of(
+                            text("markup").as_deref().unwrap_or("markdown"),
+                        )?;
+                        crate::style::references(&records, &style, markup)?
+                    }
                     _ => crate::kept::render(&papers, crate::kept::Format::Bibtex)?,
                 };
                 Ok(json!({
@@ -682,11 +698,13 @@ fn tools() -> Value {
         {
             "name": "cite",
             "title": "Make a bibliography",
-            "description": "BibTeX, CSL JSON, or [@key; @key] citations, of the papers with the keys given, or those a query finds, or both; or written to a file, output, a .bib (or .json for csl), only when every key given is had; with keep, kept up to date whenever the library changes, never cut short where a key goes missing. A key merged into another paper's is cited under the key given. Keys no paper has are listed as missing, the rest cited. BibTeX titles keep their case through citeproc: capitals the authors gave are braced.",
+            "description": "BibTeX, CSL JSON, [@key; @key] citations, or text, references set out in a citation style (style: apa, the default, chicago-author-date, chicago-notes, mla, ieee, nature, another CSL style by its name, or a .csl file's path; markup: markdown, the default, plain or html), of the papers with the keys given, or those a query finds, or both; or written to a file, output, a .bib (or .json for csl), only when every key given is had; with keep, kept up to date whenever the library changes, never cut short where a key goes missing. A key merged into another paper's is cited under the key given. Keys no paper has are listed as missing, the rest cited. BibTeX titles keep their case through citeproc: capitals the authors gave are braced.",
             "inputSchema": { "type": "object", "properties": {
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },
-                "format": { "type": "string", "enum": ["bibtex", "csl", "keys"], "default": "bibtex" },
+                "format": { "type": "string", "enum": ["bibtex", "csl", "keys", "text"], "default": "bibtex" },
+                "style": { "type": "string", "default": "apa", "description": "with format text: the citation style" },
+                "markup": { "type": "string", "enum": ["markdown", "plain", "html"], "default": "markdown", "description": "with format text" },
                 "output": { "type": "string", "description": "a .bib or .json file to write, replaced whole" },
                 "keep": { "type": "boolean", "default": false, "description": "with output: keep the file up to date as the library changes, from this machine's paperstack" }
             } },

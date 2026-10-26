@@ -26,6 +26,7 @@ mod record;
 mod remove;
 mod resolve;
 mod source;
+mod style;
 mod theme;
 mod ui;
 
@@ -127,9 +128,11 @@ enum Command {
         limit: Option<usize>,
         #[command(flatten)]
         format: cli::Format,
+        #[command(flatten)]
+        markup: cli::Markup,
         /// Write the bibliography to this .bib (or .json, CSL JSON) file,
         /// replaced whole: every paper found
-        #[arg(long, short, conflicts_with_all = ["limit", "reverse", "json", "keys", "paths"])]
+        #[arg(long, short, conflicts_with_all = ["limit", "reverse", "json", "keys", "paths", "style"])]
         output: Option<PathBuf>,
         /// With --output, keep the file up to date as the library changes
         #[arg(long, requires = "output")]
@@ -182,6 +185,8 @@ enum Command {
         key: String,
         #[command(flatten)]
         format: cli::Format,
+        #[command(flatten)]
+        markup: cli::Markup,
     },
     /// Add papers: DOIs, arXiv ids, PMIDs, PMCIDs, publishers' addresses,
     /// PDFs or titles; `-` reads them from stdin, one a line
@@ -944,6 +949,7 @@ pub fn main() -> anyhow::Result<()> {
             reverse,
             limit,
             format,
+            markup,
             output,
             keep,
         }) => {
@@ -965,7 +971,7 @@ pub fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let hits = index.search(&Query::parse(&query), sort, reverse, limit)?;
-            cli::print(&lib, &hits, &format)
+            cli::print(&lib, &hits, &format, &markup)
         }
         Some(Command::Kept { forget }) => {
             let (_, index) = open(&args.library)?;
@@ -1060,12 +1066,16 @@ pub fn main() -> anyhow::Result<()> {
             println!("{} titles {would}unbraced", changed.len());
             Ok(())
         }
-        Some(Command::Get { key, format }) => {
+        Some(Command::Get {
+            key,
+            format,
+            markup,
+        }) => {
             let (lib, index) = open(&args.library)?;
             let Some(hit) = index.get(&key)? else {
                 anyhow::bail!("no paper with the key {key}");
             };
-            cli::print(&lib, &[hit], &format)
+            cli::print(&lib, &[hit], &format, &markup)
         }
     }
 }

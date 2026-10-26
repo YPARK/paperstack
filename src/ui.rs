@@ -122,7 +122,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     keys(f, app, foot);
     let popup = match &app.popup {
         Popup::Add(line) => Some(add(f, &t, line)),
-        Popup::Cite(text, scroll) => Some(cite(f, &t, text, *scroll)),
+        Popup::Cite(c) => Some(cite(f, &t, c)),
         Popup::Help(scroll) => Some(help(f, &t, app.view, *scroll)),
         Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
         Popup::Card(_) => {
@@ -969,18 +969,27 @@ fn delete(f: &mut Frame, t: &Theme, doomed: &Doomed) -> Rect {
     area
 }
 
-fn cite(f: &mut Frame, t: &Theme, text: &str, scroll: u16) -> Rect {
+/// Papers set out to copy, as BibTeX or in the style named on top.
+fn cite(f: &mut Frame, t: &Theme, cite: &crate::app::Cite) -> Rect {
     let area = centered(f.area(), 92, 26);
     f.render_widget(Clear, area);
-    let block = dialog(t, "BibTeX").title_bottom(Line::styled(
-        " y copy · j/k scroll · any key closes ",
+    let title = cite
+        .style()
+        .map_or_else(|| "BibTeX".to_string(), crate::style::title);
+    let block = dialog(t, &title).title_bottom(Line::styled(
+        " y copy · s next style · ↑↓ scroll · any key closes ",
         Style::new().fg(t.hint),
     ));
+    // A blank line between references, as one wraps over several.
+    let text = match cite.style() {
+        None => cite.text.clone(),
+        Some(_) => cite.text.replace('\n', "\n\n"),
+    };
     f.render_widget(
-        Paragraph::new(text.to_string())
+        Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .block(block)
-            .scroll((scroll, 0)),
+            .scroll((cite.scroll, 0)),
         area,
     );
     area

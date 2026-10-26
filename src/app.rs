@@ -180,8 +180,8 @@ pub enum Popup {
     None,
     /// What is typed, as a DOI, arXiv id, PMID, URL, PDF or BibTeX.
     Add(String),
-    /// BibTeX shown, and how far it is scrolled.
-    Cite(String, u16),
+    /// The papers' BibTeX, or references in a style, shown.
+    Cite(Box<Cite>),
     /// The keys, and how far they are scrolled.
     Help(u16),
     /// A PDF awaited from the browser.
@@ -265,6 +265,49 @@ pub struct Choose {
     pub at: usize,
 }
 
+/// Papers set out to copy: as BibTeX, or in a citation style.
+pub struct Cite {
+    papers: Vec<std::sync::Arc<crate::record::Record>>,
+    /// 0 for BibTeX; else the style of [`crate::style::CYCLED`] before.
+    pub at: usize,
+    pub text: String,
+    pub scroll: u16,
+}
+
+impl Cite {
+    fn new(papers: Vec<std::sync::Arc<crate::record::Record>>, at: usize) -> Self {
+        let mut cite = Cite {
+            papers,
+            at,
+            text: String::new(),
+            scroll: 0,
+        };
+        cite.set_out();
+        cite
+    }
+
+    fn set_out(&mut self) {
+        let records: Vec<_> = self.papers.iter().map(|r| r.as_ref()).collect();
+        self.text = match self.style() {
+            None => bibtex::entries(&records),
+            Some(name) => crate::style::references(&records, name, crate::style::Markup::Plain)
+                .unwrap_or_else(|e| one_line(&e)),
+        };
+        self.scroll = 0;
+    }
+
+    /// The style's name; none for BibTeX.
+    pub fn style(&self) -> Option<&'static str> {
+        self.at.checked_sub(1).map(|i| crate::style::CYCLED[i])
+    }
+
+    /// The next way of setting them out, round to BibTeX again.
+    fn next(&mut self) {
+        self.at = (self.at + 1) % (crate::style::CYCLED.len() + 1);
+        self.set_out();
+    }
+}
+
 /// What is to be deleted, if `y` is pressed.
 pub enum Doomed {
     /// Papers, by key, with their titles.
@@ -318,6 +361,8 @@ pub struct App {
     /// By key.
     pub marked: BTreeSet<String>,
     pub popup: Popup,
+    /// How papers were last set out to copy, as [`Cite::at`].
+    cite_at: usize,
     pub view: View,
     /// Read when first shown.
     pub map: Option<MapView>,
@@ -447,6 +492,7 @@ impl App {
             pane_room: u16::MAX,
             marked: BTreeSet::new(),
             popup: Popup::None,
+            cite_at: 0,
             view: View::List,
             map: None,
             status: String::new(),
@@ -596,7 +642,8 @@ impl App {
     /// Take `key`; what it asks of the terminal, as opening a PDF in ohp,
     /// is left to the caller.
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
-        let mut key = plain(key)?;
+        let typing = self.searching || matches!(self.popup, Popup::Add(_) | Popup::Ask(_));
+        let mut key = plain(key, typing)?;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
@@ -665,14 +712,22 @@ impl App {
                 }
                 return None;
             }
-            Popup::Cite(text, scroll) => {
+            Popup::Cite(cite) => {
+                let scroll = &mut cite.scroll;
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
                     KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Char('s') | KeyCode::Tab => {
+                        cite.next();
+                        self.cite_at = cite.at;
+                    }
                     KeyCode::Char('y') => {
-                        let n = text.matches("\n@").count() + 1;
-                        let text = text.clone();
-                        self.status = copy(&text, &format!("{n} BibTeX entries"));
+                        let n = cite.papers.len();
+                        let what = match cite.style() {
+                            None => format!("{n} BibTeX entries"),
+                            Some(style) => format!("{n} references, {style}"),
+                        };
+                        self.status = copy(&cite.text, &what);
                         self.popup = Popup::None;
                     }
                     _ => self.popup = Popup::None,
@@ -780,10 +835,9 @@ impl App {
         }
         if ctrl && key.code == KeyCode::Char('e') {
             self.searching = false;
-            let picked = self.picked();
-            let records: Vec<_> = picked.iter().map(|h| h.record.as_ref()).collect();
-            if !records.is_empty() {
-                self.popup = Popup::Cite(bibtex::entries(&records), 0);
+            let papers: Vec<_> = self.picked().iter().map(|h| h.record.clone()).collect();
+            if !papers.is_empty() {
+                self.popup = Popup::Cite(Box::new(Cite::new(papers, self.cite_at)));
             }
             return None;
         }
@@ -988,7 +1042,7 @@ impl App {
             _ => return None,
         };
         match (&mut self.popup, at) {
-            (Popup::Cite(_, scroll), _) => *scroll = scroll.saturating_add_signed(by as i16),
+            (Popup::Cite(cite), _) => cite.scroll = cite.scroll.saturating_add_signed(by as i16),
             (Popup::None, Some(Target::Map | Target::Label(_))) => self.wheel_theme(by),
             (Popup::Card(card), _) => {
                 let last = card.papers.len().saturating_sub(1) as isize;
@@ -1935,8 +1989,8 @@ pub fn screen_svg(app: &mut App, width: u16, height: u16) -> String {
 /// A key as `paperstack screen` is given it: `<enter>`, `<esc>`, `<tab>`,
 /// `<space>`, `<up>`, `<down>`, `<left>`, `<right>`, `<backspace>`, `<home>`,
 /// `<end>`, `<pageup>`, `<pagedown>`, `<del>`, `<f1>`; any of those or a
-/// character with control, as `<c-e>` or `<c-up>`, with ⌘, as `<d-g>`, or
-/// with shift, as `<s-left>`;
+/// character with control, as `<c-e>` or `<c-up>`, with ⌘, as `<d-g>`,
+/// with alt, as `<m-v>`, or with shift, as `<s-left>`;
 /// anything else, each character typed.
 pub fn keys(spec: &str) -> Vec<KeyEvent> {
     let Some(name) = spec.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
@@ -1949,6 +2003,7 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
     let (mods, name) = match name.split_at_checked(2) {
         Some(("c-", rest)) => (KeyModifiers::CONTROL, rest),
         Some(("d-", rest)) => (KeyModifiers::SUPER, rest),
+        Some(("m-", rest)) => (KeyModifiers::ALT, rest),
         Some(("s-", rest)) => (KeyModifiers::SHIFT, rest),
         _ => (KeyModifiers::NONE, name),
     };
@@ -1985,9 +2040,11 @@ pub fn keys(spec: &str) -> Vec<KeyEvent> {
 /// `key` as the handlers read it, from a terminal that says keys with
 /// all their modifiers: a small letter shifted as its capital; ctrl-m,
 /// ctrl-[ and ctrl-i as Enter, Esc and Tab, as other terminals send them;
-/// and ⌘, or super, with any key but G, which is the map's, as nothing,
-/// those being the system's.
-fn plain(mut key: KeyEvent) -> Option<KeyEvent> {
+/// ⌘, or super, with any key but G, which is the map's, as nothing,
+/// those being the system's; and Emacs's moves as the keys they move as:
+/// ctrl-n ctrl-p ↓ ↑, ctrl-f ctrl-b → ←, ctrl-v alt-v page down and up,
+/// alt-< alt-> home and end, but ctrl-v pasting while `typing`.
+fn plain(mut key: KeyEvent, typing: bool) -> Option<KeyEvent> {
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code != KeyCode::Char('g') {
         return None;
     }
@@ -1996,16 +2053,31 @@ fn plain(mut key: KeyEvent) -> Option<KeyEvent> {
         if key.modifiers == KeyModifiers::SHIFT && c.is_ascii_lowercase() {
             key.code = KeyCode::Char(c.to_ascii_uppercase());
         }
-        if key.modifiers == KeyModifiers::CONTROL {
-            let alias = match c {
+        let alias = if key.modifiers == KeyModifiers::CONTROL {
+            match c {
                 'm' => Some(KeyCode::Enter),
                 '[' => Some(KeyCode::Esc),
                 'i' => Some(KeyCode::Tab),
+                'n' => Some(KeyCode::Down),
+                'p' => Some(KeyCode::Up),
+                'f' => Some(KeyCode::Right),
+                'b' => Some(KeyCode::Left),
+                'v' if !typing => Some(KeyCode::PageDown),
                 _ => None,
-            };
-            if let Some(code) = alias {
-                key = KeyEvent::new(code, KeyModifiers::NONE);
             }
+        // `<` and `>` shifted, on most keyboards.
+        } else if key.modifiers - KeyModifiers::SHIFT == KeyModifiers::ALT {
+            match c {
+                'v' => Some(KeyCode::PageUp),
+                '<' => Some(KeyCode::Home),
+                '>' => Some(KeyCode::End),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(code) = alias {
+            key = KeyEvent::new(code, KeyModifiers::NONE);
         }
     }
     Some(key)
