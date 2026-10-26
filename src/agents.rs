@@ -57,6 +57,8 @@ paperstack delete KEY                         # a paper, moved to .trash/
 paperstack delete --pdf KEY                   # only its PDF; the paper stays
 paperstack delete --collection NAME           # a collection; its papers stay
 paperstack delete --label NAME
+paperstack restore KEY                        # a paper back from .trash/
+paperstack restore --pdf KEY                  # its PDF, deleted or replaced
 ```
 
 Delete only what the person asked to have deleted.
@@ -68,7 +70,12 @@ paperstack find 'QUERY' --bib > refs.bib      # BibTeX, plain
 paperstack find 'QUERY' --csl > refs.json     # CSL JSON, for pandoc and ohp
 paperstack find 'QUERY' --keys                # [@a; @b], to cite them
 paperstack get KEY --bib                      # one entry
+paperstack find 'QUERY' --output refs.bib --keep   # written, and kept up to date
 ```
+
+A record's fields wrong, as its pages: `paperstack refresh KEY --dry-run`
+says what doi.org gives now, and `paperstack refresh KEY` takes it;
+`paperstack set KEY page=R89-R98` sets a field by hand.
 
 Cite only keys that `paperstack` gives; never make one up. A key merged
 into another paper's, as after an import, still finds it. Over MCP,

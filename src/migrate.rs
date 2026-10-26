@@ -129,7 +129,8 @@ fn added(v: &Value) -> Option<String> {
 }
 
 fn item(v: &Value) -> Option<Item> {
-    let title = text(v, "title")?;
+    // Braced whole, as the other manager may keep a title, to keep its case.
+    let title = crate::record::unbraced(text(v, "title")?.trim()).to_string();
     let mut csl = json!({
         "type": csl_type(v.get("pubtype").and_then(Value::as_str).unwrap_or("")),
         "title": title,

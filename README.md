@@ -149,13 +149,34 @@ paperstack delete --label to-read
 
 A paper deleted is not erased: its record and PDF are moved into `.trash/`,
 at the library's root, filed there as they were, and are no longer found.
-Move them back to where they were to have the paper again, or empty
-`.trash/` to be rid of them; Dropbox keeps what is deleted from it besides.
+`paperstack restore KEY` brings it back, and `paperstack restore --pdf KEY`
+a paper's PDF deleted or replaced, as a preprint's by the published one;
+empty `.trash/` to be rid of them. Dropbox keeps what is deleted from it
+besides.
 A PDF deleted alone is moved there the same way, and the paper stays, so
 another file can be located for it. A collection deleted is taken off the
 papers in it, as are the collections within it, as `Research/ML/NLP` is
 within `Research/ML`; the papers stay in the library. In the browser, `d`
 asks first, and `x` before a PDF is deleted.
+
+## Correcting records
+
+```sh
+paperstack refresh Brandt-Okafor2025-pb --dry-run   # what doi.org, or arXiv, says now
+paperstack refresh --query 'collection:"grant_demo"'
+paperstack set Brandt-Okafor2025-pb page=R89-R98 'title={Memory Mosaics}'
+paperstack tidy --dry-run                           # titles a BibTeX import braced whole
+```
+
+`refresh` reads a paper again by its DOI or arXiv id, as itself, a preprint
+not as what it was published as, keeping its key, collections, labels,
+star and PDF, the fields the source does not give, and those set by hand.
+`set` sets a record's fields by hand, as CSL names them; a field given no
+value is taken away. A title braced, `{Memory Mosaics}`, keeps its case in
+BibTeX. `tidy` takes off the braces another reference manager put around
+whole titles of papers imported before this release, but not of a title
+set by hand, so citeproc may set them in the style's case; papers imported
+now come in without them.
 
 ## From the browser
 
@@ -188,7 +209,9 @@ Open copies are tried published versions first, then accepted manuscripts,
 preprints last; the version taken is kept in the record, as `pdf_version`.
 A server that asks for fewer requests, as bioRxiv's, is asked again after a
 while. For more than one paper, or with `--no-browser`, no page is opened in
-the browser: each paper's outcome is said, and with `--json`, why none was
+the browser, unless `--open` asks: then the pages of the papers no open copy
+was had of are opened, and each PDF downloaded there is filed with the
+paper it is. Each paper's outcome is said, and with `--json`, why none was
 had, with each copy tried and its reason (`http-429`, `http-403`,
 `html-page`, `not-the-paper`, …). `--published` takes no preprint, and gives
 a paper whose PDF is a preprint's the published version in its place, the
@@ -374,14 +397,16 @@ from the JSON.
 | `list_collections` | collections and labels, and how many papers each holds | reads |
 | `add_paper` | add by DOI, arXiv id, PMID, address, PDF or title | adds |
 | `attach_pdf` | open copies for papers by keys or a query, or the PDF at a path, if it is that paper's | adds |
-| `update_paper` | collections, labels, star and older keys, of a paper or many | changes |
+| `update_paper` | collections, labels, star and older keys, of a paper or many; one paper's fields | changes |
+| `refresh_papers` | read papers again from doi.org or arXiv, keeping what is ours of them | changes |
+| `restore_papers` | bring papers, or a paper's PDF, back from `.trash/` | adds |
 | `delete_papers` | move papers to the library's `.trash/` | deletes |
 | `delete_collection` | take a collection or label off its papers, which stay | deletes |
 
 `search_papers`, `get_paper`, `check_keys`, `read_paper` and
 `list_collections` are marked read-only, so a program may let the agent use
-them without asking; it asks before the other six, and the last two are
-marked destructive. `cite` lists the keys it has no paper for, and cites the
+them without asking; it asks before the other eight, and the delete tools
+are marked destructive. `cite` lists the keys it has no paper for, and cites the
 rest; a key merged into another paper's is cited under the key given. The library's `AGENTS.md`,
 which tells an agent how the library is laid out, is a resource too.
 
@@ -492,7 +517,11 @@ match whole; `has:pdf`, `has:abstract`, `has:doi` and `is:starred` say what a
 paper has. A `-` before any of them leaves out what it matches.
 
 `find` lists the papers found best first, or `--sort year|added|author|title`,
-`--reverse`, `--limit N`, as a line each, or:
+`--reverse`, `--limit N`, as a line each, or, with `--output refs.bib` (or
+`refs.json`), writes the bibliography there; with `--keep`, the file is kept
+up to date as the library changes, whenever paperstack runs on this
+machine, but never cut short, as where a key it cites is gone.
+`paperstack kept` lists those kept, and `--forget FILE` stops one. Or:
 
 | | |
 |---|---|

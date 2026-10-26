@@ -167,6 +167,7 @@ pub fn failed_json(e: &anyhow::Error, given: &str) -> Value {
     });
     if let Some(none) = e.downcast_ref::<crate::add::NoOpenCopy>() {
         v["tried"] = json!(none.tried);
+        v["page"] = json!(none.page);
     }
     v
 }
