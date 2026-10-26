@@ -3115,6 +3115,8 @@ fn tells_a_page_naming_no_pdf_from_one_turned_away() {
     assert!(!Why::Unnamed.blocked() && !Why::Status(404).blocked());
 }
 
+// An unreadable file, as Unix makes one, stands for one kept only online.
+#[cfg(unix)]
 #[test]
 fn labels_without_reading_records_unchanged_since() {
     use std::os::unix::fs::PermissionsExt;
