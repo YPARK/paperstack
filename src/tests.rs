@@ -528,7 +528,7 @@ fn clicks() {
 
     app.marked.clear();
     app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
-    assert!(matches!(&app.popup, Popup::Cite(text, _) if text.contains(&second)));
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.text.contains(&second)));
     click(&mut app, "▤", 0, true);
     assert!(matches!(app.popup, Popup::None));
 
@@ -3137,4 +3137,93 @@ fn labels_without_reading_records_unchanged_since() {
     let was = crate::library::read(&file).unwrap().paperstack.labels;
     assert!(was.contains(&"Elsewhere".to_string()), "{was:?}");
     assert!(was.contains(&"Later".to_string()), "{was:?}");
+}
+
+#[test]
+fn moves_as_emacs_does_but_pastes_while_typing() {
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let press = |app: &mut App, spec: &str| {
+        for k in crate::app::keys(spec) {
+            app.key(k);
+        }
+        app.list.selected()
+    };
+    let last = app.shown.len() - 1;
+    assert_eq!(press(&mut app, "<c-n>"), Some(1));
+    assert_eq!(press(&mut app, "<c-n>"), Some(2));
+    assert_eq!(press(&mut app, "<c-p>"), Some(1));
+    assert_eq!(press(&mut app, "<c-v>"), Some(6.min(last)));
+    assert_eq!(press(&mut app, "<m-v>"), Some(1));
+    assert_eq!(press(&mut app, "<m->>"), Some(last));
+    assert_eq!(press(&mut app, "<m-<>"), Some(0));
+    // A label being typed: ctrl-n is not an n.
+    press(&mut app, "L");
+    press(&mut app, "<c-n>");
+    let Popup::Ask(ask) = &app.popup else {
+        panic!("no label asked for")
+    };
+    assert_eq!(ask.line, "");
+}
+
+#[test]
+fn cites_in_a_style() {
+    let (_dir, mut server) = mcp_server();
+    let cited = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "keys": ["Whitlock2017-ex", "Whitlock2017-ex"], "format": "text" }),
+    );
+    assert_eq!(cited["isError"], false, "{cited}");
+    let text = cited["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Whitlock, T. J., & Dunmore, P. (2017)."),
+        "{text}"
+    );
+    assert!(text.contains("*Ann Fict Med*"), "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+
+    let plain = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "key": "Whitlock2017-ex", "format": "text",
+            "style": "chicago-author-date", "markup": "plain" }),
+    );
+    let text = plain["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Whitlock, T"), "{text}");
+    assert!(!text.contains('*'), "{text}");
+
+    let bad = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "key": "Whitlock2017-ex", "format": "text", "style": "nope" }),
+    );
+    assert_eq!(bad["isError"], true, "{bad}");
+}
+
+#[test]
+fn sets_papers_out_in_a_style_to_copy() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    app.list.select(Some(0));
+    let ctrl_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    app.key(ctrl_e);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none()));
+    app.key(crate::app::keys("s")[0]);
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("APA Style"), "{s}");
+    let Popup::Cite(c) = &app.popup else {
+        panic!("closed")
+    };
+    let first = app.shown[0].record.authors()[0].family.clone();
+    assert!(c.text.starts_with(&format!("{first}, ")), "{}", c.text);
+    // Asked for again, as it was last set out; round to BibTeX at last.
+    app.key(crate::app::keys("<esc>")[0]);
+    app.key(ctrl_e);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
+    for _ in crate::style::CYCLED {
+        app.key(crate::app::keys("s")[0]);
+    }
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none() && c.text.starts_with('@')));
 }

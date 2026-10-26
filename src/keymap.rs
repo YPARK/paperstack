@@ -51,6 +51,13 @@ pub const KEYS: &[Key] = &[
     ),
     key(
         List,
+        "ctrl-n ctrl-p",
+        "move, as Emacs does; ctrl-v alt-v by five, ctrl-f ctrl-b across",
+        &["<c-n>", "<c-p>", "<c-v>", "<m-v>", "<c-f>", "<c-b>"],
+        &[],
+    ),
+    key(
+        List,
         "h l tab",
         "switch between shelves and papers",
         &["h", "l", "<tab>"],
@@ -59,8 +66,10 @@ pub const KEYS: &[Key] = &[
     key(
         List,
         "g G",
-        "the first paper, the last; home end, ctrl-↑ ctrl-↓ too",
-        &["g", "G", "<home>", "<end>", "<c-up>", "<c-down>"],
+        "the first paper, the last; home end, ctrl-↑ ctrl-↓, alt-< alt-> too",
+        &[
+            "g", "G", "<home>", "<end>", "<c-up>", "<c-down>", "<m-<>", "<m->>",
+        ],
         &[],
     ),
     key(
@@ -126,7 +135,7 @@ pub const KEYS: &[Key] = &[
     key(
         List,
         "ctrl-e",
-        "BibTeX of the papers marked, or the one picked",
+        "BibTeX of the papers marked, or the one picked; s there, APA, Chicago...",
         &["<c-e>"],
         &[("^E", "BibTeX", "<c-e>")],
     ),

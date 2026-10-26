@@ -111,13 +111,14 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | Key | |
 |---|---|
 | `j` / `k`, `↑` / `↓` | move; on the left, change shelf |
-| `g` / `G`, `home` / `end`, `ctrl-↑` / `ctrl-↓` | the first paper, the last |
+| `ctrl-n` / `ctrl-p`, `ctrl-v` / `alt-v`, `ctrl-f` / `ctrl-b` | move as Emacs does: down and up, by five, across; `ctrl-v` still pastes while typing |
+| `g` / `G`, `home` / `end`, `ctrl-↑` / `ctrl-↓`, `alt-<` / `alt->` | the first paper, the last |
 | `h` / `l`, `tab` | switch between shelves and papers |
 | `/` | search, as below; `esc` clears |
 | `S` | sort by relevance, date added, year, first author or title, as shown at the top right; click it too |
 | `⏎`, `o` | open the PDF in ohp; quit ohp to come back |
 | `space` | mark a paper; `*` marks all shown, or unmarks them; `esc` unmarks all |
-| `ctrl-e` | BibTeX of the papers marked, or the one picked |
+| `ctrl-e` | BibTeX of the papers marked, or the one picked; `s` there sets them out as APA, Chicago (author-date, notes), MLA, IEEE or Nature has them instead, and `y` copies what is shown |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
 | `d`, `del` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
@@ -394,7 +395,7 @@ from the JSON.
 |---|---|---|
 | `search_papers` | find papers, by the query language below | reads |
 | `get_paper` | a paper's metadata, abstract and BibTeX, by its key | reads |
-| `cite` | BibTeX, CSL JSON or `[@a; @b]` of keys given, or of a query; or written to a `.bib` | writes |
+| `cite` | BibTeX, CSL JSON, `[@a; @b]`, or references in a citation style (APA unless another is named), of keys given, or of a query; or written to a `.bib` | writes |
 | `check_keys` | which keys a manuscript cites are here, merged into another's, or missing | reads |
 | `read_paper` | the text of a paper's PDF, 20 pages at a time | reads |
 | `list_collections` | collections and labels, and how many papers each holds | reads |
@@ -533,6 +534,7 @@ machine, but never cut short, as where a key it cites is gone.
 | `--keys` | `[@a; @b]`, to cite them |
 | `--json` | key, title, authors, year, ids, folders, the files' paths: for agents |
 | `--paths` | the PDFs |
+| `--style apa` | references in a citation style: `apa`, `chicago-author-date`, `chicago-notes`, `mla`, `ieee`, `nature`, any other of the CSL styles [hayagriva](https://github.com/typst/hayagriva) keeps, by name, or a `.csl` file; `--markup markdown` or `html` keeps their italics |
 
 ## The library
 

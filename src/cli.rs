@@ -1,5 +1,6 @@
 //! What `paperstack find` and `get` print: for a person, a line a paper;
-//! for an agent, JSON; for a document, BibTeX, CSL JSON or citation keys.
+//! for an agent, JSON; for a document, BibTeX, CSL JSON, citation keys or
+//! references in a citation style.
 
 use crate::add::{Added, Adder, Ambiguous};
 use crate::bibtex;
@@ -25,10 +26,29 @@ pub struct Format {
     /// The PDFs' paths, one a line, for papers with one
     #[arg(long, alias = "path")]
     pub paths: bool,
+    /// References in a citation style: apa, chicago-author-date,
+    /// chicago-notes, mla, ieee, nature, another CSL style by its name, or
+    /// a .csl file
+    #[arg(long, value_name = "STYLE")]
+    pub style: Option<String>,
 }
 
-pub fn print(lib: &Library, hits: &[Hit], format: &Format) -> anyhow::Result<()> {
-    if format.json {
+/// How references in a style are written.
+#[derive(clap::Args, Debug, Default)]
+pub struct Markup {
+    /// With --style: plain, markdown or html
+    #[arg(long, value_enum, default_value_t, requires = "style")]
+    pub markup: crate::style::Markup,
+}
+
+pub fn print(lib: &Library, hits: &[Hit], format: &Format, markup: &Markup) -> anyhow::Result<()> {
+    if let Some(style) = &format.style {
+        let records: Vec<_> = hits.iter().map(|h| h.record.as_ref()).collect();
+        println!(
+            "{}",
+            crate::style::references(&records, style, markup.markup)?
+        );
+    } else if format.json {
         let all: Vec<Value> = hits.iter().map(|h| json(lib, h)).collect();
         println!("{}", serde_json::to_string_pretty(&all)?);
     } else if format.bib {

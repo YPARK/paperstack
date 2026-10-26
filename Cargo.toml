@@ -1,6 +1,6 @@
 [package]
 name = "paperstack"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
@@ -27,6 +27,7 @@ unicode-normalization = "0.1"
 ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
 rustls-rustcrypto = "=0.0.2-alpha"
 rayon = "1"
+hayagriva = { version = "0.10", default-features = false, features = ["archive", "csl-json"] }
 
 [dev-dependencies]
 tempfile = "3.27"
