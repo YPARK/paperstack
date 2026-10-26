@@ -271,8 +271,9 @@ pub fn label(
 }
 
 /// Each paper of `keys` changed by `change`, and written where it says it
-/// changed; how many were. Each record is read again first, as another
-/// program may have changed it; the index is brought up to them once.
+/// changed; how many were. Each record is read again first where its
+/// file changed since, as another program may have changed it; the index
+/// is brought up to them once.
 pub fn edit(
     lib: &Library,
     index: &mut Index,
@@ -282,11 +283,12 @@ pub fn edit(
     let mut written = Vec::new();
     let mut each = || -> anyhow::Result<()> {
         for key in keys {
-            let Some(h) = index.get(key)? else { continue };
-            let mut record = crate::library::read(&lib.root.join(&h.path))?;
+            let Some((was, mut record)) = index.fresh(lib, key)? else {
+                continue;
+            };
             if change(&mut record)? {
-                let path = lib.save(&record, Some(&h.path))?;
-                written.push((path, record, h.path));
+                let path = lib.save(&record, Some(&was))?;
+                written.push((path, record, was));
             }
         }
         Ok(())
