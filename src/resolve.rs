@@ -569,9 +569,19 @@ pub fn enrich(net: &Net, found: &mut Found) {
 pub struct OpenCopy {
     pub url: String,
     pub version: Option<Version>,
-    /// Where it may be a page that names its PDF, as a repository's is,
-    /// though OpenAlex gives it as the PDF's address.
-    pub landing: bool,
+    pub origin: Origin,
+}
+
+/// How an open copy's address was had.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Origin {
+    /// Made from its DOI or arXiv id, as a publisher's are: the PDF's own.
+    Made,
+    /// Given as the PDF's address, though it may be a page that names it,
+    /// as a repository's is.
+    Pdf,
+    /// Given as a page, whose PDF it names.
+    Page,
 }
 
 /// Where OpenAlex's work says open copies of its PDF are, the best first;
@@ -599,7 +609,11 @@ fn located(work: &Value) -> Vec<OpenCopy> {
                 .get("version")
                 .and_then(Value::as_str)
                 .and_then(Version::of_openalex),
-            landing: true,
+            origin: if landing_page {
+                Origin::Page
+            } else {
+                Origin::Pdf
+            },
         })
     };
     let pdfs = locations.iter().filter_map(|loc| copy(loc, false));
@@ -966,7 +980,7 @@ fn tag(xml: &str, name: &str) -> Option<String> {
     Some(unescape(&after[body..body + end]))
 }
 
-fn strip_tags(s: &str) -> String {
+pub fn strip_tags(s: &str) -> String {
     static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
     TAG.replace_all(s, " ").into_owned()
 }

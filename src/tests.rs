@@ -2698,8 +2698,9 @@ fn reads_a_paper_again_from_its_doi_keeping_what_is_ours() {
     let folders = hit.record.paperstack.folders.clone();
 
     let seen = crate::add::refresh(&lib, &mut index, &net, &hit, true).unwrap();
+    let fields: Vec<&str> = seen.iter().map(|c| c.field.as_str()).collect();
     assert_eq!(
-        seen,
+        fields,
         ["page", "volume"],
         "the abstract kept, so not changed"
     );
@@ -2735,12 +2736,13 @@ fn sets_a_records_fields_by_hand() {
             ("note".to_string(), None),
             ("page".to_string(), Some(serde_json::json!("R89-R98"))),
         ],
+        &[],
     )
     .unwrap();
     let r = record_of(&lib, &index, key);
     assert_eq!(r.csl["page"], "R89-R98");
     assert!(bibtex::entry(&r).contains("title = {{Memory Mosaics}}"));
-    assert!(crate::add::set(&lib, &mut index, key, &[("id".to_string(), None)]).is_err());
+    assert!(crate::add::set(&lib, &mut index, key, &[("id".to_string(), None)], &[]).is_err());
 }
 
 #[test]
@@ -2833,6 +2835,7 @@ fn keeps_what_was_set_by_hand_through_refresh_and_tidy() {
             ("page".to_string(), Some(serde_json::json!("R89-R98"))),
             ("note".to_string(), Some(serde_json::json!("ours"))),
         ],
+        &[],
     )
     .unwrap();
     let mut fresh = hit.record.csl.clone();
@@ -2841,8 +2844,9 @@ fn keeps_what_was_set_by_hand_through_refresh_and_tidy() {
     let net =
         crate::net::Net::canned(&[(&format!("json https://doi.org/{doi}"), &fresh.to_string())]);
     let hit = index.get(key).unwrap().unwrap();
+    let changed = crate::add::refresh(&lib, &mut index, &net, &hit, false).unwrap();
     assert_eq!(
-        crate::add::refresh(&lib, &mut index, &net, &hit, false).unwrap(),
+        changed.iter().map(|c| c.field.as_str()).collect::<Vec<_>>(),
         ["volume"]
     );
     let r = record_of(&lib, &index, key);
@@ -2952,6 +2956,7 @@ fn keeps_what_was_set_by_hand_when_a_preprint_is_published() {
         &mut index,
         key,
         &[("note".to_string(), Some(serde_json::json!("ours")))],
+        &[],
     )
     .unwrap();
     let published = serde_json::json!({
@@ -2974,4 +2979,138 @@ fn keeps_what_was_set_by_hand_when_a_preprint_is_published() {
         (r.doi(), r.csl["note"].as_str()),
         (Some("10.5555/published.2"), Some("ours"))
     );
+}
+
+#[test]
+fn writes_a_bibliography_into_a_folder_not_there_yet() {
+    let (dir, mut server) = mcp_server();
+    let out = dir.path().join("new/folder/refs.bib");
+    let wrote = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "query": "collection:mediation", "output": out }),
+    );
+    assert_eq!(wrote["isError"], false, "{wrote}");
+    assert!(out.is_file());
+}
+
+#[test]
+fn checks_a_text_citing_nothing() {
+    let (dir, mut server) = mcp_server();
+    let text = dir.path().join("mail.md");
+    std::fs::write(&text, "write to a@b.com\n").unwrap();
+    let checked = mcp_call(
+        &mut server,
+        "check_keys",
+        serde_json::json!({ "path": text }),
+    );
+    assert_eq!(checked["isError"], false, "{checked}");
+    assert_eq!(checked["structuredContent"]["found"], serde_json::json!([]));
+}
+
+#[test]
+fn gives_a_field_back_to_its_source_when_asked() {
+    let (_dir, mut server) = mcp_server();
+    let key = "Whitlock2017-ex";
+    let set = mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": key, "set": { "note": "test" } }),
+    );
+    assert_eq!(set["structuredContent"]["set"]["note"], "test", "{set}");
+    mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": key, "set": { "note": null } }),
+    );
+    let r = record_of(&server.lib, &server.index, key);
+    assert!(r.csl.get("note").is_none());
+    assert_eq!(r.paperstack.hand, ["note"], "taken away, and kept away");
+    mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": key, "reset": ["note"] }),
+    );
+    let r = record_of(&server.lib, &server.index, key);
+    assert!(
+        r.paperstack.hand.is_empty(),
+        "the source's again: {:?}",
+        r.paperstack.hand
+    );
+}
+
+#[test]
+fn says_what_a_refresh_would_change() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("Whitlock2017-ex").unwrap().unwrap();
+    let doi = hit.record.doi().unwrap().to_string();
+    let mut fresh = hit.record.csl.clone();
+    fresh["page"] = serde_json::json!("R89-R98");
+    let net =
+        crate::net::Net::canned(&[(&format!("json https://doi.org/{doi}"), &fresh.to_string())]);
+    let seen = crate::add::refresh(&lib, &mut index, &net, &hit, true).unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].field, "page");
+    assert_eq!(seen[0].new, Some(serde_json::json!("R89-R98")));
+}
+
+#[test]
+fn tells_copies_turned_away_from_none_known() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("Whitlock2017-ex").unwrap().unwrap();
+    let doi = hit.record.doi().unwrap().to_string();
+    let blocked = "https://journal.example/blocked.pdf";
+    let work =
+        serde_json::json!({ "locations": [{ "pdf_url": blocked, "version": "publishedVersion" }] })
+            .to_string();
+    let net = crate::net::Net::canned(&[
+        (
+            format!("json https://api.openalex.org/works/doi:{doi}").as_str(),
+            work.as_str(),
+        ),
+        (format!("pdf {blocked}").as_str(), "!status 403"),
+    ]);
+    let e = crate::add::open_copy(&lib, &mut index, &net, &hit, false, &|_| true).unwrap_err();
+    assert_eq!(crate::add::reason(&e).as_deref(), Some("blocked"));
+    let e =
+        crate::add::open_copy(&lib, &mut index, &offline(), &hit, false, &|_| true).unwrap_err();
+    assert_eq!(crate::add::reason(&e).as_deref(), Some("no-open-copy"));
+}
+
+#[test]
+fn writes_an_article_number_as_its_pages() {
+    let mut r = demo::records().remove(0);
+    if let serde_json::Value::Object(m) = &mut r.csl {
+        m.remove("page");
+    }
+    r.csl["article-number"] = serde_json::json!("eadp1720");
+    assert!(
+        bibtex::entry(&r).contains("pages = {eadp1720}"),
+        "{}",
+        bibtex::entry(&r)
+    );
+}
+
+#[test]
+fn says_a_change_on_one_line() {
+    use crate::add::Change;
+    let c = Change {
+        field: "author".to_string(),
+        old: Some(serde_json::json!([{ "family": "A" }, { "family": "B" }])),
+        new: Some(serde_json::json!([{ "family": "A" }, { "family": "C" }])),
+    };
+    assert_eq!(c.said(), r#"author[1]: {"family":"B"} → {"family":"C"}"#);
+    let c = Change {
+        field: "abstract".to_string(),
+        old: None,
+        new: Some(serde_json::json!("<jats:p>Two\nlines</jats:p>")),
+    };
+    assert_eq!(c.said(), "abstract: none → Two lines");
+}
+
+#[test]
+fn tells_a_page_naming_no_pdf_from_one_turned_away() {
+    use crate::net::Why;
+    assert!(Why::Page.blocked() && Why::Status(202).blocked() && Why::Status(429).blocked());
+    assert!(!Why::Unnamed.blocked() && !Why::Status(404).blocked());
 }

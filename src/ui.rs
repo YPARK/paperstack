@@ -1028,7 +1028,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn clip(s: &str, width: usize) -> String {
+pub(crate) fn clip(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
         s.to_string()
     } else {

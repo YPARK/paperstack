@@ -373,6 +373,22 @@ pub struct Tried {
     /// As [`reason`] gives it.
     pub reason: String,
     pub why: String,
+    /// Turned away, as [`crate::net::Why::blocked`] says.
+    #[serde(skip)]
+    pub blocked: bool,
+}
+
+impl NoOpenCopy {
+    /// `blocked`, where a copy there is was turned away, as by a paywall,
+    /// a bot check or too many requests, so the browser may get it; else
+    /// `no-open-copy`.
+    pub fn reason(&self) -> &'static str {
+        if self.tried.iter().any(|t| t.blocked) {
+            "blocked"
+        } else {
+            "no-open-copy"
+        }
+    }
 }
 
 impl std::fmt::Display for NoOpenCopy {
@@ -392,18 +408,24 @@ impl std::fmt::Display for NoOpenCopy {
 
 impl std::error::Error for NoOpenCopy {}
 
+/// Whether a PDF was not had as it was turned away, as by a paywall: as
+/// [`crate::net::Why::blocked`] says.
+fn blocked(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<crate::net::Refused>()
+        .is_some_and(|r| r.why.blocked())
+}
+
 /// Why a PDF was not had, for an agent to read, where it is told: an HTTP
 /// status, as `http-429`, `html-page`, `not-a-pdf`, `network`,
-/// `preprint` or `no-open-copy`.
+/// `preprint`, `blocked` or `no-open-copy`.
 pub fn reason(e: &anyhow::Error) -> Option<String> {
     if let Some(r) = e.downcast_ref::<crate::net::Refused>() {
         Some(r.why.reason())
     } else if e.is::<IsPreprint>() {
         Some("preprint".to_string())
-    } else if e.is::<NoOpenCopy>() {
-        Some("no-open-copy".to_string())
     } else {
-        None
+        e.downcast_ref::<NoOpenCopy>()
+            .map(|none| none.reason().to_string())
     }
 }
 
@@ -440,7 +462,7 @@ pub fn open_copy(
     let (doi, arxiv) = r.ids();
     // The publisher's own is as published; a preprint server's, as
     // submitted, whatever OpenAlex says.
-    let copy = |url: String, version, landing| {
+    let copy = |url: String, version, origin| {
         let version = if on_preprint_server(&url) {
             Some(Version::Preprint)
         } else {
@@ -449,14 +471,14 @@ pub fn open_copy(
         resolve::OpenCopy {
             url,
             version,
-            landing,
+            origin,
         }
     };
     let publishers: Vec<resolve::OpenCopy> = doi
         .map(resolve::publisher_pdfs)
         .unwrap_or_default()
         .into_iter()
-        .map(|u| copy(u, Some(Version::Published), false))
+        .map(|u| copy(u, Some(Version::Published), resolve::Origin::Made))
         .collect();
     // OpenAlex, and arXiv, are asked only once the publisher's fail.
     let others = || {
@@ -466,11 +488,15 @@ pub fn open_copy(
             copies.extend(
                 resolve::openalex_pdfs(net, d)
                     .into_iter()
-                    .map(|c| copy(c.url, c.version, c.landing)),
+                    .map(|c| copy(c.url, c.version, c.origin)),
             );
         }
         if let Some(id) = arxiv {
-            copies.push(copy(resolve::arxiv_pdf(id), Some(Version::Preprint), false));
+            copies.push(copy(
+                resolve::arxiv_pdf(id),
+                Some(Version::Preprint),
+                resolve::Origin::Made,
+            ));
         }
         // A version not said is between the accepted and the preprint.
         copies.sort_by_key(|c| match c.version {
@@ -500,6 +526,7 @@ pub fn open_copy(
                 why: format!("{} is a preprint", c.url),
                 url: c.url,
                 reason: "preprint".to_string(),
+                blocked: false,
             });
             continue;
         }
@@ -509,8 +536,9 @@ pub fn open_copy(
         }
         // A page followed to its PDF: that PDF is told by its own address,
         // and is not had again.
-        let got = if c.landing {
-            net.pdf_via_page(&c.url, &|named| !seen.contains(named))
+        let got = if c.origin != resolve::Origin::Made {
+            let page = c.origin == resolve::Origin::Page;
+            net.pdf_via_page(&c.url, page, &|named| !seen.contains(named))
         } else {
             net.pdf(&c.url).map(|bytes| (bytes, c.url.clone()))
         };
@@ -527,11 +555,11 @@ pub fn open_copy(
             Ok(added) => return Ok(added),
             Err(e) => {
                 say(&format!("  not it: {}", one_line(&e)));
-                let reason = reason(&e).unwrap_or_else(|| "not-the-paper".to_string());
                 tried.push(Tried {
                     url: c.url,
-                    reason,
+                    reason: reason(&e).unwrap_or_else(|| "not-the-paper".to_string()),
                     why: one_line(&e),
+                    blocked: blocked(&e),
                 });
             }
         }
@@ -594,6 +622,41 @@ pub fn stamp(r: &mut Record, bytes: &[u8], from: &str) {
     r.paperstack.pdf_version = version_of(&r.csl, from, &text, None);
 }
 
+/// A field of a record that a refresh changes, from what to what; none
+/// where it is not there.
+#[derive(Debug)]
+pub struct Change {
+    pub field: String,
+    pub old: Option<Value>,
+    pub new: Option<Value>,
+}
+
+impl Change {
+    /// `page: 1-11 → 1481-1491`, on one line: a long value cut short, its
+    /// markup and line breaks taken out; of a list as long as before, the
+    /// first item that changed.
+    pub fn said(&self) -> String {
+        let (mut old, mut new, mut field) =
+            (self.old.as_ref(), self.new.as_ref(), self.field.clone());
+        if let (Some(Value::Array(a)), Some(Value::Array(b))) = (old, new)
+            && a.len() == b.len()
+            && let Some(i) = (0..a.len()).find(|&i| a[i] != b[i])
+        {
+            (old, new, field) = (Some(&a[i]), Some(&b[i]), format!("{field}[{i}]"));
+        }
+        let show = |v: Option<&Value>| {
+            let s = match v {
+                None => return "none".to_string(),
+                Some(Value::Array(a)) => return format!("{} items", a.len()),
+                Some(Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+            };
+            crate::ui::clip(&crate::resolve::squash(&crate::resolve::strip_tags(&s)), 61)
+        };
+        format!("{field}: {} → {}", show(old), show(new))
+    }
+}
+
 /// Read the paper `hit` is again, from doi.org by its DOI, or from arXiv,
 /// as a record imported or added long ago may want; what is ours of it,
 /// its key, collections, labels, star and PDF, kept, and an abstract or
@@ -605,7 +668,7 @@ pub fn refresh(
     net: &Net,
     hit: &Hit,
     dry_run: bool,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<Vec<Change>> {
     let r = &hit.record;
     // As itself: a preprint is not read again as what it was published as.
     let found = match r.ids() {
@@ -616,14 +679,18 @@ pub fn refresh(
     let mut record = crate::library::read(&lib.root.join(&hit.path))?;
     let was = record.csl.clone();
     record.take_csl(found.csl, true);
-    let changed: Vec<String> = match (&was, &record.csl) {
+    let changed: Vec<Change> = match (&was, &record.csl) {
         (Value::Object(old), Value::Object(new)) => old
             .keys()
             .chain(new.keys())
             .filter(|f| old.get(*f) != new.get(*f))
-            .cloned()
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
+            .map(|f| Change {
+                field: f.clone(),
+                old: old.get(f).cloned(),
+                new: new.get(f).cloned(),
+            })
             .collect(),
         _ => Vec::new(),
     };
@@ -637,12 +704,14 @@ pub fn refresh(
 }
 
 /// Set fields of the record of the paper `key`, as CSL names them: each
-/// to its value, or, given none, taken away. Its `id` is its key, not set.
+/// to its value, or, given none, taken away; and those of `reset` given
+/// back to the source. Its `id` is its key, not set.
 pub fn set(
     lib: &Library,
     index: &mut Index,
     key: &str,
     fields: &[(String, Option<Value>)],
+    reset: &[String],
 ) -> anyhow::Result<()> {
     let key = index
         .get(key)?
@@ -652,12 +721,14 @@ pub fn set(
         .clone();
     crate::remove::edit(lib, index, &[key], |r| {
         set_fields(r, fields)?;
+        reset_fields(r, reset);
         Ok(true)
     })?;
     Ok(())
 }
 
-/// Set `fields` of `record`, as [`set`] does, each kept as set by hand.
+/// Set `fields` of `record`, as [`set`] does, each kept as set by hand, a
+/// field taken away kept away.
 pub fn set_fields(record: &mut Record, fields: &[(String, Option<Value>)]) -> anyhow::Result<()> {
     if fields.iter().any(|(f, _)| f == "id") {
         bail!("a record's id is its key, which stays as it is");
@@ -665,16 +736,23 @@ pub fn set_fields(record: &mut Record, fields: &[(String, Option<Value>)]) -> an
     let Value::Object(csl) = &mut record.csl else {
         bail!("{}'s record is not a CSL item", record.key);
     };
+    let hand = &mut record.paperstack.hand;
     for (field, value) in fields {
         match value {
             Some(v) => csl.insert(field.clone(), v.clone()),
             None => csl.remove(field),
         };
-        if !record.paperstack.hand.contains(field) {
-            record.paperstack.hand.push(field.clone());
+        if !hand.contains(field) {
+            hand.push(field.clone());
         }
     }
     Ok(())
+}
+
+/// Give `fields` of `record` back to its source: no longer kept as set by
+/// hand, for the next refresh to give them as the source does.
+pub fn reset_fields(record: &mut Record, fields: &[String]) {
+    record.paperstack.hand.retain(|h| !fields.contains(h));
 }
 
 /// Take off the braces around titles braced whole, as a BibTeX import

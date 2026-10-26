@@ -172,7 +172,8 @@ paperstack tidy --dry-run                           # titles a BibTeX import bra
 not as what it was published as, keeping its key, collections, labels,
 star and PDF, the fields the source does not give, and those set by hand.
 `set` sets a record's fields by hand, as CSL names them; a field given no
-value is taken away. A title braced, `{Memory Mosaics}`, keeps its case in
+value is taken away, and stays away; `set KEY --reset FIELD` gives a field
+back to the source, for the next refresh. A title braced, `{Memory Mosaics}`, keeps its case in
 BibTeX. `tidy` takes off the braces another reference manager put around
 whole titles of papers imported before this release, but not of a title
 set by hand, so citeproc may set them in the style's case; papers imported
@@ -213,7 +214,9 @@ the browser, unless `--open` asks: then the pages of the papers no open copy
 was had of are opened, and each PDF downloaded there is filed with the
 paper it is. Each paper's outcome is said, and with `--json`, why none was
 had, with each copy tried and its reason (`http-429`, `http-403`,
-`html-page`, `not-the-paper`, …). `--published` takes no preprint, and gives
+`html-page`, `not-the-paper`, …), and the paper's page to open. Its
+`reason` is `blocked` where a copy was turned away, as by a paywall or a bot
+check, so the browser may get it there; else `no-open-copy`. `--published` takes no preprint, and gives
 a paper whose PDF is a preprint's the published version in its place, the
 preprint's moved to `.trash/`.
 

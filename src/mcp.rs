@@ -242,7 +242,11 @@ impl Server {
                             &p.hit,
                             dry_run,
                         ) {
-                            Ok(changed) => json!({ "key": key, "changed": changed }),
+                            Ok(changed) => json!({
+                                "key": key,
+                                "changed": changed.iter().map(|c| &c.field).collect::<Vec<_>>(),
+                                "changes": changed.iter().map(|c| c.said()).collect::<Vec<_>>(),
+                            }),
                             Err(e) => json!({ "key": key, "error": one_line(&e) }),
                         },
                     );
@@ -270,14 +274,16 @@ impl Server {
                 Ok(json!({ "restored": done }))
             }
             "check_keys" => {
+                if !args.get("keys").is_some_and(Value::is_array) && text("path").is_none() {
+                    bail!(
+                        "give the keys cited, as a list, or the path of the text that cites them"
+                    );
+                }
                 let mut cited = list("keys");
                 if let Some(path) = text("path") {
                     let text = std::fs::read_to_string(&path)
                         .with_context(|| format!("cannot read {path}"))?;
                     cited.extend(cited_keys(&text));
-                }
-                if cited.is_empty() {
-                    bail!("give the keys cited, or the path of the text that cites them");
                 }
                 let Chosen { papers, missing } =
                     self.index.choose(cited.iter().map(String::as_str), None)?;
@@ -419,7 +425,8 @@ impl Server {
                     .flatten()
                     .map(|(k, v)| (k.clone(), (!v.is_null()).then(|| v.clone())))
                     .collect();
-                if !set.is_empty() && papers.len() != 1 {
+                let reset = list("reset");
+                if (!set.is_empty() || !reset.is_empty()) && papers.len() != 1 {
                     bail!("fields are set on one paper, by its key");
                 }
                 if !aliases.is_empty() && papers.len() != 1 {
@@ -437,6 +444,7 @@ impl Server {
                     let mut record = crate::library::read(&self.lib.root.join(&hit.path))?;
                     let before = record.clone();
                     crate::add::set_fields(&mut record, &set)?;
+                    crate::add::reset_fields(&mut record, &reset);
                     let m = &mut record.paperstack;
                     for (have, add, remove) in [
                         (
@@ -467,7 +475,22 @@ impl Server {
                         .upsert(&self.lib, &path, record, Some(&hit.path))?;
                 }
                 if one {
-                    return Ok(self.paper(&self.hit(&text("key").unwrap_or_default())?, false));
+                    let hit = self.hit(&text("key").unwrap_or_default())?;
+                    let mut paper = self.paper(&hit, false);
+                    if !set.is_empty() {
+                        // The fields set, as they are now.
+                        let now: serde_json::Map<String, Value> = set
+                            .iter()
+                            .map(|(f, _)| {
+                                (
+                                    f.clone(),
+                                    hit.record.csl.get(f).cloned().unwrap_or(Value::Null),
+                                )
+                            })
+                            .collect();
+                        paper["set"] = Value::Object(now);
+                    }
+                    return Ok(paper);
                 }
                 Ok(json!({
                     "updated": updated.len(),
@@ -709,7 +732,7 @@ fn tools() -> Value {
         {
             "name": "attach_pdf",
             "title": "Give a paper its PDF",
-            "description": "Give papers without one their PDF. Without a path, open copies are downloaded, published versions first, for each paper of the keys or the query (those it finds without a PDF); no browser is opened. Each paper's outcome is listed: its pdf_version, or why none was had, with each copy tried and its reason (http-429, http-403, html-page, not-a-pdf, not-the-paper, preprint, network). published: no preprint, and a paper whose PDF is a preprint's is given the published version in its place. With a path, one paper is given the PDF there, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
+            "description": "Give papers without one their PDF. Without a path, open copies are downloaded, published versions first, for each paper of the keys or the query (those it finds without a PDF); no browser is opened. Each paper's outcome is listed: its pdf_version, or why none was had (blocked, where a copy was turned away, as by a paywall or a bot check, so the person may get it in the browser at its page; or no-open-copy), with each copy tried and its reason (http-429, http-403, html-page, not-a-pdf, not-the-paper, preprint, network). published: no preprint, and a paper whose PDF is a preprint's is given the published version in its place. With a path, one paper is given the PDF there, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
             "inputSchema": { "type": "object", "properties": {
                 "key": { "type": "string" },
                 "keys": { "type": "array", "items": { "type": "string" } },
@@ -728,7 +751,8 @@ fn tools() -> Value {
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },
                 "add_aliases": { "type": "array", "items": { "type": "string" } },
-                "set": { "type": "object", "description": "one paper's CSL fields to set, as {\"page\": \"R89-R98\"}; null takes one away. A title braced, {Name}, keeps its case in BibTeX." },
+                "set": { "type": "object", "description": "one paper's CSL fields to set, as {\"page\": \"R89-R98\"}; null takes one away. Kept so through refresh. A title braced, {Name}, keeps its case in BibTeX." },
+                "reset": { "type": "array", "items": { "type": "string" }, "description": "one paper's fields set by hand to give back to the source, for the next refresh" },
                 "add_collections": { "type": "array", "items": { "type": "string" } },
                 "remove_collections": { "type": "array", "items": { "type": "string" } },
                 "add_labels": { "type": "array", "items": { "type": "string" } },
@@ -740,7 +764,7 @@ fn tools() -> Value {
         {
             "name": "refresh_papers",
             "title": "Read papers again from their source",
-            "description": "Read papers again from doi.org by their DOI, or arXiv, as records imported long ago may want: their pages, volume, title; their key, collections, labels, star, PDF, and an abstract the source lacks, kept. dry_run lists the fields that would change.",
+            "description": "Read papers again from doi.org by their DOI, or arXiv, as records imported long ago may want: their pages, volume, title; their key, collections, labels, star, PDF, the fields the source lacks and those set by hand kept. Each paper's changed fields, and changes, `page: 1-11 → 1481-1491`; dry_run changes nothing.",
             "inputSchema": { "type": "object", "properties": {
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },

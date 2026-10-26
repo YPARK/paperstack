@@ -70,6 +70,12 @@ pub fn entry(r: &Record) -> String {
             fields.push((bib, value));
         }
     }
+    // An article numbered, not paged, as Science's and BMC's are.
+    if !fields.iter().any(|(f, _)| *f == "pages")
+        && let Some(n) = item.get("article-number").and_then(text)
+    {
+        fields.push(("pages", escape(&n)));
+    }
     if let Some(year) = r.year() {
         fields.push(("year", year.to_string()));
     }

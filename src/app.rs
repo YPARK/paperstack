@@ -1714,7 +1714,9 @@ impl App {
         };
         let bytes = if line.starts_with("http://") || line.starts_with("https://") {
             match &self.net {
-                Some(net) => net.pdf_via_page(line, &|_| true).map(|(bytes, _)| bytes),
+                Some(net) => net
+                    .pdf_via_page(line, false, &|_| true)
+                    .map(|(bytes, _)| bytes),
                 None => Err(anyhow::anyhow!("cannot download here")),
             }
         } else {
