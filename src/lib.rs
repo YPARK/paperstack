@@ -161,11 +161,15 @@ enum Command {
         dry_run: bool,
     },
     /// Set fields of a paper's record, as CSL names them: page=R89-R98;
-    /// a field given no value, as note=, is taken away
+    /// a field given no value, as note=, is taken away. Each is kept as set
+    /// when the paper is read again
     Set {
         key: String,
-        #[arg(required = true, value_name = "FIELD=VALUE")]
+        #[arg(required_unless_present = "reset", value_name = "FIELD=VALUE")]
         fields: Vec<String>,
+        /// Give this field back to the source, for the next refresh
+        #[arg(long, value_name = "FIELD")]
+        reset: Vec<String>,
     },
     /// Take off the braces around titles braced whole, as a BibTeX import
     /// leaves them
@@ -680,7 +684,7 @@ pub fn main() -> anyhow::Result<()> {
             // A key and a PDF's path or address: that PDF, for that paper.
             if let Some((key, given)) = pdf_given(&what).filter(|_| query.is_none()) {
                 let bytes = if given.starts_with("http://") || given.starts_with("https://") {
-                    net().pdf_via_page(given, &|_| true)?.0
+                    net().pdf_via_page(given, false, &|_| true)?.0
                 } else {
                     std::fs::read(given)?
                 };
@@ -1019,7 +1023,10 @@ pub fn main() -> anyhow::Result<()> {
                     Ok(changed) if changed.is_empty() => println!("{key:<24} as it was"),
                     Ok(changed) => {
                         let would = if dry_run { "would change" } else { "changed" };
-                        println!("{key:<24} {would}: {}", changed.join(", "));
+                        println!("{key:<24} {would}:");
+                        for c in changed {
+                            println!("    {}", c.said());
+                        }
                     }
                     Err(e) => {
                         failed += 1;
@@ -1030,7 +1037,7 @@ pub fn main() -> anyhow::Result<()> {
             anyhow::ensure!(failed == 0, "{failed} not read again");
             Ok(())
         }
-        Some(Command::Set { key, fields }) => {
+        Some(Command::Set { key, fields, reset }) => {
             let (lib, mut index) = open(&args.library)?;
             let fields = fields
                 .iter()
@@ -1042,7 +1049,7 @@ pub fn main() -> anyhow::Result<()> {
                     Ok((name.trim().to_string(), value))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            add::set(&lib, &mut index, &key, &fields)?;
+            add::set(&lib, &mut index, &key, &fields, &reset)?;
             println!("{key:<24} set");
             Ok(())
         }

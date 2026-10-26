@@ -5,7 +5,7 @@
 
 use crate::index::{Index, Picked};
 use crate::record::Record;
-use anyhow::bail;
+use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -96,6 +96,10 @@ pub fn write(index: &Index, bib: &Bib) -> anyhow::Result<Vec<Picked>> {
     papers.sort_by(|a, b| a.asked.cmp(&b.asked));
     let text = render(&papers, bib.format)?;
     if !std::fs::read_to_string(&bib.output).is_ok_and(|was| was == text) {
+        if let Some(folder) = bib.output.parent() {
+            std::fs::create_dir_all(folder)
+                .with_context(|| format!("cannot make {}", folder.display()))?;
+        }
         crate::library::write(&bib.output, text.as_bytes())?;
     }
     Ok(papers)

@@ -214,10 +214,13 @@ impl Net {
 
     /// A PDF, as [`Net::pdf`], or, given a page that names its PDF, as a
     /// repository's does by `citation_pdf_url`, that PDF, if `wanted`; and
-    /// where it came from at last, after redirects.
+    /// where it came from at last, after redirects. A page naming none is
+    /// a [`Why::Unnamed`] where `url` was given as a page; else, given as a
+    /// PDF's, a page in its place, as one asking to sign in.
     pub fn pdf_via_page(
         &self,
         url: &str,
+        page_given: bool,
         wanted: &dyn Fn(&str) -> bool,
     ) -> anyhow::Result<(Vec<u8>, String)> {
         match self.pdf_or_page(url, true)? {
@@ -225,7 +228,9 @@ impl Net {
             Got::Page(html, at) => {
                 let named = crate::resolve::page_pdf(&crate::resolve::metas(&html), &at)
                     .filter(|next| *next != url && *next != at)
-                    .ok_or_else(|| refused(url, Why::Page))?;
+                    .ok_or_else(|| {
+                        refused(url, if page_given { Why::Unnamed } else { Why::Page })
+                    })?;
                 if !wanted(&named) {
                     anyhow::bail!("{named}, which {url} names, was had already");
                 }
@@ -284,7 +289,8 @@ impl Net {
                 }
                 rest(&host, wait);
             }
-            if status >= 400 {
+            // 202 to a request for a file is a bot check, its answer to come.
+            if status >= 400 || status == 202 {
                 return Err(refused(url, Why::Status(status)));
             }
             break resp;
@@ -364,14 +370,24 @@ pub enum Why {
     Status(u16),
     /// A page, as one asking to sign in, or a bot check.
     Page,
+    /// A repository's page that names no PDF of it.
+    Unnamed,
     NotPdf,
     Network(String),
 }
 
 impl Why {
-    /// What an agent reads of it: `http-403`, `html-page`, `not-a-pdf`, `network`.
+    /// Whether it turned paperstack away, as a paywall, a bot check or too
+    /// many requests do: the browser may get it there.
+    pub fn blocked(&self) -> bool {
+        matches!(self, Why::Page | Why::Status(202 | 401 | 402 | 403 | 429))
+    }
+
+    /// What an agent reads of it: `http-403`, `html-page`, `no-pdf-named`,
+    /// `not-a-pdf`, `network`.
     pub fn reason(&self) -> String {
         match self {
+            Why::Unnamed => "no-pdf-named".to_string(),
             Why::Status(n) => format!("http-{n}"),
             Why::Page => "html-page".to_string(),
             Why::NotPdf => "not-a-pdf".to_string(),
@@ -387,6 +403,7 @@ impl std::fmt::Display for Refused {
             Why::Status(429) => write!(f, "{url} turned paperstack away: too many requests"),
             Why::Status(n) => write!(f, "{url} answered {n}"),
             Why::Page => write!(f, "{url} gave a page, not a PDF"),
+            Why::Unnamed => write!(f, "{url} is a page that names no PDF"),
             Why::NotPdf => write!(f, "{url} gave no PDF"),
             Why::Network(e) => write!(f, "cannot download {url}: {e}"),
         }
