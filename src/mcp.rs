@@ -13,11 +13,9 @@ use crate::index::{Chosen, Hit, Index, Picked, Sort};
 use crate::library::Library;
 use crate::net::Net;
 use crate::query::Query;
-use crate::record::Record;
 use anyhow::{Context, bail};
 use regex::Regex;
 use serde_json::{Value, json};
-use std::borrow::Cow;
 use std::io::{BufRead, Write};
 use std::sync::LazyLock;
 
@@ -176,70 +174,100 @@ impl Server {
                 }
             }
             "cite" => {
+                if let Some(path) = text("output") {
+                    let output = std::path::PathBuf::from(path);
+                    let asked = match text("format").as_deref() {
+                        Some("keys") => bail!("[@a; @b] citations are not written to a file"),
+                        Some("csl") => Some(crate::kept::Format::Csl),
+                        Some(_) => Some(crate::kept::Format::Bibtex),
+                        None => None,
+                    };
+                    let format = crate::kept::Format::asked(&output, asked)?;
+                    let bib = crate::kept::Bib {
+                        output,
+                        query: text("query"),
+                        keys: text("key").into_iter().chain(list("keys")).collect(),
+                        format,
+                    };
+                    let keep = args.get("keep").and_then(Value::as_bool).unwrap_or(false);
+                    let output = std::path::absolute(&bib.output)?;
+                    let papers = crate::kept::write_out(&self.index, bib, keep)?;
+                    return Ok(json!({
+                        "entries": papers.len(),
+                        "merged": merged(&papers),
+                        "output": output,
+                        "kept": keep,
+                    }));
+                }
                 let Chosen { papers, missing } = self.chosen(args)?;
                 if papers.is_empty() && missing.is_empty() {
                     bail!("give keys, or a query, of the papers to cite");
                 }
-                // Each under the key it is cited by, though merged since.
-                let records: Vec<Cow<Record>> = papers
-                    .iter()
-                    .map(|p| {
-                        if p.asked == p.hit.record.key {
-                            Cow::Borrowed(p.hit.record.as_ref())
-                        } else {
-                            Cow::Owned(Record {
-                                key: p.asked.clone(),
-                                ..Record::clone(&p.hit.record)
-                            })
-                        }
-                    })
-                    .collect();
-                let format = text("format").unwrap_or_else(|| "bibtex".to_string());
-                let out = match format.as_str() {
-                    "csl" => serde_json::to_string_pretty(
-                        &records.iter().map(|r| r.item()).collect::<Vec<_>>(),
-                    )?,
-                    "keys" => format!(
+                let out = match text("format").as_deref() {
+                    Some("keys") => format!(
                         "[{}]",
-                        records
+                        papers
                             .iter()
-                            .map(|r| format!("@{}", r.key))
+                            .map(|p| format!("@{}", p.asked))
                             .collect::<Vec<_>>()
                             .join("; ")
                     ),
-                    _ => bibtex::entries(&records.iter().map(AsRef::as_ref).collect::<Vec<_>>()),
+                    Some("csl") => crate::kept::render(&papers, crate::kept::Format::Csl)?,
+                    _ => crate::kept::render(&papers, crate::kept::Format::Bibtex)?,
                 };
-                let mut said = json!({
-                    "entries": records.len(),
+                Ok(json!({
+                    "entries": papers.len(),
                     "missing": missing,
                     "merged": merged(&papers),
-                });
-                if let Some(path) = text("output") {
-                    if !missing.is_empty() {
-                        bail!(
-                            "not written, as no paper has {}: add them, or cite without them",
-                            missing.join(", ")
-                        );
-                    }
-                    if papers.is_empty() {
-                        bail!("not written: the query finds no paper");
-                    }
-                    let path = std::path::PathBuf::from(path);
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    let fits = match format.as_str() {
-                        "csl" => ext.eq_ignore_ascii_case("json"),
-                        "keys" => false,
-                        _ => ext.eq_ignore_ascii_case("bib"),
-                    };
-                    if !fits {
-                        bail!("a bibliography is written to a .bib file, or, as csl, a .json one");
-                    }
-                    crate::library::write(&path, out.as_bytes())?;
-                    said["output"] = json!(path);
-                    return Ok(said);
+                    TEXT: out,
+                }))
+            }
+            "refresh_papers" => {
+                let Chosen { papers, missing } = self.chosen(args)?;
+                if papers.is_empty() && missing.is_empty() {
+                    bail!("give keys, or a query, of the papers to read again");
                 }
-                said[TEXT] = json!(out);
-                Ok(said)
+                let dry_run = args
+                    .get("dry_run")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let mut done = Vec::new();
+                for p in papers {
+                    let key = p.hit.record.key.clone();
+                    done.push(
+                        match crate::add::refresh(
+                            &self.lib,
+                            &mut self.index,
+                            &self.net,
+                            &p.hit,
+                            dry_run,
+                        ) {
+                            Ok(changed) => json!({ "key": key, "changed": changed }),
+                            Err(e) => json!({ "key": key, "error": one_line(&e) }),
+                        },
+                    );
+                }
+                Ok(json!({ "papers": done, "missing": missing, "dry_run": dry_run }))
+            }
+            "restore_papers" => {
+                let keys = list("keys");
+                if keys.is_empty() {
+                    bail!("give the keys of the papers to bring back from the trash");
+                }
+                let pdf = args.get("pdf").and_then(Value::as_bool).unwrap_or(false);
+                let mut done = Vec::new();
+                for key in &keys {
+                    let back = if pdf {
+                        crate::remove::restore_pdf(&self.lib, &mut self.index, key)
+                    } else {
+                        crate::remove::restore(&self.lib, &mut self.index, key)
+                    };
+                    done.push(match back {
+                        Ok(path) => json!({ "key": key, "path": self.lib.root.join(path) }),
+                        Err(e) => json!({ "key": key, "error": one_line(&e) }),
+                    });
+                }
+                Ok(json!({ "restored": done }))
             }
             "check_keys" => {
                 let mut cited = list("keys");
@@ -384,6 +412,16 @@ impl Server {
                     bail!("give the paper's key, or keys, or a query");
                 }
                 let aliases = list("add_aliases");
+                let set: Vec<(String, Option<Value>)> = args
+                    .get("set")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, v)| (k.clone(), (!v.is_null()).then(|| v.clone())))
+                    .collect();
+                if !set.is_empty() && papers.len() != 1 {
+                    bail!("fields are set on one paper, by its key");
+                }
                 if !aliases.is_empty() && papers.len() != 1 {
                     bail!("aliases are given to one paper, by its key");
                 }
@@ -397,7 +435,8 @@ impl Server {
                 let mut updated = Vec::new();
                 for Picked { hit, .. } in &papers {
                     let mut record = crate::library::read(&self.lib.root.join(&hit.path))?;
-                    let before = record.paperstack.clone();
+                    let before = record.clone();
+                    crate::add::set_fields(&mut record, &set)?;
                     let m = &mut record.paperstack;
                     for (have, add, remove) in [
                         (
@@ -419,7 +458,7 @@ impl Server {
                     if let Some(star) = args.get("starred").and_then(Value::as_bool) {
                         m.starred = star;
                     }
-                    if record.paperstack == before {
+                    if record == before {
                         continue;
                     }
                     let path = self.lib.save(&record, Some(&hit.path))?;
@@ -617,12 +656,13 @@ fn tools() -> Value {
         {
             "name": "cite",
             "title": "Make a bibliography",
-            "description": "BibTeX, CSL JSON, or [@key; @key] citations, of the papers with the keys given, or those a query finds, or both; or written to a file, output, a .bib (or .json for csl), only when every key given is had. A key merged into another paper's is cited under the key given. Keys no paper has are listed as missing, the rest cited. BibTeX titles keep their case through citeproc: capitals the authors gave are braced.",
+            "description": "BibTeX, CSL JSON, or [@key; @key] citations, of the papers with the keys given, or those a query finds, or both; or written to a file, output, a .bib (or .json for csl), only when every key given is had; with keep, kept up to date whenever the library changes, never cut short where a key goes missing. A key merged into another paper's is cited under the key given. Keys no paper has are listed as missing, the rest cited. BibTeX titles keep their case through citeproc: capitals the authors gave are braced.",
             "inputSchema": { "type": "object", "properties": {
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },
                 "format": { "type": "string", "enum": ["bibtex", "csl", "keys"], "default": "bibtex" },
-                "output": { "type": "string", "description": "a .bib or .json file to write, replaced whole" }
+                "output": { "type": "string", "description": "a .bib or .json file to write, replaced whole" },
+                "keep": { "type": "boolean", "default": false, "description": "with output: keep the file up to date as the library changes, from this machine's paperstack" }
             } },
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false }
         },
@@ -682,12 +722,13 @@ fn tools() -> Value {
         {
             "name": "update_paper",
             "title": "Change papers' collections, labels or star",
-            "description": "Put papers in collections or take them out, add or take away labels, star them or not: one paper by its key, or many, by keys or a query, as collection:\"old\" to rename a collection by adding the new and removing the old. add_aliases gives one paper older keys, as a manuscript cites it by, found and cited as its own.",
+            "description": "Put papers in collections or take them out, add or take away labels, star them or not: one paper by its key, or many, by keys or a query, as collection:\"old\" to rename a collection by adding the new and removing the old. add_aliases gives one paper older keys, as a manuscript cites it by, found and cited as its own; set corrects one paper's fields, as its pages.",
             "inputSchema": { "type": "object", "properties": {
                 "key": { "type": "string" },
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string" },
                 "add_aliases": { "type": "array", "items": { "type": "string" } },
+                "set": { "type": "object", "description": "one paper's CSL fields to set, as {\"page\": \"R89-R98\"}; null takes one away. A title braced, {Name}, keeps its case in BibTeX." },
                 "add_collections": { "type": "array", "items": { "type": "string" } },
                 "remove_collections": { "type": "array", "items": { "type": "string" } },
                 "add_labels": { "type": "array", "items": { "type": "string" } },
@@ -695,6 +736,27 @@ fn tools() -> Value {
                 "starred": { "type": "boolean" }
             } },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "refresh_papers",
+            "title": "Read papers again from their source",
+            "description": "Read papers again from doi.org by their DOI, or arXiv, as records imported long ago may want: their pages, volume, title; their key, collections, labels, star, PDF, and an abstract the source lacks, kept. dry_run lists the fields that would change.",
+            "inputSchema": { "type": "object", "properties": {
+                "keys": { "type": "array", "items": { "type": "string" } },
+                "query": { "type": "string" },
+                "dry_run": { "type": "boolean", "default": false }
+            } },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
+        },
+        {
+            "name": "restore_papers",
+            "title": "Bring papers back from the trash",
+            "description": "Bring deleted papers back from the library's .trash/, with their PDFs; or, with pdf, a paper's PDF deleted or replaced, the PDF it has going to the trash in its place.",
+            "inputSchema": { "type": "object", "required": ["keys"], "properties": {
+                "keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "pdf": { "type": "boolean", "default": false }
+            } },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
         },
         {
             "name": "delete_papers",

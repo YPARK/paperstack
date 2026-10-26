@@ -1307,7 +1307,7 @@ fn library_export() -> serde_json::Value {
         },
         {
             "_id": "2", "pubtype": "PP_CONFERENCE_PAPER", "citekey": "Vance2017-pp",
-            "title": "Notice is all you want",
+            "title": "{Notice is all you want}",
             "author": [{ "first": "Ada", "last": "Vance" }],
             "published": { "year": "2017" }, "booktitle": "Advances in Neural Information Processing Systems",
             "foldersNamed": ["Research/ML/NLP", "Research/ML/Transformers"], "labelsNamed": ["Machine Learning"]
@@ -1372,6 +1372,8 @@ fn moves_a_library_from_its_export() {
     );
 
     let ml = index.get("Vance2017-pp").unwrap().unwrap();
+    // Braced whole by the other manager: unbraced as it comes in.
+    assert_eq!(ml.record.csl["title"], "Notice is all you want");
     assert_eq!(ml.record.csl_type(), "paper-conference");
     assert_eq!(
         keys(&index, "folder:\"Research/ML/NLP\"", Sort::Added),
@@ -1432,7 +1434,7 @@ fn serves_the_library_over_mcp() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"search_papers") && names.contains(&"read_paper") && names.len() == 11);
+    assert!(names.contains(&"search_papers") && names.contains(&"read_paper") && names.len() == 13);
 
     let call = |server: &mut crate::mcp::Server, name: &str, args: serde_json::Value| {
         server
@@ -1951,9 +1953,10 @@ fn keeps_a_titles_case_through_citeproc() {
         title,
         "A Single-Cell Atlas of {eQTLs} in the Fictional Kingdom"
     );
-    // Braced whole, as imported: not printed with its braces.
+    // Braced whole, as by hand, to keep its case: its braces kept, and what
+    // is within them escaped.
     let (title, _) = bib_fields("{Imputation via matrix completion & more}", "X");
-    assert_eq!(title, "Imputation via matrix completion \\& more");
+    assert_eq!(title, "{Imputation via matrix completion \\& more}");
     // Braced in part: the braces are BibTeX's, kept.
     let (title, _) = bib_fields("Bounding bias with the {W}-value", "X");
     assert_eq!(title, "Bounding bias with the {W}-value");
@@ -2594,4 +2597,381 @@ fn makes_an_address_a_page_names_whole() {
     ] {
         assert_eq!(absolute(href, base).as_deref(), Some(whole), "{href}");
     }
+}
+
+#[test]
+fn keeps_a_bibliography_up_to_date() {
+    let (dir, mut server) = mcp_server();
+    let out = dir.path().join("refs.bib");
+    let kept = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "query": "collection:CT1", "output": out, "keep": true }),
+    );
+    assert_eq!(
+        kept["isError"], true,
+        "a query finding nothing is not kept: {kept}"
+    );
+    let kept = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "query": "collection:mediation", "output": out, "keep": true }),
+    );
+    assert_eq!(kept["isError"], false, "{kept}");
+    assert!(
+        !std::fs::read_to_string(&out)
+            .unwrap()
+            .contains("Nakamura2016-al")
+    );
+    // A paper put in the collection is in the file once the change is done.
+    mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": "Nakamura2016-al", "add_collections": ["mediation"] }),
+    );
+    assert!(
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .contains("@article{Nakamura2016-al,")
+    );
+    // Kept by keys, one deleted: the file is left as it was, not cut short.
+    let keys_out = dir.path().join("keys.bib");
+    mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "keys": ["Whitlock2017-ex", "Corbett2021-mr"], "output": keys_out, "keep": true }),
+    );
+    mcp_call(
+        &mut server,
+        "delete_papers",
+        serde_json::json!({ "keys": ["Corbett2021-mr"] }),
+    );
+    assert!(
+        std::fs::read_to_string(&keys_out)
+            .unwrap()
+            .contains("Corbett2021-mr")
+    );
+    let listed = crate::kept::list(&server.index);
+    assert_eq!(listed.len(), 2);
+    assert!(crate::kept::forget(&server.index, &out).unwrap());
+    assert_eq!(crate::kept::list(&server.index).len(), 1);
+}
+
+#[test]
+fn restores_a_paper_and_a_pdf_from_the_trash() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kowalczyk2025-zs";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false).unwrap();
+    let path = index.get(key).unwrap().unwrap().path;
+    crate::remove::paper(&lib, &mut index, key).unwrap();
+    assert!(index.get(key).unwrap().is_none());
+    let back = crate::remove::restore(&lib, &mut index, key).unwrap();
+    assert_eq!(back, path);
+    let hit = index.get(key).unwrap().unwrap();
+    assert!(hit.has_pdf, "with its PDF");
+    assert!(!lib.root.join(crate::remove::TRASH).join(&path).exists());
+    assert!(
+        crate::remove::restore(&lib, &mut index, key).is_err(),
+        "here already"
+    );
+
+    crate::remove::pdf(&lib, &mut index, key).unwrap();
+    assert!(!index.get(key).unwrap().unwrap().has_pdf);
+    crate::remove::restore_pdf(&lib, &mut index, key).unwrap();
+    let hit = index.get(key).unwrap().unwrap();
+    assert!(hit.has_pdf);
+    assert!(record_of(&lib, &index, key).paperstack.pdf_sha256.is_some());
+}
+
+#[test]
+fn reads_a_paper_again_from_its_doi_keeping_what_is_ours() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("Whitlock2017-ex").unwrap().unwrap();
+    let doi = hit.record.doi().unwrap().to_string();
+    let mut fresh = hit.record.csl.clone();
+    fresh["page"] = serde_json::json!("R89-R98");
+    fresh["volume"] = serde_json::json!("50");
+    fresh.as_object_mut().unwrap().remove("abstract");
+    let net =
+        crate::net::Net::canned(&[(&format!("json https://doi.org/{doi}"), &fresh.to_string())]);
+    let folders = hit.record.paperstack.folders.clone();
+
+    let seen = crate::add::refresh(&lib, &mut index, &net, &hit, true).unwrap();
+    assert_eq!(
+        seen,
+        ["page", "volume"],
+        "the abstract kept, so not changed"
+    );
+    assert_ne!(
+        record_of(&lib, &index, "Whitlock2017-ex").csl["page"],
+        "R89-R98",
+        "a dry run"
+    );
+
+    crate::add::refresh(&lib, &mut index, &net, &hit, false).unwrap();
+    let r = record_of(&lib, &index, "Whitlock2017-ex");
+    assert_eq!(
+        (r.csl["page"].as_str(), r.csl["volume"].as_str()),
+        (Some("R89-R98"), Some("50"))
+    );
+    assert!(r.abstract_text().is_some());
+    assert_eq!(r.paperstack.folders, folders);
+}
+
+#[test]
+fn sets_a_records_fields_by_hand() {
+    let (_dir, lib, mut index) = library();
+    let key = "Whitlock2017-ex";
+    crate::add::set(
+        &lib,
+        &mut index,
+        key,
+        &[
+            (
+                "title".to_string(),
+                Some(serde_json::json!("{Memory Mosaics}")),
+            ),
+            ("note".to_string(), None),
+            ("page".to_string(), Some(serde_json::json!("R89-R98"))),
+        ],
+    )
+    .unwrap();
+    let r = record_of(&lib, &index, key);
+    assert_eq!(r.csl["page"], "R89-R98");
+    assert!(bibtex::entry(&r).contains("title = {{Memory Mosaics}}"));
+    assert!(crate::add::set(&lib, &mut index, key, &[("id".to_string(), None)]).is_err());
+}
+
+#[test]
+fn tidies_titles_braced_whole() {
+    let (_dir, lib, mut index) = library();
+    let key = "Whitlock2017-ex";
+    let mut r = record_of(&lib, &index, key);
+    let title = r.title().to_string();
+    r.csl["title"] = serde_json::json!(format!("{{{title}}}"));
+    r.paperstack.source = Some("import".to_string());
+    let path = index.get(key).unwrap().unwrap().path;
+    lib.save(&r, Some(&path)).unwrap();
+    index.refresh(&lib).unwrap();
+    assert_eq!(crate::add::tidy(&lib, &mut index, true).unwrap(), [key]);
+    assert_ne!(
+        record_of(&lib, &index, key).csl["title"],
+        title.as_str(),
+        "a dry run"
+    );
+    assert_eq!(crate::add::tidy(&lib, &mut index, false).unwrap(), [key]);
+    assert_eq!(record_of(&lib, &index, key).csl["title"], title.as_str());
+    assert!(
+        crate::add::tidy(&lib, &mut index, false)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn says_where_to_get_a_paper_none_gives() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("Whitlock2017-ex").unwrap().unwrap();
+    let e =
+        crate::add::open_copy(&lib, &mut index, &offline(), &hit, false, &|_| true).unwrap_err();
+    let none = e.downcast_ref::<crate::add::NoOpenCopy>().unwrap();
+    assert!(
+        none.page.contains(hit.record.doi().unwrap()),
+        "{}",
+        none.page
+    );
+    assert!(crate::cli::failed_json(&e, "x")["page"].as_str().is_some());
+}
+
+#[test]
+fn sets_fields_over_mcp_once_all_is_checked() {
+    let (_dir, mut server) = mcp_server();
+    let key = "Whitlock2017-ex";
+    // Its title changed, its record moves: set and saved at once.
+    let set = mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": key, "set": { "title": "A wholly new title", "page": "1-2" },
+            "add_labels": ["L1"] }),
+    );
+    assert_eq!(set["isError"], false, "{set}");
+    let r = record_of(&server.lib, &server.index, key);
+    assert_eq!(
+        (r.title(), r.csl["page"].as_str()),
+        ("A wholly new title", Some("1-2"))
+    );
+    assert!(r.paperstack.labels.contains(&"L1".to_string()));
+    // An alias another's: nothing changes.
+    let refused = mcp_call(
+        &mut server,
+        "update_paper",
+        serde_json::json!({ "key": key, "set": { "page": "9" }, "add_aliases": ["Corbett2021-mr"] }),
+    );
+    assert_eq!(refused["isError"], true);
+    assert_eq!(
+        record_of(&server.lib, &server.index, key).csl["page"],
+        "1-2"
+    );
+}
+
+#[test]
+fn keeps_what_was_set_by_hand_through_refresh_and_tidy() {
+    let (_dir, lib, mut index) = library();
+    let key = "Whitlock2017-ex";
+    let hit = index.get(key).unwrap().unwrap();
+    let doi = hit.record.doi().unwrap().to_string();
+    crate::add::set(
+        &lib,
+        &mut index,
+        key,
+        &[
+            (
+                "title".to_string(),
+                Some(serde_json::json!("{Bounding Hidden Bias}")),
+            ),
+            ("page".to_string(), Some(serde_json::json!("R89-R98"))),
+            ("note".to_string(), Some(serde_json::json!("ours"))),
+        ],
+    )
+    .unwrap();
+    let mut fresh = hit.record.csl.clone();
+    fresh["page"] = serde_json::json!("wrong");
+    fresh["volume"] = serde_json::json!("50");
+    let net =
+        crate::net::Net::canned(&[(&format!("json https://doi.org/{doi}"), &fresh.to_string())]);
+    let hit = index.get(key).unwrap().unwrap();
+    assert_eq!(
+        crate::add::refresh(&lib, &mut index, &net, &hit, false).unwrap(),
+        ["volume"]
+    );
+    let r = record_of(&lib, &index, key);
+    assert_eq!(r.csl["page"], "R89-R98", "as set by hand");
+    assert_eq!(r.csl["note"], "ours", "the source gives none");
+    assert_eq!(r.csl["title"], "{Bounding Hidden Bias}");
+    assert!(
+        crate::add::tidy(&lib, &mut index, false)
+            .unwrap()
+            .is_empty(),
+        "braced by hand"
+    );
+}
+
+#[test]
+fn reads_an_arxiv_paper_again_as_itself() {
+    let (_dir, lib, mut index) = library();
+    let hit = index.get("SCM-team2024-lc").unwrap().unwrap();
+    let id = hit.record.paperstack.arxiv.clone().unwrap();
+    let atom = format!(
+        "<feed><entry><title>{}</title><author><name>Jane Doe</name></author>\
+         <published>2024-12-01T00:00:00Z</published><arxiv:doi>10.5555/published.1</arxiv:doi></entry></feed>",
+        hit.record.title()
+    );
+    let journal = serde_json::json!({ "type": "article-journal", "title": "The published one",
+        "DOI": "10.5555/published.1" })
+    .to_string();
+    let net = crate::net::Net::canned(&[
+        ("text https://export.arxiv.org/api/query", atom.as_str()),
+        ("json https://doi.org/10.5555/published.1", journal.as_str()),
+    ]);
+    crate::add::refresh(&lib, &mut index, &net, &hit, false).unwrap();
+    let r = record_of(&lib, &index, "SCM-team2024-lc");
+    assert_eq!(
+        r.title(),
+        hit.record.title(),
+        "not the paper it was published as"
+    );
+    assert_eq!(r.paperstack.arxiv.as_deref(), Some(id.as_str()));
+}
+
+#[test]
+fn writes_a_bibliography_only_as_it_is_asked() {
+    use clap::Parser;
+    let parse = |w: &[&str]| crate::Args::try_parse_from(crate::args(w.iter().map(|w| w.into())));
+    assert!(
+        parse(&[
+            "paperstack",
+            "find",
+            "x",
+            "--output",
+            "a.bib",
+            "--limit",
+            "5"
+        ])
+        .is_err()
+    );
+    assert!(parse(&["paperstack", "find", "x", "--output", "a.bib", "--keys"]).is_err());
+    assert!(parse(&["paperstack", "find", "x", "--output", "a.bib", "--bib"]).is_ok());
+
+    let (dir, mut server) = mcp_server();
+    let out = dir.path().join("one.bib");
+    let one = mcp_call(
+        &mut server,
+        "cite",
+        serde_json::json!({ "key": "Whitlock2017-ex", "output": out }),
+    );
+    assert_eq!(one["isError"], false, "{one}");
+    assert_eq!(one["structuredContent"]["entries"], 1);
+}
+
+#[test]
+fn restores_no_pdf_it_would_have_to_guess() {
+    let (_dir, lib, mut index) = library();
+    let key = "Kowalczyk2025-zs";
+    let path = index.get(key).unwrap().unwrap().path;
+    let trash = lib.root.join(crate::remove::TRASH);
+    let elsewhere = trash
+        .join("2020/Else/A")
+        .join(path.file_name().unwrap())
+        .with_extension("pdf");
+    let other = trash
+        .join("2021/Else/B")
+        .join(path.file_name().unwrap())
+        .with_extension("pdf");
+    for p in [&elsewhere, &other] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"%PDF-1.4").unwrap();
+    }
+    let e = crate::remove::restore_pdf(&lib, &mut index, key).unwrap_err();
+    assert!(e.to_string().contains("more than one"), "{e}");
+    // The one trashed where the paper is filed is the one meant.
+    let here = trash.join(&path).with_extension("pdf");
+    std::fs::create_dir_all(here.parent().unwrap()).unwrap();
+    std::fs::write(&here, b"%PDF-1.4").unwrap();
+    crate::remove::restore_pdf(&lib, &mut index, key).unwrap();
+    assert!(index.get(key).unwrap().unwrap().has_pdf);
+}
+
+#[test]
+fn keeps_what_was_set_by_hand_when_a_preprint_is_published() {
+    let (_dir, lib, mut index) = library();
+    let key = "SCM-team2024-lc";
+    let hit = index.get(key).unwrap().unwrap();
+    crate::add::set(
+        &lib,
+        &mut index,
+        key,
+        &[("note".to_string(), Some(serde_json::json!("ours")))],
+    )
+    .unwrap();
+    let published = serde_json::json!({
+        "type": "article-journal", "title": hit.record.title(), "DOI": "10.5555/published.2",
+        "author": hit.record.csl["author"], "issued": hit.record.csl["issued"],
+        "container-title": "Fict Rev"
+    })
+    .to_string();
+    let net = crate::net::Net::canned(&[(
+        "json https://doi.org/10.5555/published.2",
+        published.as_str(),
+    )]);
+    let added = adder(&lib, &mut index, &net)
+        .add("10.5555/published.2")
+        .unwrap();
+    assert_eq!(added.key, key);
+    assert_eq!(added.outcome, crate::add::Outcome::Published);
+    let r = record_of(&lib, &index, key);
+    assert_eq!(
+        (r.doi(), r.csl["note"].as_str()),
+        (Some("10.5555/published.2"), Some("ours"))
+    );
 }

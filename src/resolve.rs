@@ -94,7 +94,8 @@ pub fn by_doi_at(net: &Net, doi: &str, page: Option<&str>) -> anyhow::Result<Fou
     })
 }
 
-fn by_doi_only(net: &Net, doi: &str) -> anyhow::Result<Found> {
+/// The paper of `doi`, as doi.org gives it: not what it was published as.
+pub fn by_doi_only(net: &Net, doi: &str) -> anyhow::Result<Found> {
     let csl = net.json(
         &format!("https://doi.org/{doi}"),
         "application/vnd.citationstyles.csl+json",
@@ -113,6 +114,16 @@ fn related(csl: &Value, kind: &str) -> Option<String> {
 }
 
 pub fn by_arxiv(net: &Net, id: &str) -> anyhow::Result<Found> {
+    by_arxiv_as(net, id, true)
+}
+
+/// The paper `id`, as arXiv gives it: not what it was published as.
+pub fn by_arxiv_only(net: &Net, id: &str) -> anyhow::Result<Found> {
+    by_arxiv_as(net, id, false)
+}
+
+/// The paper `id`; if `published`, as the DOI arXiv names gives it.
+fn by_arxiv_as(net: &Net, id: &str, published: bool) -> anyhow::Result<Found> {
     let atom = net.text(
         "https://export.arxiv.org/api/query",
         &[("id_list", id), ("max_results", "1")],
@@ -127,7 +138,7 @@ pub fn by_arxiv(net: &Net, id: &str) -> anyhow::Result<Found> {
         bail!("arXiv does not know {id}");
     }
     let pdf = arxiv_pdf(id);
-    if let Some(doi) = tag(entry, "arxiv:doi") {
+    if let Some(doi) = tag(entry, "arxiv:doi").filter(|_| published) {
         let doi = source::clean_doi(&doi);
         if let Ok(mut found) = by_doi(net, &doi) {
             found.arxiv = Some(id.to_string());

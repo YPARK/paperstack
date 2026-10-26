@@ -493,11 +493,13 @@ impl Index {
         }
     }
 
-    /// Write the cache, if it changed.
+    /// Write the cache, where it changed, and the bibliographies kept up
+    /// to date with it.
     pub fn flush(&mut self) -> anyhow::Result<()> {
         if self.dirty {
             self.save()?;
             self.dirty = false;
+            crate::kept::sync(self);
         }
         Ok(())
     }

@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     /// The citation key, `Surname2025-xy`: given once, never
     /// changed, and the start of the files' names.
@@ -37,6 +37,10 @@ pub struct Meta {
     /// Keys of papers merged into this one, which still cite it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// Fields of `csl` set by hand, as by `paperstack set`: kept as they
+    /// are when the paper is read again, and by `paperstack tidy`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand: Vec<String>,
     /// Where the metadata came from, as `doi.org`, or `import`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -139,6 +143,39 @@ impl Record {
     /// The year issued, from any of CSL's forms of a date.
     pub fn year(&self) -> Option<i32> {
         year(&self.csl)
+    }
+
+    /// Its DOI, but for arXiv's own, and its arXiv id, by its field or its
+    /// DOI: what to read it again by, or find an open copy by.
+    pub fn ids(&self) -> (Option<&str>, Option<&str>) {
+        let doi = self.doi();
+        let arxiv = self
+            .paperstack
+            .arxiv
+            .as_deref()
+            .or_else(|| doi.and_then(crate::source::arxiv_of_doi));
+        let doi = doi.filter(|d| crate::source::arxiv_of_doi(d).is_none());
+        (doi, arxiv)
+    }
+
+    /// `csl` in place of its own, as a source gives the paper again: the
+    /// fields set by hand kept as set, and, if `keep_absent`, those the
+    /// source does not give.
+    pub fn take_csl(&mut self, mut csl: Value, keep_absent: bool) {
+        if let (Value::Object(old), Value::Object(new)) = (&self.csl, &mut csl) {
+            if keep_absent {
+                for (field, value) in old {
+                    new.entry(field.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            for field in &self.paperstack.hand {
+                match old.get(field) {
+                    Some(v) => new.insert(field.clone(), v.clone()),
+                    None => new.remove(field),
+                };
+            }
+        }
+        self.csl = csl;
     }
 
     /// The paper as a CSL item, its `id` the key.

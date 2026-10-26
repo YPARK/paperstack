@@ -363,6 +363,8 @@ impl std::error::Error for IsPreprint {}
 pub struct NoOpenCopy {
     pub key: String,
     pub tried: Vec<Tried>,
+    /// Its page, to open in the browser and download it there.
+    pub page: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -435,12 +437,7 @@ pub fn open_copy(
     if hit.has_pdf && pdf_version(lib, hit) != Some(Version::Preprint) {
         return Err(NotPreprint(key.clone()).into());
     }
-    let arxiv = r
-        .paperstack
-        .arxiv
-        .as_deref()
-        .or_else(|| r.doi().and_then(crate::source::arxiv_of_doi));
-    let doi = r.doi().filter(|d| crate::source::arxiv_of_doi(d).is_none());
+    let (doi, arxiv) = r.ids();
     // The publisher's own is as published; a preprint server's, as
     // submitted, whatever OpenAlex says.
     let copy = |url: String, version, landing| {
@@ -542,6 +539,7 @@ pub fn open_copy(
     Err(NoOpenCopy {
         key: key.clone(),
         tried,
+        page: crate::browser::page(r),
     }
     .into())
 }
@@ -583,12 +581,137 @@ struct Download<'b> {
 }
 
 impl Download<'_> {
-    /// Put in `r`: its hash, and its version where that is told.
     fn stamp(&self, r: &mut Record) {
-        r.paperstack.pdf_sha256 = Some(sha256(&self.bytes));
-        let text = first_page_of(&self.bytes);
-        r.paperstack.pdf_version = version_of(&r.csl, &self.from, &text, None);
+        stamp(r, &self.bytes, &self.from);
     }
+}
+
+/// Put in `r` the hash of its PDF, `bytes`, from `from`, and which version
+/// it is, where that is told.
+pub fn stamp(r: &mut Record, bytes: &[u8], from: &str) {
+    r.paperstack.pdf_sha256 = Some(sha256(bytes));
+    let text = first_page_of(bytes);
+    r.paperstack.pdf_version = version_of(&r.csl, from, &text, None);
+}
+
+/// Read the paper `hit` is again, from doi.org by its DOI, or from arXiv,
+/// as a record imported or added long ago may want; what is ours of it,
+/// its key, collections, labels, star and PDF, kept, and an abstract or
+/// PMID the source does not give kept too. The fields that change, or, if
+/// `dry_run`, would.
+pub fn refresh(
+    lib: &Library,
+    index: &mut Index,
+    net: &Net,
+    hit: &Hit,
+    dry_run: bool,
+) -> anyhow::Result<Vec<String>> {
+    let r = &hit.record;
+    // As itself: a preprint is not read again as what it was published as.
+    let found = match r.ids() {
+        (Some(doi), _) => resolve::by_doi_only(net, doi)?,
+        (None, Some(id)) => resolve::by_arxiv_only(net, id)?,
+        (None, None) => bail!("{} has no DOI nor arXiv id to read it again by", r.key),
+    };
+    let mut record = crate::library::read(&lib.root.join(&hit.path))?;
+    let was = record.csl.clone();
+    record.take_csl(found.csl, true);
+    let changed: Vec<String> = match (&was, &record.csl) {
+        (Value::Object(old), Value::Object(new)) => old
+            .keys()
+            .chain(new.keys())
+            .filter(|f| old.get(*f) != new.get(*f))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    };
+    if dry_run || changed.is_empty() {
+        return Ok(changed);
+    }
+    record.paperstack.source = Some(found.source.to_string());
+    let path = lib.save(&record, Some(&hit.path))?;
+    index.upsert(lib, &path, record, Some(&hit.path))?;
+    Ok(changed)
+}
+
+/// Set fields of the record of the paper `key`, as CSL names them: each
+/// to its value, or, given none, taken away. Its `id` is its key, not set.
+pub fn set(
+    lib: &Library,
+    index: &mut Index,
+    key: &str,
+    fields: &[(String, Option<Value>)],
+) -> anyhow::Result<()> {
+    let key = index
+        .get(key)?
+        .with_context(|| format!("no paper with the key {key}"))?
+        .record
+        .key
+        .clone();
+    crate::remove::edit(lib, index, &[key], |r| {
+        set_fields(r, fields)?;
+        Ok(true)
+    })?;
+    Ok(())
+}
+
+/// Set `fields` of `record`, as [`set`] does, each kept as set by hand.
+pub fn set_fields(record: &mut Record, fields: &[(String, Option<Value>)]) -> anyhow::Result<()> {
+    if fields.iter().any(|(f, _)| f == "id") {
+        bail!("a record's id is its key, which stays as it is");
+    }
+    let Value::Object(csl) = &mut record.csl else {
+        bail!("{}'s record is not a CSL item", record.key);
+    };
+    for (field, value) in fields {
+        match value {
+            Some(v) => csl.insert(field.clone(), v.clone()),
+            None => csl.remove(field),
+        };
+        if !record.paperstack.hand.contains(field) {
+            record.paperstack.hand.push(field.clone());
+        }
+    }
+    Ok(())
+}
+
+/// Take off the braces around titles braced whole, as a BibTeX import
+/// left them: of papers imported, but those whose title was set by hand.
+/// The keys of the papers changed, or, if `dry_run`, that would be.
+pub fn tidy(lib: &Library, index: &mut Index, dry_run: bool) -> anyhow::Result<Vec<String>> {
+    let wanting = |r: &Record| {
+        let m = &r.paperstack;
+        let imported =
+            m.source.as_deref() == Some("import") && !m.hand.iter().any(|f| f == "title");
+        imported
+            && matches!(r.csl.get("title"), Some(Value::String(t))
+                if crate::record::unbraced(t.trim()) != t.trim())
+    };
+    let all = index.search(
+        &crate::query::Query::parse(""),
+        crate::index::Sort::Added,
+        false,
+        None,
+    )?;
+    let keys: Vec<String> = all
+        .iter()
+        .filter(|h| wanting(&h.record))
+        .map(|h| h.record.key.clone())
+        .collect();
+    if !dry_run {
+        crate::remove::edit(lib, index, &keys, |r| {
+            if !wanting(r) {
+                return Ok(false);
+            }
+            if let Some(Value::String(t)) = r.csl.get_mut("title") {
+                *t = crate::record::unbraced(t.trim()).to_string();
+            }
+            Ok(true)
+        })?;
+    }
+    Ok(keys)
 }
 
 pub struct Adder<'a> {
@@ -1036,7 +1159,7 @@ impl Adder<'_> {
         if found.source == UNRESOLVED {
             // Nothing knew it: what is here stays as it is.
         } else if record.is_unresolved() {
-            record.csl = std::mem::take(&mut found.csl);
+            record.take_csl(std::mem::take(&mut found.csl), false);
             record.paperstack.labels.retain(|l| l != UNRESOLVED);
             record.paperstack.arxiv = record.paperstack.arxiv.or(found.arxiv.clone());
             record.paperstack.source = Some(found.source.to_string());
@@ -1044,7 +1167,7 @@ impl Adder<'_> {
             changed = true;
         } else if is_preprint(&record.csl) && !is_preprint(&found.csl) {
             let pmid = record.csl.get("PMID").cloned();
-            record.csl = found.csl.clone();
+            record.take_csl(found.csl.clone(), false);
             if let (Some(pmid), Value::Object(map)) = (pmid, &mut record.csl) {
                 map.entry("PMID").or_insert(pmid);
             }

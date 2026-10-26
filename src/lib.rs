@@ -12,6 +12,7 @@ mod cli;
 mod daemon;
 mod demo;
 mod index;
+mod kept;
 mod keymap;
 mod layout;
 mod library;
@@ -126,6 +127,51 @@ enum Command {
         limit: Option<usize>,
         #[command(flatten)]
         format: cli::Format,
+        /// Write the bibliography to this .bib (or .json, CSL JSON) file,
+        /// replaced whole: every paper found
+        #[arg(long, short, conflicts_with_all = ["limit", "reverse", "json", "keys", "paths"])]
+        output: Option<PathBuf>,
+        /// With --output, keep the file up to date as the library changes
+        #[arg(long, requires = "output")]
+        keep: bool,
+    },
+    /// The bibliographies kept up to date, by `find --output FILE --keep`
+    Kept {
+        /// Keep this one up to date no more
+        #[arg(long)]
+        forget: Option<PathBuf>,
+    },
+    /// Bring deleted papers back from the trash; or, with --pdf, a paper's
+    /// PDF deleted or replaced, the one it has going to the trash instead
+    Restore {
+        #[arg(required = true)]
+        keys: Vec<String>,
+        #[arg(long)]
+        pdf: bool,
+    },
+    /// Read papers again from doi.org by their DOI, or arXiv: their pages,
+    /// volume, title; their key, collections, labels, star and PDF kept
+    Refresh {
+        #[arg(required_unless_present = "query")]
+        keys: Vec<String>,
+        #[arg(long, short)]
+        query: Option<String>,
+        /// Say what would change, and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Set fields of a paper's record, as CSL names them: page=R89-R98;
+    /// a field given no value, as note=, is taken away
+    Set {
+        key: String,
+        #[arg(required = true, value_name = "FIELD=VALUE")]
+        fields: Vec<String>,
+    },
+    /// Take off the braces around titles braced whole, as a BibTeX import
+    /// leaves them
+    Tidy {
+        #[arg(long)]
+        dry_run: bool,
     },
     /// One paper, by its key or a key merged into it
     Get {
@@ -170,6 +216,10 @@ enum Command {
         /// published version in its place, the preprint's to the trash
         #[arg(long)]
         published: bool,
+        /// For the papers no open copy is had of, open their pages in the
+        /// browser and await their PDFs downloaded there
+        #[arg(long, conflicts_with = "no_browser")]
+        open: bool,
         /// How long to wait for the download, in minutes
         #[arg(long, default_value_t = 15)]
         wait: u64,
@@ -372,36 +422,69 @@ fn email(given: Option<String>) -> Option<String> {
 }
 
 /// The program, as `paperstack` or `pst`.
-/// Open the page of `hit` in the browser and wait `wait` minutes for its
-/// PDF to be downloaded there: the first that is that paper's is filed.
-fn await_download(
+/// Open the pages of `hits` in the browser and wait `wait` minutes for
+/// their PDFs to be downloaded there: each that is one of those papers'
+/// is filed with it. What came of each.
+fn await_downloads(
     lib: &Library,
     index: &mut Index,
-    hit: &index::Hit,
+    hits: &[index::Hit],
     wait: u64,
-) -> anyhow::Result<anyhow::Result<add::Added>> {
-    let key = &hit.record.key;
-    let page = browser::page(&hit.record);
-    browser::open(&page)?;
+) -> anyhow::Result<Vec<(String, anyhow::Result<add::Added>)>> {
+    if hits.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut arrivals = browser::Arrivals::new(browser::downloads());
+    for hit in hits {
+        let page = browser::page(&hit.record);
+        browser::open(&page)?;
+        eprintln!("opened {page}");
+    }
     eprintln!(
-        "opened {page}\ndownload its PDF there; waiting for it in {} …",
+        "download their PDFs there; waiting for them in {} …",
         browser::tilde(&arrivals.dir)
     );
+    let mut wanting: Vec<&index::Hit> = hits.iter().collect();
+    let mut done = Vec::new();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(wait * 60);
-    while std::time::Instant::now() < until {
+    while !wanting.is_empty() && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(500));
         for path in arrivals.next() {
             let from = browser::tilde(&path);
-            match add::attach(lib, index, key, &std::fs::read(&path)?, &from, false) {
-                Ok(added) => return Ok(Ok(added)),
-                Err(e) => eprintln!("paperstack: {}", add::one_line(&e)),
+            let bytes = std::fs::read(&path)?;
+            // Read once, to tell whose it is, of those still wanting theirs.
+            let reading = match pdf::read(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("paperstack: {from}: {}", add::one_line(&e));
+                    continue;
+                }
+            };
+            let whose = wanting.iter().position(|h| {
+                let r = &h.record;
+                add::shows(&reading, r.title(), r.doi(), r.paperstack.arxiv.as_deref())
+                    == Some(true)
+            });
+            let Some(at) = whose else {
+                eprintln!("paperstack: {from} is none of theirs");
+                continue;
+            };
+            let key = wanting[at].record.key.clone();
+            match add::attach(lib, index, &key, &bytes, &from, false) {
+                Ok(added) => {
+                    wanting.remove(at);
+                    done.push((key, Ok(added)));
+                }
+                Err(e) => eprintln!("paperstack: {from}: {}", add::one_line(&e)),
             }
         }
     }
-    Ok(Err(anyhow::anyhow!(
-        "no PDF of {key} came in {wait} minutes"
-    )))
+    done.extend(wanting.into_iter().map(|h| {
+        let key = &h.record.key;
+        let e = anyhow::anyhow!("no PDF of {key} came in {wait} minutes");
+        (key.clone(), Err(e))
+    }));
+    Ok(done)
 }
 
 /// The key and the PDF's path or address of `attach KEY FILE`: a second
@@ -589,6 +672,7 @@ pub fn main() -> anyhow::Result<()> {
             query,
             no_browser,
             published,
+            open: open_pages,
             wait,
             json,
         }) => {
@@ -604,24 +688,30 @@ pub fn main() -> anyhow::Result<()> {
                 return cli::print_added(&lib, &[(key.to_string(), done)], json);
             }
             let chosen = index.choose(what.iter().map(String::as_str), query.as_deref())?;
-            let browser = chosen.papers.len() == 1 && !no_browser && wait > 0;
+            // The browser for one paper, unless told not to; for many, if asked.
+            let browser = (open_pages || (chosen.papers.len() == 1 && !no_browser)) && wait > 0;
             let net = net();
             let say = |s: &str| {
                 eprintln!("paperstack: {s}");
                 true
             };
             let mut done = add::open_copies(&lib, &mut index, &net, chosen.papers, published, &say);
-            // One paper behind a paywall: its page in the browser.
-            if let [(key, got)] = &mut done[..]
-                && browser
-                && let Err(e) = got
-                && e.is::<add::NoOpenCopy>()
-            {
-                eprintln!("paperstack: {}", add::one_line(e));
-                let hit = index
-                    .get(key)?
-                    .ok_or_else(|| anyhow::anyhow!("no paper with the key {key}"))?;
-                *got = await_download(&lib, &mut index, &hit, wait)?;
+            if browser {
+                let wanting: Vec<index::Hit> = done
+                    .iter()
+                    .filter_map(|(key, got)| match got {
+                        Err(e) if e.is::<add::NoOpenCopy>() => {
+                            eprintln!("paperstack: {}", add::one_line(e));
+                            index.get(key).ok().flatten()
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for (key, got) in await_downloads(&lib, &mut index, &wanting, wait)? {
+                    if let Some(slot) = done.iter_mut().find(|(k, _)| *k == key) {
+                        slot.1 = got;
+                    }
+                }
             }
             done.extend(
                 chosen
@@ -850,11 +940,118 @@ pub fn main() -> anyhow::Result<()> {
             reverse,
             limit,
             format,
+            output,
+            keep,
         }) => {
             let (lib, index) = open(&args.library)?;
             query.extend(not.iter().map(|w| format!("-{w}")));
-            let hits = index.search(&Query::parse(&query.join(" ")), sort, reverse, limit)?;
+            let query = query.join(" ");
+            if let Some(output) = output {
+                let asked = (format.bib.then_some(kept::Format::Bibtex))
+                    .or(format.csl.then_some(kept::Format::Csl));
+                let bib = kept::Bib {
+                    format: kept::Format::asked(&output, asked)?,
+                    output: output.clone(),
+                    query: Some(query),
+                    keys: Vec::new(),
+                };
+                let n = kept::write_out(&index, bib, keep)?.len();
+                let kept = if keep { ", kept up to date" } else { "" };
+                println!("{}: {n} papers{kept}", output.display());
+                return Ok(());
+            }
+            let hits = index.search(&Query::parse(&query), sort, reverse, limit)?;
             cli::print(&lib, &hits, &format)
+        }
+        Some(Command::Kept { forget }) => {
+            let (_, index) = open(&args.library)?;
+            // Each written again, as the library is now.
+            kept::sync(&index);
+            if let Some(path) = forget {
+                anyhow::ensure!(
+                    kept::forget(&index, &path)?,
+                    "{} is not kept",
+                    path.display()
+                );
+                return Ok(());
+            }
+            for bib in kept::list(&index) {
+                let of = bib.query.unwrap_or_else(|| bib.keys.join(" "));
+                println!("{}\t{of}", bib.output.display());
+            }
+            Ok(())
+        }
+        Some(Command::Restore { keys, pdf }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let mut failed = 0;
+            for key in &keys {
+                let back = if pdf {
+                    remove::restore_pdf(&lib, &mut index, key)
+                } else {
+                    remove::restore(&lib, &mut index, key)
+                };
+                match back {
+                    Ok(path) => println!("{key:<24} back: {}", path.display()),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("paperstack: {key}: {e:#}");
+                    }
+                }
+            }
+            anyhow::ensure!(failed == 0, "{failed} not brought back");
+            Ok(())
+        }
+        Some(Command::Refresh {
+            keys,
+            query,
+            dry_run,
+        }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let chosen = index.choose(keys.iter().map(String::as_str), query.as_deref())?;
+            for key in &chosen.missing {
+                eprintln!("paperstack: no paper with the key {key}");
+            }
+            let net = net();
+            let mut failed = chosen.missing.len();
+            for p in chosen.papers {
+                let key = &p.hit.record.key;
+                match add::refresh(&lib, &mut index, &net, &p.hit, dry_run) {
+                    Ok(changed) if changed.is_empty() => println!("{key:<24} as it was"),
+                    Ok(changed) => {
+                        let would = if dry_run { "would change" } else { "changed" };
+                        println!("{key:<24} {would}: {}", changed.join(", "));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("paperstack: {key}: {}", add::one_line(&e));
+                    }
+                }
+            }
+            anyhow::ensure!(failed == 0, "{failed} not read again");
+            Ok(())
+        }
+        Some(Command::Set { key, fields }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let fields = fields
+                .iter()
+                .map(|f| {
+                    let (name, value) = f
+                        .split_once('=')
+                        .ok_or_else(|| anyhow::anyhow!("{f}: give FIELD=VALUE"))?;
+                    let value = (!value.is_empty()).then(|| serde_json::json!(value));
+                    Ok((name.trim().to_string(), value))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            add::set(&lib, &mut index, &key, &fields)?;
+            println!("{key:<24} set");
+            Ok(())
+        }
+        Some(Command::Tidy { dry_run }) => {
+            let (lib, mut index) = open(&args.library)?;
+            let changed = add::tidy(&lib, &mut index, dry_run)?;
+            let would = if dry_run { "would be " } else { "" };
+            println!("{} titles {would}unbraced", changed.len());
+            Ok(())
         }
         Some(Command::Get { key, format }) => {
             let (lib, index) = open(&args.library)?;

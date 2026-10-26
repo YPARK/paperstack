@@ -170,14 +170,15 @@ fn escape(s: &str) -> String {
 }
 
 /// A title for citeproc, as pandoc's, which lowers in it what is not
-/// braced: braced whole, as imported, unbraced, and braced in part as
-/// given; its HTML as LaTeX; and the words whose capitals are the authors'
+/// braced: what is braced, in part or whole, kept as given (`paperstack
+/// tidy` takes off the braces a BibTeX import put around whole titles);
+/// its HTML as LaTeX; and the words whose capitals are the authors'
 /// braced. In a title in title case, those are the words with capitals
 /// past their first letter, as `eQTLs`, and the names its `abstract`
 /// gives, by [`names_in`]; in one in sentence case, any word with a
 /// capital, but the first.
 pub fn title(raw: &str, abstract_text: Option<&str>) -> String {
-    let pieces = pieces(crate::record::unbraced(raw.trim()));
+    let pieces = pieces(raw.trim());
     let words = pieces
         .iter()
         .filter_map(|p| match p {
@@ -205,9 +206,7 @@ pub fn title(raw: &str, abstract_text: Option<&str>) -> String {
         match piece {
             Piece::Text(t) => out.push_str(&protect(&t, &case, &mut first)),
             Piece::Braced(t) => {
-                out.push('{');
-                out.push_str(t);
-                out.push('}');
+                out.push_str(&format!("{{{}}}", as_given(t)));
                 first = false;
             }
             Piece::Math(m) => {
@@ -223,6 +222,20 @@ pub fn title(raw: &str, abstract_text: Option<&str>) -> String {
         }
     }
     out
+}
+
+/// What was braced in a title, its case kept by the braces: escaped, its
+/// HTML as LaTeX, its math and the braces within it as they are.
+fn as_given(braced: &str) -> String {
+    pieces(braced)
+        .into_iter()
+        .map(|p| match p {
+            Piece::Text(t) => escape(&t),
+            Piece::Braced(t) => format!("{{{}}}", as_given(t)),
+            Piece::Math(m) => m.to_string(),
+            Piece::Markup(command, t) => format!("\\{command}{{{}}}", escape(&t)),
+        })
+        .collect()
 }
 
 /// A part of a title: text; what was braced in it, kept as BibTeX; math,

@@ -92,6 +92,7 @@ pub fn pdf(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<PathBu
             .with_context(|| format!("cannot move {} to the trash", pdf.display()))?;
     }
     record.paperstack.pdf_sha256 = None;
+    record.paperstack.pdf_version = None;
     let saved = lib.save(&record, Some(&hit.path));
     let path = match saved {
         Ok(path) => path,
@@ -102,6 +103,112 @@ pub fn pdf(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<PathBu
     };
     index.upsert(lib, &path, record, Some(&hit.path))?;
     Ok(to)
+}
+
+/// The files in the trash of the paper `key`, by their names, `<key>_…`,
+/// ending in `.ext`: from the library's root.
+fn in_trash(lib: &Library, key: &str, ext: &str) -> Vec<PathBuf> {
+    let (start, end) = (format!("{}_", key.to_lowercase()), format!(".{ext}"));
+    let mut found = Vec::new();
+    let mut dirs = vec![lib.root.join(TRASH)];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(path);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.starts_with(&start) && name.ends_with(&end) {
+                found.push(path.strip_prefix(&lib.root).unwrap_or(&path).to_path_buf());
+            }
+        }
+    }
+    found
+}
+
+/// The one file of `found`, the trash's of `what`: none guessed between.
+fn only_one(mut found: Vec<PathBuf>, what: &str) -> anyhow::Result<PathBuf> {
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => bail!("no {what} is in the trash"),
+        _ => bail!(
+            "more than one {what} is in the trash: {}; move the one meant back by hand",
+            found
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Bring the paper `key` back from the trash, its record and its PDF, where
+/// it was filed; its record's path, from the library's root. Not where a
+/// paper with that key is here again, as added since.
+pub fn restore(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<PathBuf> {
+    if let Some(hit) = index.get(key)? {
+        bail!("{} is in the library already", hit.record.key);
+    }
+    let trashed = only_one(
+        in_trash(lib, key, "json"),
+        &format!("paper with the key {key}"),
+    )?;
+    let rel = trashed.strip_prefix(TRASH)?.to_path_buf();
+    let (from, to) = (lib.root.join(&trashed), lib.root.join(&rel));
+    if to.exists() {
+        bail!("{} is there already", to.display());
+    }
+    fs::create_dir_all(to.parent().expect("filed in a folder"))?;
+    // The PDF first: once the record is back, the paper is.
+    let pdf = from.with_extension("pdf");
+    if pdf.exists() && !to.with_extension("pdf").exists() {
+        fs::rename(&pdf, to.with_extension("pdf"))?;
+    }
+    fs::rename(&from, &to).with_context(|| format!("cannot move {} back", from.display()))?;
+    lib.prune(&from);
+    let record = crate::library::read(&to)?;
+    index.upsert(lib, &rel, record, None)?;
+    Ok(rel)
+}
+
+/// Bring the PDF of the paper `key` back from the trash: the one trashed
+/// where it is filed, as when the paper's PDF was deleted or replaced, or
+/// the only one there is; none is guessed between. The PDF it has,
+/// if any, goes to the trash in its place. Its path in the trash, from the
+/// library's root.
+pub fn restore_pdf(lib: &Library, index: &mut Index, key: &str) -> anyhow::Result<PathBuf> {
+    let hit = index
+        .get(key)?
+        .with_context(|| format!("no paper with the key {key}"))?;
+    // The one trashed where the paper is filed, else the only one.
+    let filed = Path::new(TRASH).join(&hit.path).with_extension("pdf");
+    let all = in_trash(lib, &hit.record.key, "pdf");
+    let trashed = if all.contains(&filed) {
+        filed
+    } else {
+        only_one(all, &format!("PDF of {key}"))?
+    };
+    let (from, here) = (
+        lib.root.join(&trashed),
+        lib.root.join(&hit.path).with_extension("pdf"),
+    );
+    let bytes = fs::read(&from)?;
+    if here.exists() {
+        // The two swap places, through a third name.
+        let aside = here.with_extension("pdf.swap");
+        fs::rename(&here, &aside)?;
+        fs::rename(&from, &here)?;
+        fs::rename(&aside, &from)?;
+    } else {
+        fs::rename(&from, &here)?;
+        lib.prune(&from);
+    }
+    let mut record = crate::library::read(&lib.root.join(&hit.path))?;
+    crate::add::stamp(&mut record, &bytes, "");
+    let path = lib.save(&record, Some(&hit.path))?;
+    index.upsert(lib, &path, record, Some(&hit.path))?;
+    Ok(trashed)
 }
 
 /// Take the collection or label `name` off every paper with it, and its
@@ -130,12 +237,13 @@ pub fn shelf(lib: &Library, index: &mut Index, shelf: Shelf, name: &str) -> anyh
         bail!("no {} {name}", shelf.name());
     }
     let keys: Vec<String> = hits.iter().map(|h| h.record.key.clone()).collect();
-    edit(lib, index, &keys, |m| {
+    edit(lib, index, &keys, |r| {
+        let m = &mut r.paperstack;
         match shelf {
             Shelf::Collection => m.folders.retain(|n| !gone(n)),
             Shelf::Label => m.labels.retain(|n| !gone(n)),
         }
-        true
+        Ok(true)
     })?;
     Ok(hits.len())
 }
@@ -152,12 +260,13 @@ pub fn label(
     if name.is_empty() {
         bail!("give the label's name");
     }
-    edit(lib, index, keys, |m| {
+    edit(lib, index, keys, |r| {
+        let m = &mut r.paperstack;
         let has = m.labels.iter().any(|l| l.eq_ignore_ascii_case(name));
         if !has {
             m.labels.push(name.to_string());
         }
-        !has
+        Ok(!has)
     })
 }
 
@@ -168,14 +277,14 @@ pub fn edit(
     lib: &Library,
     index: &mut Index,
     keys: &[String],
-    change: impl Fn(&mut crate::record::Meta) -> bool,
+    change: impl Fn(&mut crate::record::Record) -> anyhow::Result<bool>,
 ) -> anyhow::Result<usize> {
     let mut written = Vec::new();
     let mut each = || -> anyhow::Result<()> {
         for key in keys {
             let Some(h) = index.get(key)? else { continue };
             let mut record = crate::library::read(&lib.root.join(&h.path))?;
-            if change(&mut record.paperstack) {
+            if change(&mut record)? {
                 let path = lib.save(&record, Some(&h.path))?;
                 written.push((path, record, h.path));
             }
