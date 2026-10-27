@@ -10,43 +10,52 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// The page to open for `r`: its DOI's, through the proxy if there is one;
-/// else its address, or arXiv's; else a search for its title.
+/// The page to open for `r`: its own, its DOI's or address through the
+/// proxy if there is one; else a search for its title.
 pub fn page(r: &Record) -> String {
-    let proxy = std::env::var("PAPERSTACK_PROXY").unwrap_or_default();
-    if let Some(doi) = r.doi() {
-        return format!("{proxy}https://doi.org/{doi}");
+    match own(r) {
+        Some((page, true)) => {
+            let proxy = std::env::var("PAPERSTACK_PROXY").unwrap_or_default();
+            format!("{proxy}{page}")
+        }
+        Some((page, false)) => page,
+        None => {
+            let words: String = r.title().split_whitespace().collect::<Vec<_>>().join("+");
+            format!("https://scholar.google.com/scholar?q={words}")
+        }
     }
-    if let Some(url) = r.csl.get("URL").and_then(|u| u.as_str()) {
-        return format!("{proxy}{url}");
-    }
-    if let Some(id) = &r.paperstack.arxiv {
-        return format!("https://arxiv.org/abs/{id}");
-    }
-    let words: String = r.title().split_whitespace().collect::<Vec<_>>().join("+");
-    format!("https://scholar.google.com/scholar?q={words}")
 }
 
 /// The paper's own page on the web, to share: its DOI's, its address,
 /// arXiv's or PubMed's; none, if nothing names one.
 pub fn address(r: &Record) -> Option<String> {
-    let text = |field| {
-        r.csl
-            .get(field)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    };
+    own(r).map(|(page, _)| page)
+}
+
+/// The paper's own page, and whether a paywall may stand before it, as
+/// before a publisher's, though not arXiv's or PubMed's.
+fn own(r: &Record) -> Option<(String, bool)> {
     if let Some(doi) = r.doi() {
-        return Some(format!("https://doi.org/{doi}"));
+        // A DOI may hold what an address reads otherwise, as SICI's `#`.
+        let mut path = String::new();
+        for c in doi.chars() {
+            match c {
+                '%' | '#' | '?' | '"' | '<' | '>' | ' ' => {
+                    path.push_str(&format!("%{:02X}", c as u32))
+                }
+                c => path.push(c),
+            }
+        }
+        return Some((format!("https://doi.org/{path}"), true));
     }
-    if let Some(url) = text("URL") {
-        return Some(url.to_string());
+    if let Some(url) = r.text("URL") {
+        return Some((url.to_string(), true));
     }
     if let Some(id) = &r.paperstack.arxiv {
-        return Some(format!("https://arxiv.org/abs/{id}"));
+        return Some((format!("https://arxiv.org/abs/{id}"), false));
     }
-    text("PMID").map(|id| format!("https://pubmed.ncbi.nlm.nih.gov/{id}/"))
+    let pmid = r.text("PMID")?;
+    Some((format!("https://pubmed.ncbi.nlm.nih.gov/{pmid}/"), false))
 }
 
 /// Open `url` in the browser: the one `PAPERSTACK_BROWSER` names, as

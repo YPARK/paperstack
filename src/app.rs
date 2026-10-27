@@ -1020,8 +1020,9 @@ impl App {
             KeyCode::Char('C') => {
                 let papers: Vec<_> = self.picked().iter().map(|h| h.record.clone()).collect();
                 if !papers.is_empty() {
-                    self.cite_at = self.cite_at.max(1);
-                    self.popup = Popup::Cite(Box::new(Cite::new(papers, self.cite_at)));
+                    // Left as it is for ctrl-e, till s goes on from here.
+                    let at = self.cite_at.max(1);
+                    self.popup = Popup::Cite(Box::new(Cite::new(papers, at)));
                 }
             }
             KeyCode::Char('w') => {

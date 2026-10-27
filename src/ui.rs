@@ -1007,14 +1007,22 @@ fn web_dialog(f: &mut Frame, app: &mut App) {
         return;
     };
     let hint = Style::new().fg(t.hint);
-    let area = centered(f.area(), 92, web.papers.len() as u16 * 2 + 2);
+    let high = (web.papers.len() * 2 + 2).min(usize::from(u16::MAX));
+    let area = centered(f.area(), 92, high as u16);
     f.render_widget(Clear, area);
     // The dialog's own area beneath its papers, so a click on one finds it.
     app.targets.push((area, Target::Popup));
     let room = (area.height.saturating_sub(2) / 2).max(1) as usize;
     let from = web.at.saturating_sub(room - 1);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
     let mut lines = Vec::new();
-    for (n, r) in web.papers.iter().enumerate().skip(from).take(room) {
+    for (n, row) in rows(inner, from, &vec![2; web.papers.len()]) {
+        let r = &web.papers[n];
         let picked = n == web.at;
         let style = if picked {
             Style::new().fg(t.title).bold()
@@ -1030,15 +1038,7 @@ fn web_dialog(f: &mut Frame, app: &mut App) {
             Some(page) => Line::styled(format!("  {}", clip(&page, 86)), Style::new().fg(t.accent)),
             None => Line::styled("  no web page: ⏎ searches Google Scholar for it", hint),
         });
-        app.targets.push((
-            Rect {
-                x: area.x + 1,
-                y: area.y + 1 + 2 * (n - from) as u16,
-                width: area.width.saturating_sub(2),
-                height: 2,
-            },
-            Target::WebPage(n),
-        ));
+        app.targets.push((row, Target::WebPage(n)));
     }
     let title = match web.papers.len() {
         1 => "Web page".to_string(),

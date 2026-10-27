@@ -652,6 +652,31 @@ fn clicks() {
 }
 
 #[test]
+fn names_a_papers_page_as_it_opens_it() {
+    let mut r = demo::records().remove(0);
+    let doi = r.csl["DOI"].as_str().unwrap().to_string();
+    assert_eq!(browser::address(&r), Some(format!("https://doi.org/{doi}")));
+    r.csl["DOI"] = serde_json::json!("10.5555/(SICI)1#2?<3>");
+    assert_eq!(
+        browser::address(&r).unwrap(),
+        "https://doi.org/10.5555/(SICI)1%232%3F%3C3%3E"
+    );
+    // A blank address passed over, for arXiv's; then PubMed's.
+    r.csl.as_object_mut().unwrap().remove("DOI");
+    r.csl["URL"] = serde_json::json!(" ");
+    r.paperstack.arxiv = Some("2412.99901".to_string());
+    assert_eq!(browser::page(&r), "https://arxiv.org/abs/2412.99901");
+    r.paperstack.arxiv = None;
+    r.csl["PMID"] = serde_json::json!("99999901");
+    let pubmed = "https://pubmed.ncbi.nlm.nih.gov/99999901/";
+    assert_eq!(browser::address(&r).as_deref(), Some(pubmed));
+    assert_eq!(browser::page(&r), pubmed);
+    r.csl.as_object_mut().unwrap().remove("PMID");
+    assert_eq!(browser::address(&r), None);
+    assert!(browser::page(&r).starts_with("https://scholar.google.com/"));
+}
+
+#[test]
 fn lists_web_pages_and_references_of_the_papers_marked() {
     use crate::app::keys;
     let (_dir, lib, index) = library();
@@ -698,9 +723,15 @@ fn lists_web_pages_and_references_of_the_papers_marked() {
     press(&mut app, 0, 0);
     assert!(matches!(app.popup, Popup::None));
 
-    // Straight to a style, APA first; BibTeX after the last of them.
+    // Straight to a style, APA first, ctrl-e still BibTeX after; BibTeX
+    // after the last of them.
     app.key(keys("C")[0]);
     assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("<c-e>")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none()));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
     app.key(keys("s")[0]);
     app.key(keys("<esc>")[0]);
     app.key(keys("C")[0]);

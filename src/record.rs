@@ -86,7 +86,7 @@ impl Record {
         self.paperstack.source.as_deref() == Some(UNRESOLVED)
     }
 
-    fn text(&self, field: &str) -> Option<&str> {
+    pub(crate) fn text(&self, field: &str) -> Option<&str> {
         match self.csl.get(field)? {
             Value::String(s) => Some(s.trim()).filter(|s| !s.is_empty()),
             // Crossref's API gives some fields as lists.
