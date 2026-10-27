@@ -113,6 +113,8 @@ pub struct Refresh {
     pub read: usize,
     pub removed: usize,
     pub conflicts: Vec<PathBuf>,
+    /// Conflicted copies settled, as `Library::settle` does.
+    pub settled: Vec<PathBuf>,
     /// Records that could not be read, or whose key another has.
     pub errors: Vec<String>,
 }
@@ -330,11 +332,17 @@ impl Index {
     /// Bring the index up to the records: read those new or changed since,
     /// drop those gone, and note which have a PDF beside them.
     pub fn refresh(&mut self, lib: &Library) -> anyhow::Result<Refresh> {
-        let walk = lib.walk()?;
-        let mut done = Refresh {
-            conflicts: walk.conflicts,
-            ..Refresh::default()
-        };
+        let mut walk = lib.walk()?;
+        let mut done = Refresh::default();
+        if !walk.conflicts.is_empty() {
+            let s = lib.settle(std::mem::take(&mut walk.conflicts));
+            if !s.settled.is_empty() {
+                walk = lib.walk()?;
+            }
+            (done.settled, done.errors) = (s.settled, s.errors);
+            walk.conflicts = s.left;
+        }
+        done.conflicts = walk.conflicts;
         let mut old: HashMap<String, Paper> = std::mem::take(&mut self.papers)
             .into_iter()
             .map(|p| (p.kept.path.clone(), p))

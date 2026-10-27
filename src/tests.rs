@@ -228,6 +228,121 @@ fn deletes_papers_to_the_trash() {
     assert!(index.get(key).unwrap().is_some());
 }
 
+/// The name Dropbox gives a conflicted copy of the file at `rel`.
+fn conflicted(rel: &std::path::Path) -> PathBuf {
+    let stem = rel.file_stem().unwrap().to_string_lossy();
+    let ext = rel.extension().unwrap().to_string_lossy();
+    rel.with_file_name(format!(
+        "{stem} (Laptop's conflicted copy 2026-10-27).{ext}"
+    ))
+}
+
+#[test]
+fn settles_conflicted_copies() {
+    use std::fs;
+    let (_dir, lib, mut index) = library();
+    let trash = lib.root.join(crate::remove::TRASH);
+
+    // A copy the same as its record goes to the trash.
+    let same = PathBuf::from(&index.get("Kowalczyk2025-zs").unwrap().unwrap().path);
+    let copy = conflicted(&same);
+    fs::copy(lib.root.join(&same), lib.root.join(&copy)).unwrap();
+    // So does a PDF's copy the same as it.
+    let pdf = same.with_extension("pdf");
+    fs::write(lib.root.join(&pdf), b"%PDF-1.4").unwrap();
+    fs::write(lib.root.join(conflicted(&pdf)), b"%PDF-1.4").unwrap();
+
+    // A copy of a record of the same key is merged into it, the newer
+    // kept, the labels and stars of both.
+    let path = PathBuf::from(&index.get("Nakamura2016-al").unwrap().unwrap().path);
+    let mut ours = record_of(&lib, &index, "Nakamura2016-al");
+    ours.paperstack.labels = vec!["mine".into()];
+    let mut theirs = ours.clone();
+    theirs.paperstack.labels = vec!["theirs".into()];
+    theirs.paperstack.starred = true;
+    theirs.csl["title"] = "Retitled".into();
+    let merged = conflicted(&path);
+    let older = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    fs::write(lib.root.join(&path), serde_json::to_vec(&ours).unwrap()).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(lib.root.join(&path))
+        .unwrap()
+        .set_modified(older)
+        .unwrap();
+    fs::write(lib.root.join(&merged), serde_json::to_vec(&theirs).unwrap()).unwrap();
+
+    // A copy of nothing takes its place.
+    let lone = PathBuf::from(&index.get("Brandt-Okafor2025-pb").unwrap().unwrap().path);
+    fs::rename(lib.root.join(&lone), lib.root.join(conflicted(&lone))).unwrap();
+
+    // A PDF's copy that differs is left.
+    let other = lone.with_extension("pdf");
+    fs::write(lib.root.join(&other), b"%PDF-1.4 a").unwrap();
+    fs::write(lib.root.join(conflicted(&other)), b"%PDF-1.4 b").unwrap();
+
+    let done = index.refresh(&lib).unwrap();
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    assert_eq!(done.settled.len(), 4);
+    assert_eq!(done.conflicts, [conflicted(&other)]);
+    assert!(!lib.root.join(&copy).exists() && trash.join(&copy).is_file());
+    assert!(trash.join(conflicted(&pdf)).is_file());
+    assert!(trash.join(&merged).is_file());
+    let r = record_of(&lib, &index, "Nakamura2016-al");
+    assert_eq!(r.title(), "Retitled");
+    assert_eq!(r.paperstack.labels, ["theirs", "mine"]);
+    assert!(r.paperstack.starred);
+    assert!(index.get("Brandt-Okafor2025-pb").unwrap().is_some());
+    assert!(lib.root.join(&lone).is_file());
+    // Settled, they are not seen again.
+    let again = index.refresh(&lib).unwrap();
+    assert!(again.settled.is_empty() && again.conflicts.len() == 1);
+}
+
+#[test]
+fn leaves_a_conflicted_copy_of_another_key() {
+    let (_dir, lib, mut index) = library();
+    let path = PathBuf::from(&index.get("Nakamura2016-al").unwrap().unwrap().path);
+    let mut other = record_of(&lib, &index, "Nakamura2016-al");
+    other.key = "Nakamura2016-zz".into();
+    let copy = conflicted(&path);
+    std::fs::write(lib.root.join(&copy), serde_json::to_vec(&other).unwrap()).unwrap();
+    let done = index.refresh(&lib).unwrap();
+    assert!(done.settled.is_empty());
+    assert_eq!(done.conflicts, [copy]);
+}
+
+#[test]
+fn names_the_file_a_conflicted_copy_is_of() {
+    use crate::library::conflicted_of;
+    use std::path::Path;
+    assert_eq!(
+        conflicted_of(Path::new(
+            "2025/A/B/A2025-xy_t (Mac's conflicted copy 2026-10-27 (1)).json"
+        )),
+        Some(PathBuf::from("2025/A/B/A2025-xy_t.json"))
+    );
+    assert_eq!(
+        conflicted_of(Path::new("A2025-xy_t (conflicted copy 2016-01-02).pdf")),
+        Some(PathBuf::from("A2025-xy_t.pdf"))
+    );
+    assert_eq!(conflicted_of(Path::new("A2025-xy_t.json")), None);
+}
+
+#[test]
+fn quits_by_ctrl_x_ctrl_c_alone() {
+    use crate::app::keys;
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    for spec in ["q", "<c-c>", "<c-x>", "j", "<c-c>"] {
+        app.key(keys(spec)[0]);
+        assert!(!app.quitting(), "{spec} quit");
+    }
+    app.key(keys("<c-x>")[0]);
+    app.key(keys("<c-c>")[0]);
+    assert!(app.quitting());
+}
+
 #[test]
 fn drops_a_pdf_keeping_the_paper() {
     let (_dir, lib, mut index) = library();

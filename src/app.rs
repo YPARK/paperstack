@@ -372,6 +372,8 @@ pub struct App {
     /// What was last clicked, and when, to know a double click.
     clicked: Option<(Instant, Clicked)>,
     quit: bool,
+    /// ctrl-x pressed, waiting for ctrl-c to quit.
+    ctrl_x: bool,
 }
 
 pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Result<()> {
@@ -499,6 +501,7 @@ impl App {
             targets: Vec::new(),
             clicked: None,
             quit: false,
+            ctrl_x: false,
         };
         app.restock()?;
         app.narrow();
@@ -645,8 +648,14 @@ impl App {
         let typing = self.searching || matches!(self.popup, Popup::Add(_) | Popup::Ask(_));
         let mut key = plain(key, typing)?;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // As Emacs quits: ctrl-x, then ctrl-c, from anywhere. Either alone
+        // is nothing.
         if ctrl && key.code == KeyCode::Char('c') {
-            self.quit = true;
+            self.quit = std::mem::take(&mut self.ctrl_x);
+            return None;
+        }
+        self.ctrl_x = ctrl && key.code == KeyCode::Char('x');
+        if self.ctrl_x {
             return None;
         }
         // As Emacs cancels: a dialog, a search being typed, the map; not the
@@ -829,7 +838,7 @@ impl App {
         // On the map, the list's keys would act on papers not shown.
         if self.view == View::Map
             && !self.searching
-            && (self.map_key(key) || !matches!(key.code, KeyCode::Char('q' | '?' | 'a' | '/')))
+            && (self.map_key(key) || !matches!(key.code, KeyCode::Char('?' | 'a' | '/')))
         {
             return None;
         }
@@ -858,7 +867,6 @@ impl App {
             return None;
         }
         match key.code {
-            KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Popup::Help(0),
             KeyCode::Char('/') => {
                 // On the map, it stays, what is found lit as it is typed.

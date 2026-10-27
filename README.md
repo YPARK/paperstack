@@ -133,7 +133,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `esc`, `ctrl-g` | clear the search; `esc` again, papers sent from the map among all of their shelf; again, unmark all; either closes a dialog, as `ctrl-g` cancels in Emacs |
 | `?`, `F1` | the keys, of the list or of the map; `F1` while typing a search too |
 | `<`, `>` | the pane of the paper picked, on the right, wider or narrower; or drag its edge |
-| `q` | quit |
+| `ctrl-x` `ctrl-c` | quit, as Emacs does, from a dialog or while typing too |
 
 The mouse works too: click a shelf or a paper to pick it, its box to mark
 it, its star to star it, its PDF badge to get a PDF or to delete the one it
@@ -424,7 +424,7 @@ theme's name, or picking its shelf under THEMES, picks a theme; its papers are l
 further. `c` colours the picked theme alone, or every theme again;
 `1` to `9` pick those themes; `?` or `F1` on the map lists its keys,
 scrolling where they do not fit. `/` searches here, what it finds lit on the map as it is typed, and `a`
-adds a paper, as in the list; `q` quits.
+adds a paper, as in the list; `ctrl-x` `ctrl-c` quits, as in Emacs.
 
 `⏎`, or a theme's name clicked twice, goes into it: a map of its papers
 alone, laid out by their links among themselves and gathered in their own
@@ -561,7 +561,12 @@ milliseconds. Between runs it is cached on the machine, in
 brought up to the records whenever paperstack starts, reading only those
 changed, in about a tenth of a second. A database synced between machines
 can be corrupted, while a record can at worst be a conflicted copy of
-itself, which paperstack names rather than reads.
+itself, which paperstack settles as it starts: a copy the same as its
+record goes to `.trash/`, and one that differs is merged into it, the newer
+of the two kept with the collections, labels and stars of both, the copy
+then going to `.trash/` too. A copy whose record is gone takes its place.
+A PDF's copy that differs from it is left, and named, to be settled by
+hand.
 
 ## License
 
