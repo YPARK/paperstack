@@ -31,8 +31,17 @@ pub struct Walk {
     pub records: Vec<Found>,
     /// PDFs, from the root, as their records' paths with `.pdf`.
     pub pdfs: HashSet<PathBuf>,
-    /// Dropbox's "conflicted copy" files, left for `check` to settle.
+    /// Dropbox's "conflicted copy" files, for `settle` to settle.
     pub conflicts: Vec<PathBuf>,
+}
+
+/// What `settle` made of conflicted copies, each from the library's root.
+#[derive(Default)]
+pub struct Settled {
+    pub settled: Vec<PathBuf>,
+    /// Those that could not be settled without losing something.
+    pub left: Vec<PathBuf>,
+    pub errors: Vec<String>,
 }
 
 impl Library {
@@ -174,6 +183,109 @@ impl Library {
         }
         Ok(walk)
     }
+}
+
+impl Library {
+    /// Settle Dropbox's conflicted copies where nothing is lost by it. A
+    /// copy of nothing takes its file's place. A copy the same as its file,
+    /// byte for byte or as a record, goes to the trash; so does a record's
+    /// copy of the same key, once merged into it: the newer of the two
+    /// kept, with the folders, labels, aliases and fields set by hand of
+    /// both, starred if either is. Other copies, as of PDFs that differ,
+    /// are left.
+    pub fn settle(&self, conflicts: Vec<PathBuf>) -> Settled {
+        let mut done = Settled::default();
+        for copy in conflicts {
+            match self.settle_one(&copy) {
+                Ok(true) => done.settled.push(copy),
+                Ok(false) => done.left.push(copy),
+                Err(e) => {
+                    done.errors.push(format!("{}: {e:#}", copy.display()));
+                    done.left.push(copy);
+                }
+            }
+        }
+        done
+    }
+
+    fn settle_one(&self, rel: &Path) -> anyhow::Result<bool> {
+        let Some(of) = conflicted_of(rel) else {
+            return Ok(false);
+        };
+        let json = of.extension().is_some_and(|e| e == "json");
+        if !json && !of.extension().is_some_and(|e| e == "pdf") {
+            return Ok(false);
+        }
+        let (copy, file) = (self.root.join(rel), self.root.join(&of));
+        if !file.exists() {
+            fs::rename(&copy, &file)?;
+            return Ok(true);
+        }
+        let (a, b) = (fs::read(&file)?, fs::read(&copy)?);
+        if a != b {
+            if !json {
+                return Ok(false);
+            }
+            let (Ok(mut ours), Ok(mut theirs)) = (
+                serde_json::from_slice::<Record>(&a),
+                serde_json::from_slice::<Record>(&b),
+            ) else {
+                return Ok(false);
+            };
+            if ours.key != theirs.key {
+                return Ok(false);
+            }
+            if ours != theirs {
+                let newer = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+                if newer(&copy) > newer(&file) {
+                    std::mem::swap(&mut ours, &mut theirs);
+                }
+                merge(&mut ours, theirs);
+                let mut json = serde_json::to_vec_pretty(&ours)?;
+                json.push(b'\n');
+                write(&file, &json)?;
+            }
+        }
+        let dest = self.root.join(crate::remove::TRASH).join(rel);
+        fs::create_dir_all(dest.parent().expect("filed in a folder"))?;
+        fs::rename(&copy, &dest)?;
+        Ok(true)
+    }
+}
+
+/// The file a conflicted copy is of: its name without Dropbox's
+/// ` (Machine's conflicted copy 2026-10-27)`.
+pub fn conflicted_of(rel: &Path) -> Option<PathBuf> {
+    let name = rel.file_name()?.to_str()?;
+    let at = name.find("conflicted copy")?;
+    let open = name[..at].rfind(" (")?;
+    let close = at + name[at..].rfind(')')?;
+    Some(rel.with_file_name(format!("{}{}", &name[..open], &name[close + 1..])))
+}
+
+/// Into the newer record `r`, what the older `old` has that `r` has not.
+fn merge(r: &mut Record, old: Record) {
+    let (m, o) = (&mut r.paperstack, old.paperstack);
+    for (to, from) in [
+        (&mut m.folders, o.folders),
+        (&mut m.labels, o.labels),
+        (&mut m.aliases, o.aliases),
+        (&mut m.hand, o.hand),
+    ] {
+        for x in from {
+            if !to.contains(&x) {
+                to.push(x);
+            }
+        }
+    }
+    m.starred |= o.starred;
+    if m.added.is_empty() {
+        m.added = o.added;
+    }
+    m.arxiv = m.arxiv.take().or(o.arxiv);
+    m.pdf_sha256 = m.pdf_sha256.take().or(o.pdf_sha256);
+    m.pdf_version = m.pdf_version.or(o.pdf_version);
+    m.source = m.source.take().or(o.source);
 }
 
 /// Copy `src` to `dest` whole, as `write` writes: beside it, then renamed.

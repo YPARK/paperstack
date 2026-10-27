@@ -382,8 +382,14 @@ fn report(done: &index::Refresh) {
     for e in &done.errors {
         eprintln!("paperstack: {e}");
     }
+    for c in &done.settled {
+        eprintln!("paperstack: a conflicted copy, settled: {}", c.display());
+    }
     for c in &done.conflicts {
-        eprintln!("paperstack: a conflicted copy, not read: {}", c.display());
+        eprintln!(
+            "paperstack: a conflicted copy, left as it differs: {}",
+            c.display()
+        );
     }
 }
 

@@ -997,16 +997,25 @@ fn cite(f: &mut Frame, t: &Theme, cite: &crate::app::Cite) -> Rect {
 
 /// The keys of the view shown, scrolled by `scroll` where they do not fit.
 fn help(f: &mut Frame, t: &Theme, view: View, scroll: u16) -> Rect {
+    // The keys' column as wide as the widest, and the dialog wider by it.
+    let width = keymap::of(view)
+        .map(|k| k.keys.chars().count() + 1)
+        .max()
+        .unwrap_or(0)
+        .max(11);
     let lines: Vec<Line> = keymap::of(view)
         .map(|k| {
             Line::from(vec![
-                Span::styled(format!("{:<11}", k.keys), Style::new().fg(t.title).bold()),
+                Span::styled(
+                    format!("{:<width$}", k.keys),
+                    Style::new().fg(t.title).bold(),
+                ),
                 Span::raw(k.what),
             ])
         })
         .collect();
     let rows = lines.len() as u16;
-    let area = centered(f.area(), 96, rows + 2);
+    let area = centered(f.area(), 85 + width as u16, rows + 2);
     f.render_widget(Clear, area);
     let shown = area.height.saturating_sub(2);
     let more = rows.saturating_sub(shown);

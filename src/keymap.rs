@@ -219,7 +219,13 @@ pub const KEYS: &[Key] = &[
         &["?", "<f1>"],
         &[("?", "help", "?")],
     ),
-    key(List, "q", "quit", &["q"], &[("q", "quit", "q")]),
+    key(
+        List,
+        "ctrl-x ctrl-c",
+        "quit, as Emacs does, from a dialog or a search too",
+        &["<c-c>"],
+        &[],
+    ),
     key(
         Map,
         "← → h l",
@@ -365,7 +371,7 @@ pub const KEYS: &[Key] = &[
         &["m", "<d-g>"],
         &[("m", "list", "m")],
     ),
-    key(Map, "q", "quit", &["q"], &[]),
+    key(Map, "ctrl-x ctrl-c", "quit, as Emacs does", &["<c-c>"], &[]),
 ];
 
 /// The keys of `view`, as the help dialog lists them.
@@ -405,8 +411,9 @@ mod tests {
         // Each acting outside: a browser, the clipboard.
         let outside = ["p", "y", "a"];
         // Some act only from where another key has been: up from the second
-        // paper, back from the shelves, unmarked once marked.
-        let first = ["", "j", "h", "<space>", "<right>"];
+        // paper, back from the shelves, unmarked once marked, quit after
+        // ctrl-x.
+        let first = ["", "j", "h", "<space>", "<right>", "<c-x>"];
         let mut seen = HashSet::new();
         for k in of(view) {
             for &spec in k.pressed {
