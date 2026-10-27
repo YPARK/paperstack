@@ -182,6 +182,8 @@ pub enum Popup {
     Add(String),
     /// The papers' BibTeX, or references in a style, shown.
     Cite(Box<Cite>),
+    /// The papers' web pages, to open one or copy them all.
+    Web(Box<Web>),
     /// The keys, and how far they are scrolled.
     Help(u16),
     /// A PDF awaited from the browser.
@@ -305,6 +307,24 @@ impl Cite {
     fn next(&mut self) {
         self.at = (self.at + 1) % (crate::style::CYCLED.len() + 1);
         self.set_out();
+    }
+}
+
+/// Papers' web pages, and the one picked, to open.
+pub struct Web {
+    pub papers: Vec<std::sync::Arc<crate::record::Record>>,
+    pub at: usize,
+}
+
+impl Web {
+    /// The pages, one a line, of the papers that have one.
+    fn list(&self) -> String {
+        let pages: Vec<String> = self
+            .papers
+            .iter()
+            .filter_map(|r| browser::address(r))
+            .collect();
+        pages.join("\n")
     }
 }
 
@@ -743,6 +763,35 @@ impl App {
                 }
                 return None;
             }
+            Popup::Web(web) => {
+                let last = web.papers.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => web.at = (web.at + 1).min(last),
+                    KeyCode::Char('k') | KeyCode::Up => web.at = web.at.saturating_sub(1),
+                    KeyCode::Char('g') | KeyCode::Home => web.at = 0,
+                    KeyCode::Char('G') | KeyCode::End => web.at = last,
+                    // As `p` opens it: through the proxy, else a search.
+                    KeyCode::Enter | KeyCode::Char('o') => {
+                        let page = browser::page(&web.papers[web.at]);
+                        self.status = match browser::open(&page) {
+                            Ok(()) => format!("opened {page}"),
+                            Err(e) => one_line(&e),
+                        };
+                    }
+                    KeyCode::Char('y') => {
+                        let list = web.list();
+                        let n = list.lines().count();
+                        self.status = match n {
+                            0 => "no web pages to copy".to_string(),
+                            1 => copy(&list, &list),
+                            n => copy(&list, &format!("{n} web pages")),
+                        };
+                        self.popup = Popup::None;
+                    }
+                    _ => self.popup = Popup::None,
+                }
+                return None;
+            }
             Popup::Help(scroll) => {
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
@@ -970,6 +1019,20 @@ impl App {
                 }
                 self.narrow();
             }
+            // References in a style, the one last shown, else the first.
+            KeyCode::Char('C') => {
+                let papers: Vec<_> = self.picked().iter().map(|h| h.record.clone()).collect();
+                if !papers.is_empty() {
+                    self.cite_at = self.cite_at.max(1);
+                    self.popup = Popup::Cite(Box::new(Cite::new(papers, self.cite_at)));
+                }
+            }
+            KeyCode::Char('w') => {
+                let papers: Vec<_> = self.picked().iter().map(|h| h.record.clone()).collect();
+                if !papers.is_empty() {
+                    self.popup = Popup::Web(Box::new(Web { papers, at: 0 }));
+                }
+            }
             KeyCode::Char('y') => {
                 let keys: Vec<String> = self
                     .picked()
@@ -1051,6 +1114,10 @@ impl App {
         };
         match (&mut self.popup, at) {
             (Popup::Cite(cite), _) => cite.scroll = cite.scroll.saturating_add_signed(by as i16),
+            (Popup::Web(web), _) => {
+                let last = web.papers.len().saturating_sub(1) as isize;
+                web.at = (web.at as isize + by).clamp(0, last.max(0)) as usize;
+            }
             (Popup::None, Some(Target::Map | Target::Label(_))) => self.wheel_theme(by),
             (Popup::Card(card), _) => {
                 let last = card.papers.len().saturating_sub(1) as isize;

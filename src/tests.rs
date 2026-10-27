@@ -4,7 +4,7 @@ use crate::library::Library;
 use crate::query::{Field, Query};
 use crate::record::new_key;
 use crate::source::Source;
-use crate::{bibtex, demo, layout};
+use crate::{bibtex, browser, demo, layout};
 use std::path::PathBuf;
 
 /// The demo library in a folder of its own, and its index beside it.
@@ -649,6 +649,48 @@ fn clicks() {
 
     click(&mut app, "∅", 0, true);
     assert_eq!(app.shelves[app.shelf].0.name(), "No PDF");
+}
+
+#[test]
+fn lists_web_pages_and_references_of_the_papers_marked() {
+    use crate::app::keys;
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let arxiv = app
+        .shown
+        .iter()
+        .position(|h| h.record.paperstack.arxiv.is_some())
+        .unwrap();
+    app.marked.insert(app.shown[0].record.key.clone());
+    app.marked.insert(app.shown[arxiv].record.key.clone());
+    app.key(keys("w")[0]);
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("Web pages of 2 papers"), "{s}");
+    assert!(s.contains("https://arxiv.org/abs/2412.99901"), "{s}");
+    let Popup::Web(web) = &app.popup else {
+        panic!("no web pages shown")
+    };
+    let pages: Vec<_> = web.papers.iter().map(|r| browser::address(r)).collect();
+    assert!(pages.iter().all(Option::is_some), "{pages:?}");
+    app.key(keys("j")[0]);
+    assert!(matches!(&app.popup, Popup::Web(w) if w.at == 1));
+    app.key(keys("<esc>")[0]);
+    assert!(matches!(app.popup, Popup::None));
+
+    // Straight to a style, APA first; BibTeX after the last of them.
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
+    app.key(keys("s")[0]);
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some(crate::style::CYCLED[1])));
+    for _ in 1..crate::style::CYCLED.len() {
+        app.key(keys("s")[0]);
+    }
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none()));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
 }
 
 #[test]

@@ -119,6 +119,8 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `⏎`, `o` | open the PDF in ohp; quit ohp to come back |
 | `space` | mark a paper; `*` marks all shown, or unmarks them; `esc` unmarks all |
 | `ctrl-e` | BibTeX of the papers marked, or the one picked; `s` there sets them out as APA, Chicago (author-date, notes), MLA, IEEE or Nature has them instead, and `y` copies what is shown |
+| `C` | references of the papers marked, or the one picked, in APA, or the style last shown; `s` there goes on to the next, round to BibTeX, and `y` copies them |
+| `w` | the web pages of the papers marked, or the one picked: their DOI's, address, arXiv's or PubMed's; `⏎` there opens the one picked, as `p` does, through `PAPERSTACK_PROXY`, and `y` copies them, one a line |
 | `y` | copy `[@key; @key]` to the clipboard |
 | `s` | star, written to the paper's record |
 | `d`, `del` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |

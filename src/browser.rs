@@ -27,6 +27,28 @@ pub fn page(r: &Record) -> String {
     format!("https://scholar.google.com/scholar?q={words}")
 }
 
+/// The paper's own page on the web, to share: its DOI's, its address,
+/// arXiv's or PubMed's; none, if nothing names one.
+pub fn address(r: &Record) -> Option<String> {
+    let text = |field| {
+        r.csl
+            .get(field)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(doi) = r.doi() {
+        return Some(format!("https://doi.org/{doi}"));
+    }
+    if let Some(url) = text("URL") {
+        return Some(url.to_string());
+    }
+    if let Some(id) = &r.paperstack.arxiv {
+        return Some(format!("https://arxiv.org/abs/{id}"));
+    }
+    text("PMID").map(|id| format!("https://pubmed.ncbi.nlm.nih.gov/{id}/"))
+}
+
 /// Open `url` in the browser: the one `PAPERSTACK_BROWSER` names, as
 /// `open -a "Google Chrome"`, where paperstack's extension is; none, if it
 /// says `none`, the address only shown; else the one the system opens

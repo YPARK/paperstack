@@ -141,6 +141,20 @@ pub const KEYS: &[Key] = &[
     ),
     key(
         List,
+        "C",
+        "references of the same, in APA or the style last shown; s there, the next",
+        &["C"],
+        &[],
+    ),
+    key(
+        List,
+        "w",
+        "web pages of the same: DOI, address, arXiv, PubMed; ⏎ opens one, y copies them",
+        &["w"],
+        &[],
+    ),
+    key(
+        List,
         "y",
         "copy [@key; @key] to the clipboard",
         &["y"],

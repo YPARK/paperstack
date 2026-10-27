@@ -4,7 +4,7 @@
 //! the foot. Colours are the theme's.
 
 use crate::app::{
-    App, Ask, Asked, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View,
+    App, Ask, Asked, Busy, Choose, Doomed, Fetch, Focus, Popup, Shelf, Target, Then, View, Web,
 };
 use crate::browser;
 use crate::keymap;
@@ -123,6 +123,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let popup = match &app.popup {
         Popup::Add(line) => Some(add(f, &t, line)),
         Popup::Cite(c) => Some(cite(f, &t, c)),
+        Popup::Web(web) => Some(web_dialog(f, &t, web)),
         Popup::Help(scroll) => Some(help(f, &t, app.view, *scroll)),
         Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
         Popup::Card(_) => {
@@ -992,6 +993,43 @@ fn cite(f: &mut Frame, t: &Theme, cite: &crate::app::Cite) -> Rect {
             .scroll((cite.scroll, 0)),
         area,
     );
+    area
+}
+
+/// Papers' web pages, two lines each, the one picked kept in view.
+fn web_dialog(f: &mut Frame, t: &Theme, web: &Web) -> Rect {
+    let hint = Style::new().fg(t.hint);
+    let area = centered(f.area(), 92, web.papers.len() as u16 * 2 + 2);
+    f.render_widget(Clear, area);
+    let room = (area.height.saturating_sub(2) / 2).max(1) as usize;
+    let from = web.at.saturating_sub(room - 1);
+    let mut lines = Vec::new();
+    for (n, r) in web.papers.iter().enumerate().skip(from).take(room) {
+        let picked = n == web.at;
+        let style = if picked {
+            Style::new().fg(t.title).bold()
+        } else {
+            Style::new().fg(t.text)
+        };
+        let mark = if picked { "› " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(mark, Style::new().fg(t.accent)),
+            Span::styled(clip(r.title(), 86), style),
+        ]));
+        lines.push(match browser::address(r) {
+            Some(page) => Line::styled(format!("  {}", clip(&page, 86)), Style::new().fg(t.accent)),
+            None => Line::styled("  no web page: ⏎ searches Google Scholar for it", hint),
+        });
+    }
+    let title = match web.papers.len() {
+        1 => "Web page".to_string(),
+        n => format!("Web pages of {n} papers"),
+    };
+    let block = dialog(t, &title).title_bottom(Line::styled(
+        " ⏎ open · y copy them · j k pick · any other key closes ",
+        hint,
+    ));
+    f.render_widget(Paragraph::new(lines).block(block), area);
     area
 }
 
