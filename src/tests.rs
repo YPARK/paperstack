@@ -674,7 +674,28 @@ fn lists_web_pages_and_references_of_the_papers_marked() {
     assert!(pages.iter().all(Option::is_some), "{pages:?}");
     app.key(keys("j")[0]);
     assert!(matches!(&app.popup, Popup::Web(w) if w.at == 1));
-    app.key(keys("<esc>")[0]);
+    // A click on a page picks its paper; one beside the dialog closes it.
+    let press = |app: &mut App, column, row| {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let s = screen(&mut app, 160, 44);
+    let (row, line) = s
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("https://doi.org/"))
+        .unwrap();
+    let column = line[..line.find("https://doi.org/").unwrap()]
+        .chars()
+        .count();
+    press(&mut app, column as u16, row as u16);
+    assert!(matches!(&app.popup, Popup::Web(w) if w.at == 0));
+    press(&mut app, 0, 0);
     assert!(matches!(app.popup, Popup::None));
 
     // Straight to a style, APA first; BibTeX after the last of them.

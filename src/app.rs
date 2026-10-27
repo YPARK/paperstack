@@ -30,6 +30,8 @@ enum Clicked {
     Dot(usize),
     /// A theme's name on the map shown.
     Name(usize),
+    /// A paper's web page, by its row.
+    Web(usize),
 }
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -152,6 +154,8 @@ pub enum Target {
     Edge(u16),
     /// A paper on a theme's card, by its place there.
     CardPaper(usize),
+    /// A paper's web page, by its place in the dialog.
+    WebPage(usize),
 }
 
 /// What the page shows: the papers, or the map of their themes.
@@ -770,14 +774,7 @@ impl App {
                     KeyCode::Char('k') | KeyCode::Up => web.at = web.at.saturating_sub(1),
                     KeyCode::Char('g') | KeyCode::Home => web.at = 0,
                     KeyCode::Char('G') | KeyCode::End => web.at = last,
-                    // As `p` opens it: through the proxy, else a search.
-                    KeyCode::Enter | KeyCode::Char('o') => {
-                        let page = browser::page(&web.papers[web.at]);
-                        self.status = match browser::open(&page) {
-                            Ok(()) => format!("opened {page}"),
-                            Err(e) => one_line(&e),
-                        };
-                    }
+                    KeyCode::Enter | KeyCode::Char('o') => self.open_web(),
                     KeyCode::Char('y') => {
                         let list = web.list();
                         let n = list.lines().count();
@@ -1064,6 +1061,19 @@ impl App {
         self.pane = width.clamp(crate::ui::NARROWEST, room);
     }
 
+    /// The web page picked opened, as `p` opens it: through the proxy,
+    /// else a search for it.
+    fn open_web(&mut self) {
+        let Popup::Web(web) = &self.popup else {
+            return;
+        };
+        let page = browser::page(&web.papers[web.at]);
+        self.status = match browser::open(&page) {
+            Ok(()) => format!("opened {page}"),
+            Err(e) => one_line(&e),
+        };
+    }
+
     /// Take a click or a turn of the wheel at where it lands.
     pub fn mouse(&mut self, m: MouseEvent) -> Option<Action> {
         let at = self
@@ -1165,6 +1175,14 @@ impl App {
                 None
             };
         }
+        if let (Some(Target::WebPage(i)), Popup::Web(web)) = (at, &mut self.popup) {
+            // Once picks it; twice opens it.
+            web.at = i.min(web.papers.len().saturating_sub(1));
+            if self.twice(Clicked::Web(i)) {
+                self.open_web();
+            }
+            return None;
+        }
         if !matches!(self.popup, Popup::None) {
             if at != Some(Target::Popup) && !matches!(self.popup, Popup::Busy(_)) {
                 self.close_popup();
@@ -1184,7 +1202,7 @@ impl App {
             }
             Target::Label(t) => self.pick_name(t, true),
             Target::Edge(right) => self.dragging = Some(right),
-            Target::CardPaper(_) => {}
+            Target::CardPaper(_) | Target::WebPage(_) => {}
             // A button, pressed where it is.
             Target::Button(key) => return self.key(key),
             Target::Sort => self.resort(),
