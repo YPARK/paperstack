@@ -4,7 +4,7 @@ use crate::library::Library;
 use crate::query::{Field, Query};
 use crate::record::new_key;
 use crate::source::Source;
-use crate::{bibtex, demo, layout};
+use crate::{bibtex, browser, demo, layout};
 use std::path::PathBuf;
 
 /// The demo library in a folder of its own, and its index beside it.
@@ -649,6 +649,100 @@ fn clicks() {
 
     click(&mut app, "∅", 0, true);
     assert_eq!(app.shelves[app.shelf].0.name(), "No PDF");
+}
+
+#[test]
+fn names_a_papers_page_as_it_opens_it() {
+    let mut r = demo::records().remove(0);
+    let doi = r.csl["DOI"].as_str().unwrap().to_string();
+    assert_eq!(browser::address(&r), Some(format!("https://doi.org/{doi}")));
+    r.csl["DOI"] = serde_json::json!("10.5555/(SICI)1#2?<3>");
+    assert_eq!(
+        browser::address(&r).unwrap(),
+        "https://doi.org/10.5555/(SICI)1%232%3F%3C3%3E"
+    );
+    // A blank address passed over, for arXiv's; then PubMed's.
+    r.csl.as_object_mut().unwrap().remove("DOI");
+    r.csl["URL"] = serde_json::json!(" ");
+    r.paperstack.arxiv = Some("2412.99901".to_string());
+    assert_eq!(browser::page(&r), "https://arxiv.org/abs/2412.99901");
+    r.paperstack.arxiv = None;
+    r.csl["PMID"] = serde_json::json!("99999901");
+    let pubmed = "https://pubmed.ncbi.nlm.nih.gov/99999901/";
+    assert_eq!(browser::address(&r).as_deref(), Some(pubmed));
+    assert_eq!(browser::page(&r), pubmed);
+    r.csl.as_object_mut().unwrap().remove("PMID");
+    assert_eq!(browser::address(&r), None);
+    assert!(browser::page(&r).starts_with("https://scholar.google.com/"));
+}
+
+#[test]
+fn lists_web_pages_and_references_of_the_papers_marked() {
+    use crate::app::keys;
+    let (_dir, lib, index) = library();
+    let mut app = App::new(lib, index).unwrap();
+    let arxiv = app
+        .shown
+        .iter()
+        .position(|h| h.record.paperstack.arxiv.is_some())
+        .unwrap();
+    app.marked.insert(app.shown[0].record.key.clone());
+    app.marked.insert(app.shown[arxiv].record.key.clone());
+    app.key(keys("w")[0]);
+    let s = screen(&mut app, 160, 44);
+    assert!(s.contains("Web pages of 2 papers"), "{s}");
+    assert!(s.contains("https://arxiv.org/abs/2412.99901"), "{s}");
+    let Popup::Web(web) = &app.popup else {
+        panic!("no web pages shown")
+    };
+    let pages: Vec<_> = web.papers.iter().map(|r| browser::address(r)).collect();
+    assert!(pages.iter().all(Option::is_some), "{pages:?}");
+    app.key(keys("j")[0]);
+    assert!(matches!(&app.popup, Popup::Web(w) if w.at == 1));
+    // A click on a page picks its paper; one beside the dialog closes it.
+    let press = |app: &mut App, column, row| {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let s = screen(&mut app, 160, 44);
+    let (row, line) = s
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("https://doi.org/"))
+        .unwrap();
+    let column = line[..line.find("https://doi.org/").unwrap()]
+        .chars()
+        .count();
+    press(&mut app, column as u16, row as u16);
+    assert!(matches!(&app.popup, Popup::Web(w) if w.at == 0));
+    press(&mut app, 0, 0);
+    assert!(matches!(app.popup, Popup::None));
+
+    // Straight to a style, APA first, ctrl-e still BibTeX after; BibTeX
+    // after the last of them.
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("<c-e>")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none()));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
+    app.key(keys("s")[0]);
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some(crate::style::CYCLED[1])));
+    for _ in 1..crate::style::CYCLED.len() {
+        app.key(keys("s")[0]);
+    }
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style().is_none()));
+    app.key(keys("<esc>")[0]);
+    app.key(keys("C")[0]);
+    assert!(matches!(&app.popup, Popup::Cite(c) if c.style() == Some("apa")));
 }
 
 #[test]

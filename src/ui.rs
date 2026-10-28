@@ -123,6 +123,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let popup = match &app.popup {
         Popup::Add(line) => Some(add(f, &t, line)),
         Popup::Cite(c) => Some(cite(f, &t, c)),
+        Popup::Web(_) => {
+            web_dialog(f, app);
+            None
+        }
         Popup::Help(scroll) => Some(help(f, &t, app.view, *scroll)),
         Popup::Ask(ask) => Some(ask_dialog(f, &t, ask)),
         Popup::Card(_) => {
@@ -993,6 +997,58 @@ fn cite(f: &mut Frame, t: &Theme, cite: &crate::app::Cite) -> Rect {
         area,
     );
     area
+}
+
+/// Papers' web pages, two lines each, the one picked kept in view, each
+/// clicked where drawn.
+fn web_dialog(f: &mut Frame, app: &mut App) {
+    let t = app.theme;
+    let Popup::Web(web) = &app.popup else {
+        return;
+    };
+    let hint = Style::new().fg(t.hint);
+    let high = (web.papers.len() * 2 + 2).min(usize::from(u16::MAX));
+    let area = centered(f.area(), 92, high as u16);
+    f.render_widget(Clear, area);
+    // The dialog's own area beneath its papers, so a click on one finds it.
+    app.targets.push((area, Target::Popup));
+    let room = (area.height.saturating_sub(2) / 2).max(1) as usize;
+    let from = web.at.saturating_sub(room - 1);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let mut lines = Vec::new();
+    for (n, row) in rows(inner, from, &vec![2; web.papers.len()]) {
+        let r = &web.papers[n];
+        let picked = n == web.at;
+        let style = if picked {
+            Style::new().fg(t.title).bold()
+        } else {
+            Style::new().fg(t.text)
+        };
+        let mark = if picked { "› " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(mark, Style::new().fg(t.accent)),
+            Span::styled(clip(r.title(), 86), style),
+        ]));
+        lines.push(match browser::address(r) {
+            Some(page) => Line::styled(format!("  {}", clip(&page, 86)), Style::new().fg(t.accent)),
+            None => Line::styled("  no web page: ⏎ searches Google Scholar for it", hint),
+        });
+        app.targets.push((row, Target::WebPage(n)));
+    }
+    let title = match web.papers.len() {
+        1 => "Web page".to_string(),
+        n => format!("Web pages of {n} papers"),
+    };
+    let block = dialog(&t, &title).title_bottom(Line::styled(
+        " ⏎ or twice clicked opens · y copy them · j k pick · any other key closes ",
+        hint,
+    ));
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The keys of the view shown, scrolled by `scroll` where they do not fit.
