@@ -35,9 +35,9 @@ enum Clicked {
 }
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::{Position, Rect};
@@ -439,6 +439,7 @@ pub fn run((lib, index): (Library, Index), net: Net, theme: Theme) -> anyhow::Re
             let action = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key),
                 Event::Mouse(m) => app.mouse(m),
+                Event::Paste(text) => app.paste(&text),
                 _ => None,
             };
             match action {
@@ -473,10 +474,12 @@ fn take() -> DefaultTerminal {
     });
     // Keys said with their modifiers, ⌘ or the Windows key among them, by
     // terminals that can, as kitty: ⌘G, or super+g, for the map. Those
-    // that cannot pass the asking by.
+    // that cannot pass the asking by. What is pasted, as a file dropped on
+    // the terminal, comes as one.
     let _ = execute!(
         std::io::stdout(),
         EnableMouseCapture,
+        EnableBracketedPaste,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     );
     terminal
@@ -485,6 +488,7 @@ fn take() -> DefaultTerminal {
 /// The mouse, and keys as terminals say them by default, given back.
 fn give_back_keys() {
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
 }
 
@@ -1893,17 +1897,50 @@ impl App {
     }
 
     /// The paper to give a PDF from disk: the one whose PDF is awaited, or
-    /// the one picked, where it has none yet.
+    /// the one picked, the PDF it has, if any, put in the trash for it.
     fn paper_to_file(&mut self) -> Option<String> {
         if let Popup::Fetch(fetch) = &self.popup {
             return Some(fetch.key.clone());
         }
-        let h = self.current()?;
-        if h.has_pdf {
-            self.status = format!("{} has its PDF: x deletes it", h.record.key);
-            return None;
+        Some(self.current()?.record.key.clone())
+    }
+
+    /// What is pasted, as a file dropped on the terminal: a PDF's path,
+    /// onto the list or the get-PDF dialog, for the paper picked or awaited,
+    /// in place of the PDF it has, if any; anything else as typed.
+    pub fn paste(&mut self, text: &str) -> Option<Action> {
+        let path = browser::dropped(text);
+        let pdf = !text.contains('\n')
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            && path.is_file();
+        match &self.popup {
+            Popup::Fetch(_) if pdf => {
+                self.attach_from(text.trim());
+                return None;
+            }
+            Popup::None if pdf && !self.searching => {
+                if self.current().is_none() {
+                    self.status = "pick a paper to give it this PDF".to_string();
+                } else {
+                    self.give_pdf(&path);
+                }
+                return None;
+            }
+            _ => {}
         }
-        Some(h.record.key.clone())
+        for c in text.replace("\r\n", "\n").chars() {
+            let code = match c {
+                '\r' | '\n' => KeyCode::Enter,
+                '\t' => KeyCode::Tab,
+                c => KeyCode::Char(c),
+            };
+            if let Some(action) = self.key(KeyEvent::new(code, KeyModifiers::NONE)) {
+                return Some(action);
+            }
+        }
+        None
     }
 
     /// Give that paper the PDF at `path`, as one the person named.

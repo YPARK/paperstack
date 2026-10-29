@@ -125,7 +125,7 @@ ask: `--email`, `$PAPERSTACK_EMAIL`, or git's `user.email`.
 | `s` | star, written to the paper's record |
 | `d`, `del` | delete the papers marked, or the one picked; on the left, the collection or label picked; asked first |
 | `p` | get the PDF of a paper without one: an open copy, else in the browser |
-| `f` | locate a PDF on disk for the paper picked, where it has none; `ctrl-l` in the get-PDF dialog does the same |
+| `f` | locate a PDF on disk for the paper picked, in place of the one it has, if any; `ctrl-l` in the get-PDF dialog does the same |
 | `x` | delete the PDF of the papers marked, or the one picked; the papers stay; asked first |
 | `a` | add a paper, as `paperstack add` does |
 | `r` | read again papers added meanwhile, as by `paperstack serve` |
@@ -197,14 +197,19 @@ would, and it is filed beside the paper as soon as it lands in
 `~/Downloads`, if its first page has the paper's title; anything else
 downloaded meanwhile is left alone. Or paste the PDF's path, or its address,
 into the dialog, or press `ctrl-l` to locate a file on disk. From the list,
-`f` opens the same file dialog for the paper picked. A scan, with too little
+`f` opens the same file dialog for the paper picked, or drop the PDF on the
+terminal: its path, pasted, is the paper's file. A scan, with too little
 text to show its title, is taken from Downloads only with the paper's DOI in
-it; given by its path, or located on disk, it is taken as you say. From the
-shell, the same:
+it; given by its path, or located on disk, it is taken as you say, and
+takes the place of the PDF the paper has, as an arXiv preprint's, which is
+kept in `.trash/` (`paperstack restore --pdf KEY` brings it back). A PDF not
+a preprint's, as the journal's, also takes the place of a preprint's when it
+comes in by `add`, the inbox, a watched folder or the browser extension.
+From the shell, the same:
 
 ```sh
 paperstack attach Brandt-Okafor2025-pb                 # an open copy, else open its page, await the download
-paperstack attach Brandt-Okafor2025-pb ~/Downloads/paper.pdf
+paperstack attach Brandt-Okafor2025-pb ~/Downloads/paper.pdf   # in place of the PDF it has, if any
 paperstack attach --query 'collection:"grant_demo"'    # open copies for each paper there without a PDF
 paperstack attach KEY1 KEY2 --published --json         # no preprints; a preprint's PDF replaced
 ```
@@ -402,7 +407,7 @@ from the JSON.
 | `read_paper` | the text of a paper's PDF, 20 pages at a time | reads |
 | `list_collections` | collections and labels, and how many papers each holds | reads |
 | `add_paper` | add by DOI, arXiv id, PMID, address, PDF or title | adds |
-| `attach_pdf` | open copies for papers by keys or a query, or the PDF at a path, if it is that paper's | adds |
+| `attach_pdf` | open copies for papers by keys or a query, or the PDF at a path, if it is that paper's; with `replace`, in place of the PDF it has | adds |
 | `update_paper` | collections, labels, star and older keys, of a paper or many; one paper's fields | changes |
 | `refresh_papers` | read papers again from doi.org or arXiv, keeping what is ours of them | changes |
 | `restore_papers` | bring papers, or a paper's PDF, back from `.trash/` | adds |

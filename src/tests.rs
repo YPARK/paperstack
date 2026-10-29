@@ -416,10 +416,38 @@ fn locates_a_pdf_on_disk_for_the_paper_picked() {
     let hit = app.index.get(key).unwrap().unwrap();
     assert!(hit.has_pdf);
     assert!(app.lib.root.join(&hit.path).with_extension("pdf").is_file());
-    // A paper that has its PDF is not given another until that one is deleted.
-    app.give_pdf(&path);
-    assert!(app.status.contains("has its PDF"));
-    assert!(app.index.get(key).unwrap().unwrap().has_pdf);
+    // A paper that has its PDF is given another in its place, as named;
+    // the one it had kept in the trash.
+    let journal = dir.path().join("journal.pdf");
+    let bytes = [first_page(&title), b"\n% the journal's".to_vec()].concat();
+    std::fs::write(&journal, &bytes).unwrap();
+    app.give_pdf(&journal);
+    assert!(app.status.contains("the one it had"), "{}", app.status);
+    let hit = app.index.get(key).unwrap().unwrap();
+    let pdf = app.lib.root.join(&hit.path).with_extension("pdf");
+    assert_eq!(std::fs::read(pdf).unwrap(), bytes);
+    let kept = app
+        .lib
+        .root
+        .join(crate::remove::TRASH)
+        .join(&hit.path)
+        .with_extension("pdf");
+    assert_eq!(std::fs::read(kept).unwrap(), first_page(&title));
+    // A PDF dropped on the terminal, its path pasted as the terminal
+    // quotes it: the same, in place of the one it has.
+    let dropped = dir.path().join("the journal.pdf");
+    let again = [first_page(&title), b"\n% dropped".to_vec()].concat();
+    std::fs::write(&dropped, &again).unwrap();
+    let pasted = dropped.display().to_string().replace(' ', "\\ ");
+    assert!(app.paste(&pasted).is_none());
+    assert!(app.status.contains("the one it had"), "{}", app.status);
+    let hit = app.index.get(key).unwrap().unwrap();
+    let pdf = app.lib.root.join(&hit.path).with_extension("pdf");
+    assert_eq!(std::fs::read(pdf).unwrap(), again);
+    // Anything else pasted is as typed: into the add dialog, here.
+    app.popup = Popup::Add(String::new());
+    assert!(app.paste("10.5555/x").is_none());
+    assert!(matches!(&app.popup, Popup::Add(line) if line == "10.5555/x"));
 }
 
 #[test]
@@ -1398,6 +1426,83 @@ fn attaches_only_the_papers_own_pdf() {
     assert!(lib.root.join(&hit.path).with_extension("pdf").exists());
     let again = crate::add::attach(&lib, &mut index, key, &first_page(&title), "x.pdf", false);
     assert!(again.unwrap_err().to_string().contains("already"));
+}
+
+#[test]
+fn puts_a_published_pdf_in_place_of_a_preprints() {
+    use crate::add::{Outcome, attach};
+    use crate::record::Version;
+    let (_dir, lib, mut index) = library();
+    let key = "Whitlock2017-ex";
+    let title = index.get(key).unwrap().unwrap().record.title().to_string();
+    let pre = preprint_page(&title);
+    let added = attach(&lib, &mut index, key, &pre, "pre.pdf", false).unwrap();
+    assert_eq!(added.pdf_version, Some(Version::Preprint));
+    // Another preprint, found, does not take its place.
+    let e = attach(&lib, &mut index, key, &pre, "pre2.pdf", false).unwrap_err();
+    assert!(e.to_string().contains("preprint's too"), "{e}");
+    // The journal's does, the preprint's kept in the trash.
+    let journal = first_page(&title);
+    let added = attach(&lib, &mut index, key, &journal, "journal.pdf", false).unwrap();
+    assert_eq!(added.outcome, Outcome::PdfReplaced);
+    assert_ne!(added.pdf_version, Some(Version::Preprint));
+    let hit = index.get(key).unwrap().unwrap();
+    let pdf = lib.root.join(&hit.path).with_extension("pdf");
+    assert_eq!(std::fs::read(&pdf).unwrap(), journal);
+    let kept = lib
+        .root
+        .join(crate::remove::TRASH)
+        .join(&hit.path)
+        .with_extension("pdf");
+    assert_eq!(std::fs::read(&kept).unwrap(), pre);
+    // Then only one named takes the place of the journal's.
+    let e = attach(&lib, &mut index, key, &pre, "pre.pdf", false).unwrap_err();
+    assert!(e.to_string().contains("already"), "{e}");
+    let added = attach(&lib, &mut index, key, &pre, "pre.pdf", true).unwrap();
+    assert_eq!(added.outcome, Outcome::PdfReplaced);
+    assert_eq!(std::fs::read(&pdf).unwrap(), pre);
+    assert_eq!(std::fs::read(&kept).unwrap(), journal);
+}
+
+#[test]
+fn files_a_published_pdf_in_place_of_a_preprints_of_a_paper_here() {
+    use crate::add::Outcome;
+    let (_dir, lib, mut index) = library();
+    let key = "Whitlock2017-ex";
+    let hit = index.get(key).unwrap().unwrap();
+    let title = hit.record.title().to_string();
+    let found = crate::resolve::Found::new(hit.record.csl.clone(), "crossref");
+    let pre = preprint_page(&title);
+    crate::add::attach(&lib, &mut index, key, &pre, "pre.pdf", false).unwrap();
+    let net = crate::net::Net::canned(&[]);
+    // A preprint's, given again: the paper is as it was.
+    let again = adder(&lib, &mut index, &net)
+        .file_chosen(found.clone(), &pre)
+        .unwrap();
+    assert_ne!(again.outcome, Outcome::PdfReplaced);
+    // The journal's, as dropped in the inbox: in the preprint's place.
+    let journal = first_page(&title);
+    let added = adder(&lib, &mut index, &net)
+        .file_chosen(found.clone(), &journal)
+        .unwrap();
+    assert_eq!(added.key, key);
+    assert_eq!(added.outcome, Outcome::PdfReplaced);
+    assert!(added.summary().contains(".trash/"), "{}", added.summary());
+    let hit = index.get(key).unwrap().unwrap();
+    let pdf = lib.root.join(&hit.path).with_extension("pdf");
+    assert_eq!(std::fs::read(&pdf).unwrap(), journal);
+    let kept = lib
+        .root
+        .join(crate::remove::TRASH)
+        .join(&hit.path)
+        .with_extension("pdf");
+    assert_eq!(std::fs::read(&kept).unwrap(), pre);
+    // A preprint's, given now, is not put in the journal's place.
+    let later = adder(&lib, &mut index, &net)
+        .file_chosen(found, &pre)
+        .unwrap();
+    assert_ne!(later.outcome, Outcome::PdfReplaced);
+    assert_eq!(std::fs::read(&pdf).unwrap(), journal);
 }
 
 #[test]
@@ -2407,6 +2512,57 @@ fn counts_authors_past_the_first_few_in_a_search() {
             .len(),
         30
     );
+}
+
+#[test]
+fn replaces_a_papers_pdf_over_mcp_only_when_asked() {
+    let (dir, mut server) = mcp_server();
+    let key = "Whitlock2017-ex";
+    let title = server
+        .index
+        .get(key)
+        .unwrap()
+        .unwrap()
+        .record
+        .title()
+        .to_string();
+    let (first, second) = (dir.path().join("first.pdf"), dir.path().join("second.pdf"));
+    std::fs::write(&first, first_page(&title)).unwrap();
+    let journal = [first_page(&title), b"\n% the journal's".to_vec()].concat();
+    std::fs::write(&second, &journal).unwrap();
+    let attach = |server: &mut crate::mcp::Server, path: &std::path::Path, replace: bool| {
+        mcp_call(
+            server,
+            "attach_pdf",
+            serde_json::json!({ "key": key, "path": path, "replace": replace }),
+        )
+    };
+    assert_eq!(attach(&mut server, &first, false)["isError"], false);
+    // Not a preprint's, so not replaced unless asked.
+    let refused = attach(&mut server, &second, false);
+    assert_eq!(refused["isError"], true, "{refused}");
+    let done = attach(&mut server, &second, true);
+    assert_eq!(done["isError"], false, "{done}");
+    assert!(done.to_string().contains(".trash/"), "{done}");
+    let hit = server.index.get(key).unwrap().unwrap();
+    let pdf = server.lib.root.join(&hit.path).with_extension("pdf");
+    assert_eq!(std::fs::read(&pdf).unwrap(), journal);
+    // Not that paper's: refused, asked or not.
+    let other = dir.path().join("other.pdf");
+    std::fs::write(
+        &other,
+        first_page("Another paper altogether, on other things"),
+    )
+    .unwrap();
+    assert_eq!(attach(&mut server, &other, true)["isError"], true);
+    // And the one replaced brought back.
+    let back = mcp_call(
+        &mut server,
+        "restore_papers",
+        serde_json::json!({ "keys": [key], "pdf": true }),
+    );
+    assert_eq!(back["isError"], false, "{back}");
+    assert_eq!(std::fs::read(&pdf).unwrap(), first_page(&title));
 }
 
 #[test]

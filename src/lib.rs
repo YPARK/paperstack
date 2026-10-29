@@ -208,7 +208,8 @@ enum Command {
     /// Give papers their PDFs: open copies, downloaded, where there are
     /// some, published versions first; else, for one paper behind a
     /// paywall, its page opened in the browser, the PDF downloaded there
-    /// awaited. Or one paper a PDF's path or address: `attach KEY FILE`
+    /// awaited. Or one paper a PDF's path or address, in place of the PDF
+    /// it has, if any, which is kept in the trash: `attach KEY FILE`
     Attach {
         /// The papers' keys; or a key and a PDF's path or address
         #[arg(required_unless_present = "query")]

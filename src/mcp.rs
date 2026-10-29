@@ -391,15 +391,18 @@ impl Server {
                     let path = crate::browser::dropped(&path);
                     let bytes = std::fs::read(&path)
                         .with_context(|| format!("cannot read {}", path.display()))?;
-                    let added = attach(
-                        &self.lib,
-                        &mut self.index,
-                        &key,
-                        &bytes,
-                        &path.display().to_string(),
-                        false,
-                    )?;
-                    return Ok(json!({ "outcome": added.summary(), "key": added.key }));
+                    let from = path.display().to_string();
+                    let replace = args.get("replace").and_then(Value::as_bool) == Some(true);
+                    let added = if replace {
+                        crate::add::replace(&self.lib, &mut self.index, &key, &bytes, &from)?
+                    } else {
+                        attach(&self.lib, &mut self.index, &key, &bytes, &from, false)?
+                    };
+                    return Ok(json!({
+                        "outcome": added.summary(),
+                        "key": added.key,
+                        "pdf_version": added.pdf_version,
+                    }));
                 }
                 let published = args
                     .get("published")
@@ -753,13 +756,14 @@ fn tools() -> Value {
         {
             "name": "attach_pdf",
             "title": "Give a paper its PDF",
-            "description": "Give papers without one their PDF. Without a path, open copies are downloaded, published versions first, for each paper of the keys or the query (those it finds without a PDF); no browser is opened. Each paper's outcome is listed: its pdf_version, or why none was had (blocked, where a copy was turned away, as by a paywall or a bot check, so the person may get it in the browser at its page; or no-open-copy), with each copy tried and its reason (http-429, http-403, html-page, not-a-pdf, not-the-paper, preprint, network). published: no preprint, and a paper whose PDF is a preprint's is given the published version in its place. With a path, one paper is given the PDF there, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
+            "description": "Give papers without one their PDF. Without a path, open copies are downloaded, published versions first, for each paper of the keys or the query (those it finds without a PDF); no browser is opened. Each paper's outcome is listed: its pdf_version, or why none was had (blocked, where a copy was turned away, as by a paywall or a bot check, so the person may get it in the browser at its page; or no-open-copy), with each copy tried and its reason (http-429, http-403, html-page, not-a-pdf, not-the-paper, preprint, network). published: no preprint, and a paper whose PDF is a preprint's is given the published version in its place. With a path, one paper is given the PDF there, as one downloaded in a browser: only if its first page has the paper's title, or, for a scan with too little text, the paper's DOI; a paper whose PDF is a preprint's is given it in that one's place, if it is not a preprint's, as the journal's, the preprint's kept in the trash. replace, with a path: in place of any PDF the paper has, as when the person asks for the PDF they downloaded to be the paper's; the one replaced is kept in the trash, and restore_papers with pdf brings it back. A scan without it is refused: the person may attach it themselves, by `paperstack attach KEY FILE`.",
             "inputSchema": { "type": "object", "properties": {
                 "key": { "type": "string" },
                 "keys": { "type": "array", "items": { "type": "string" } },
                 "query": { "type": "string", "description": "e.g. collection:\"name\"" },
                 "path": { "type": "string", "description": "a PDF on this machine, for the paper of key" },
-                "published": { "type": "boolean", "default": false }
+                "published": { "type": "boolean", "default": false },
+                "replace": { "type": "boolean", "default": false, "description": "with path: in place of the PDF the paper has, whatever its version" }
             } },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
         },
