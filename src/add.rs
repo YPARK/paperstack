@@ -1,8 +1,9 @@
 //! Adding papers: from an id, a page, words or a PDF, as `source.rs`
 //! reads what is given; filed with a key of their own and, where an open
 //! copy is to be had, their PDF. A paper already here is not added again:
-//! it is given the PDF it lacked, or, a preprint since published, what it
-//! was published as, keeping its key.
+//! it is given the PDF it lacked, or one not a preprint's in place of a
+//! preprint's, or, a preprint since published, what it was published as,
+//! keeping its key.
 
 use crate::index::{Hit, Index};
 use crate::library::{self, Library};
@@ -106,6 +107,9 @@ pub enum Outcome {
     Published,
     /// Already here, and given the PDF it lacked.
     PdfAttached,
+    /// Already here, and given a PDF in place of the one it had, which
+    /// went to the trash.
+    PdfReplaced,
     /// Already here as a paper nothing knew, now as one known.
     Resolved,
 }
@@ -147,6 +151,7 @@ impl Added {
             Outcome::Known => "already here",
             Outcome::Published => "now as published",
             Outcome::PdfAttached => "given its PDF",
+            Outcome::PdfReplaced => "given a PDF, the one it had kept in .trash/",
             Outcome::Resolved => "now resolved",
         };
         let pdf = if self.has_pdf { "" } else { ", no PDF" };
@@ -180,9 +185,11 @@ pub fn shows(
 
 /// Give the paper `key` the PDF `bytes`, from `from`, as one got in the
 /// browser: only if it is that paper's, by [`shows`], and only if it has
-/// none yet. A PDF that cannot be told by, as a scan with no DOI in it, is
-/// taken only where `named`, the person having named that file, as by its
-/// path; not one found, as the next download, or given by an agent.
+/// none yet, or a preprint's and this is not one. A PDF that cannot be told
+/// by, as a scan with no DOI in it, is taken only where `named`, the person
+/// having named that file, as by its path; not one found, as the next
+/// download, or given by an agent. One named takes the place of any PDF
+/// the paper has. A PDF replaced is kept in the trash.
 pub fn attach(
     lib: &Library,
     index: &mut Index,
@@ -198,6 +205,23 @@ pub fn attach(
     attach_as(lib, index, key, bytes, from, take)
 }
 
+/// [`attach`], not named, in place of any PDF the paper has, as the person
+/// asked of an agent: the PDF still only if it is that paper's, by
+/// [`shows`]. The one replaced is kept in the trash.
+pub fn replace(
+    lib: &Library,
+    index: &mut Index,
+    key: &str,
+    bytes: &[u8],
+    from: &str,
+) -> anyhow::Result<Added> {
+    let take = Take {
+        replace: true,
+        ..Take::default()
+    };
+    attach_as(lib, index, key, bytes, from, take)
+}
+
 /// How [`attach_as`] takes a PDF.
 #[derive(Clone, Copy, Default)]
 struct Take {
@@ -208,6 +232,8 @@ struct Take {
     /// Only one not a preprint, taking the place of a preprint's, which
     /// goes to the trash.
     published: bool,
+    /// In place of any PDF the paper has, as one named does.
+    replace: bool,
 }
 
 /// [`attach`], as `take` says.
@@ -223,12 +249,19 @@ fn attach_as(
         named,
         version,
         published,
+        replace,
     } = take;
+    let replace = replace || named;
     let hit = index
         .get(key)?
         .with_context(|| format!("no paper with the key {key}"))?;
-    if hit.has_pdf && !published {
-        bail!("{key} has its PDF already");
+    // A PDF here gives way to one named, or, a preprint's, to one not.
+    let preprint_here = hit.has_pdf && pdf_version(lib, &hit) == Some(Version::Preprint);
+    if hit.has_pdf && !replace && !preprint_here {
+        bail!(
+            "{key} has its PDF already: to put another in its place, \
+             attach it by its path, as `paperstack attach {key} <file>`"
+        );
     }
     if !bytes.starts_with(b"%PDF") {
         bail!("{from} is not a PDF");
@@ -256,17 +289,11 @@ fn attach_as(
     if published && version == Some(Version::Preprint) {
         return Err(IsPreprint(from.to_string()).into());
     }
-    // A preprint's PDF in the way is kept in the trash, and the new one
-    // written over it, whole or not at all.
+    if hit.has_pdf && !replace && version == Some(Version::Preprint) {
+        bail!("{key} has a preprint's PDF already, and {from} is a preprint's too");
+    }
     if hit.has_pdf {
-        let pdf = lib.root.join(&hit.path).with_extension("pdf");
-        let kept = lib
-            .root
-            .join(crate::remove::TRASH)
-            .join(&hit.path)
-            .with_extension("pdf");
-        std::fs::create_dir_all(kept.parent().expect("filed in a folder"))?;
-        library::copy(&pdf, &kept)?;
+        keep_in_trash(lib, &hit)?;
     }
     let mut record = Record::clone(&hit.record);
     record.paperstack.pdf_sha256 = Some(sha256(bytes));
@@ -278,10 +305,27 @@ fn attach_as(
         key: record.key,
         path,
         has_pdf: true,
-        outcome: Outcome::PdfAttached,
+        outcome: if hit.has_pdf {
+            Outcome::PdfReplaced
+        } else {
+            Outcome::PdfAttached
+        },
         how,
         pdf_version: version,
     })
+}
+
+/// Keep the PDF of `hit` in the trash, where it is filed, as one about to
+/// be written over: the new one is written over it whole or not at all.
+fn keep_in_trash(lib: &Library, hit: &Hit) -> anyhow::Result<()> {
+    let pdf = lib.root.join(&hit.path).with_extension("pdf");
+    let kept = lib
+        .root
+        .join(crate::remove::TRASH)
+        .join(&hit.path)
+        .with_extension("pdf");
+    std::fs::create_dir_all(kept.parent().expect("filed in a folder"))?;
+    library::copy(&pdf, &kept)
 }
 
 /// Which version a PDF from `from` is, its first page `text`: a preprint
@@ -1258,7 +1302,16 @@ impl Adder<'_> {
             record.csl["abstract"] = a.clone();
             changed = true;
         }
-        let bytes = if hit.has_pdf {
+        // A PDF given takes the place of a preprint's, where it is not one
+        // itself, as the published version downloaded; the preprint's is
+        // kept in the trash.
+        let upgrade = |given: &[u8]| {
+            pdf_version(self.lib, &hit) == Some(Version::Preprint)
+                && version_of(&record.csl, "", &first_page_of(given), None)
+                    != Some(Version::Preprint)
+        };
+        let replaces = hit.has_pdf && pdf.is_some_and(upgrade);
+        let bytes = if hit.has_pdf && !replaces {
             None
         } else {
             self.pdf_bytes(pdf, &found.pdfs)
@@ -1267,7 +1320,11 @@ impl Adder<'_> {
             b.stamp(&mut record);
             changed = true;
             if outcome == Outcome::Known {
-                outcome = Outcome::PdfAttached;
+                outcome = if replaces {
+                    Outcome::PdfReplaced
+                } else {
+                    Outcome::PdfAttached
+                };
             }
         }
         for (have, wanted) in [
@@ -1280,6 +1337,10 @@ impl Adder<'_> {
                     changed = true;
                 }
             }
+        }
+        // Before the record is saved, as that may move the PDF it has.
+        if replaces && bytes.is_some() {
+            keep_in_trash(self.lib, &hit)?;
         }
         let path = if changed {
             self.lib.save(&record, Some(&hit.path))?

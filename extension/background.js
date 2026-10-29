@@ -53,7 +53,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     }
     if (!res.ok) throw new Error(out.error || res.statusText);
     badge(tab.id, out.has_pdf ? "✓" : "✓·", "#2a7d2a");
-    const what = { added: "Added", known: "Already there", published: "Now as published", "pdf-attached": "Given its PDF" };
+    const what = { added: "Added", known: "Already there", published: "Now as published", "pdf-attached": "Given its PDF", "pdf-replaced": "Given the published PDF" };
     notify(`${what[out.outcome] || out.outcome}: ${out.key}`, `${out.title}${out.has_pdf ? "" : "\n(no PDF)"}`);
   } catch (e) {
     badge(tab.id, "!", "#b22");

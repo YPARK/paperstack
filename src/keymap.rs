@@ -107,7 +107,7 @@ pub const KEYS: &[Key] = &[
     key(
         List,
         "f",
-        "locate a PDF on disk for the paper picked, where it has none",
+        "locate a PDF on disk for the paper picked, in place of its own",
         &["f"],
         &[],
     ),
